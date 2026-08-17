@@ -10,8 +10,9 @@
 
 ## Impact Checklist
 
-- [ ] UI change includes screenshots or a short recording
+- [ ] UI change includes screenshots or a short recording (fictional data only)
 - [ ] API contract change is documented
 - [ ] Database migration is included when schema changes
 - [ ] New/changed environment variables are reflected in examples
-- [ ] No secrets, local databases, uploads, logs, or generated caches are committed
+- [ ] No secrets, `.env`, local databases, uploads, logs, or generated caches are committed
+- [ ] No real receipts, bank statements, customer lists, or lightly redacted originals are committed

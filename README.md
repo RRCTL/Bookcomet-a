@@ -6,7 +6,9 @@ Bookcomet is an open-source AI accounting workspace for developers, solo operato
 
 Bookcomet is designed for the parts of bookkeeping that consume the most time and attention: separating multiple receipts in one upload, extracting transaction rows from difficult bank statements, suggesting account codes using your company’s own knowledge, and reconciling bank activity against AR/AP records. Automation prepares structured work; users retain control over review and final journal posting.
 
-[Website](https://bookcomet.net/) · [Quick start](#quick-start) · [Document intelligence](#document-intelligence) · [AI accounting workflows](#ai-accounting-workflows) · [Security](#security-and-configuration) · [Contributing](#contributing)
+This repository, **[RRCTL/Bookcomet-a](https://github.com/RRCTL/Bookcomet-a)**, is the public MVP.
+
+[Website](https://bookcomet.net/) · [Quick start](#quick-start) · [Privacy](PRIVACY.md) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md)
 
 <!-- Replace with a product screenshot or a 30–60 second workflow GIF before launch. -->
 <!-- ![Bookcomet workflow: document capture to reviewed journals](docs/assets/bookcomet-workflow.gif) -->
@@ -166,20 +168,21 @@ It is not a substitute for professional accounting, tax, legal, audit, or regula
 
 ## Quick start
 
-The local-development instructions below use **Windows PowerShell** and start the backend and frontend separately.
+The local-development instructions start the backend and frontend separately. Windows PowerShell and Unix shells are both shown.
 
 ### Prerequisites
 
 Install Python **3.11**, Node.js **22 LTS**, and Git.
 
-```powershell
-git clone https://github.com/RRCTL/Bookcomet.git
-cd Bookcomet
+```bash
+git clone https://github.com/RRCTL/Bookcomet-a.git
+cd Bookcomet-a
 ```
 
 ### Start the backend
 
 ```powershell
+# Windows PowerShell
 cd backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
@@ -190,16 +193,37 @@ alembic upgrade head
 python run.py
 ```
 
+```bash
+# Linux / macOS
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+cp config.env.example .env
+alembic upgrade head
+python run.py
+```
+
 The API starts at [`http://localhost:8000`](http://localhost:8000), with interactive documentation at [`http://localhost:8000/docs`](http://localhost:8000/docs).
 
 ### Start the frontend
 
-Open a second PowerShell terminal and run:
+Open a second terminal and run:
 
 ```powershell
+# Windows PowerShell
 cd frontend
 npm install
 copy .env.example .env
+npm run dev
+```
+
+```bash
+# Linux / macOS
+cd frontend
+npm install
+cp .env.example .env
 npm run dev
 ```
 
@@ -209,7 +233,9 @@ Open [`http://localhost:5173`](http://localhost:5173) in your browser.
 
 Bookcomet handles sensitive financial documents. Treat deployment and provider configuration as part of the security boundary.
 
-**Cloud vs local AI:** Default VLM/LLM settings use an OpenAI-compatible gateway. When cloud OCR / AI is configured, uploaded document images and some company information are sent to that provider. Point `VLM_BASE_URL` / `LLM_BASE_URL` (or Settings → API) at a local endpoint to keep data on this device. The Settings → API panel also shows this notice.
+**Cloud vs local AI:** Default VLM/LLM settings use an OpenAI-compatible gateway. When cloud OCR / AI is configured, uploaded document images, OCR content, and necessary company profile data are sent to that provider. Point `VLM_BASE_URL` / `LLM_BASE_URL` (or Settings → API) at a local endpoint to keep data on this device. Bookcomet is not a fully offline product unless you choose local endpoints and local storage.
+
+This notice also appears in Settings → API, company onboarding before Generate Company Profile, and the document upload surfaces. See [`PRIVACY.md`](PRIVACY.md) for local storage, retention, and deletion behavior.
 
 | Area | Location | Required action |
 |---|---|---|
@@ -250,23 +276,21 @@ alembic upgrade head
 
 ## Contributing
 
-Contributions that improve reliability, accounting workflow clarity, document intelligence, company-rule management, reconciliation safeguards, security, and extensibility are welcome. Good entry points include documentation, tests, provider integrations, bank-specific prompt improvements, rule-memory templates, import/export paths, review UX, and reconciliation logic.
+Follow [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md). Never commit real receipts, bank statements, customer data, `.env` files, databases, or secrets.
 
-Before submitting a change, run the relevant backend tests, frontend linting, and frontend build. Store durable documentation in `docs/` or the relevant feature directory, such as `backend/docs/`; do not restore historical implementation notes to the repository root without review.
-
-If the repository includes [`CONTRIBUTING.md`](CONTRIBUTING.md), follow it as the authoritative contribution guide. If it does not yet exist, add one before a broad community launch.
+Before submitting a change, run the relevant backend tests, frontend linting, and frontend build. Store durable documentation in `docs/` or the relevant feature directory, such as `backend/docs/`.
 
 ## Support and security reporting
 
-Use [GitHub Issues](https://github.com/RRCTL/Bookcomet/issues) for reproducible defects, feature requests, and integration proposals. A useful report includes the Bookcomet version or commit, operating system, sanitized configuration, steps to reproduce, expected behavior, and actual behavior.
+Use [GitHub Issues](https://github.com/RRCTL/Bookcomet-a/issues) for reproducible defects, feature requests, and integration proposals. A useful report includes the Bookcomet-a commit, operating system, sanitized configuration, steps to reproduce, expected behavior, and actual behavior.
 
-Do not post credentials, financial documents, or security vulnerabilities in public issues. Add a `SECURITY.md` file with a private reporting route before broad public promotion.
+Do not post credentials, financial documents, or security vulnerabilities in public issues. See [`SECURITY.md`](SECURITY.md) for private reporting.
 
 ## License
 
 Bookcomet is released under the **[Apache License, Version 2.0](LICENSE)** (`Apache-2.0`). You may use, modify, and distribute the software—including in commercial products—subject to the license terms, preservation of required notices, and applicable attribution requirements.
 
-The complete Apache 2.0 license text must be included in the repository’s root-level [`LICENSE`](LICENSE) file. If the project distributes third-party components that require attribution notices, preserve them in a root-level [`NOTICE`](NOTICE) file or the appropriate accompanying documentation. The Apache-2.0 license does not grant permission to use third-party trademarks or names as though they endorse Bookcomet.
+Third-party attribution is recorded in [`NOTICE`](NOTICE). The Apache-2.0 license does not grant permission to use third-party trademarks or names as though they endorse Bookcomet.
 
 ---
 

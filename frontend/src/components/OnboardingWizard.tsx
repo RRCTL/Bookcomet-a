@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { CLOUD_AI_DATA_NOTICE } from '../constants/privacyNotices'
 import { apiFetch } from '../services/api'
 import './OnboardingWizard.css'
 
@@ -709,8 +710,7 @@ export function OnboardingWizard({ onComplete, onSkip }: OnboardingWizardProps) 
                   Don't worry if some fields were left blank — the AI will fill in the gaps as it processes your documents.
                 </div>
                 <div className="wizard-auto-notice-row wizard-auto-notice-muted">
-                  When using cloud OCR / AI, uploaded document images and some company information will be sent to
-                  your configured AI service provider. Select a local endpoint to keep data on this device.
+                  {CLOUD_AI_DATA_NOTICE}
                 </div>
               </div>
 

@@ -32,6 +32,7 @@ Stable IDs for security work. Prefer these over informal “phase” names in PR
 | SEC-CODE-011 | Code | Bind identity memberships to the active company; allowlist roles | On `main` |
 | SEC-CODE-012 | Code | Harden `/settings/env` mask + lock process-wide keys | On `main` |
 | SEC-CODE-013 | Code | Workflow WS auth without JWT in the query string | On `main` |
+| SEC-PUB-001 | Public MVP | Community files, Bookcomet-a URLs, CI least privilege, upload-path cloud AI notice | This PR |
 
 ## Former phase map
 

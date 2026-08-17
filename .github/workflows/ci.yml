@@ -6,6 +6,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   backend:
     name: Backend
@@ -125,5 +128,20 @@ jobs:
           if [ -n "$hits" ]; then
             echo "Forbidden debug telemetry markers found in frontend/src:"
             echo "$hits"
+            exit 1
+          fi
+
+      - name: Require public-community files
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          for f in LICENSE SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md PRIVACY.md NOTICE README.md; do
+            if [ ! -f "$f" ]; then
+              echo "Missing required public file: $f"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
             exit 1
           fi

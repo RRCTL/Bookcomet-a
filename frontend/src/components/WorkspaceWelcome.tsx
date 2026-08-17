@@ -1,3 +1,4 @@
+import { CLOUD_AI_DATA_NOTICE } from '../constants/privacyNotices'
 import { DROPDOWN_MODES, MODE_META, type ProcessingMode } from './ModeSelector'
 import './WorkspaceWelcome.css'
 
@@ -18,6 +19,9 @@ export function WorkspaceWelcome({
         <p className="workspace-welcome-lead">
           Upload invoices, receipts, or bank statements for OCR. Draft double-entry journals can be edited per
           transaction and synced to the server from the spreadsheet workflow.
+        </p>
+        <p className="workspace-welcome-privacy" role="note">
+          {CLOUD_AI_DATA_NOTICE}
         </p>
 
         <section className="workspace-welcome-section" aria-labelledby="welcome-doc-heading">

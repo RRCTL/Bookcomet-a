@@ -6,8 +6,14 @@ Public-facing docs kept in this repository after cleanup. Prefer updating these 
 
 | Path | Purpose |
 |------|---------|
-| `README.md` | Product overview, stack, quick start |
+| `README.md` | Product overview, stack, quick start for the Bookcomet-a public MVP |
 | `LOCAL_DEV_SETUP.md` | Local setup, SEC-OPS-001…004 checklists, SEC-CODE boot gates / SQLCipher / MFA / sessions, tunnel, smoke checks |
+| `LICENSE` | Apache License 2.0 |
+| `NOTICE` | Apache attribution and third-party / non-bundled binary notes |
+| `SECURITY.md` | Private vulnerability reporting |
+| `CONTRIBUTING.md` | Branch, test, and no-real-data rules |
+| `CODE_OF_CONDUCT.md` | Contributor Covenant 2.1 |
+| `PRIVACY.md` | Local storage, cloud AI data flow, retention, and deletion |
 | `frontend/README.md` | Frontend package notes |
 | `bin/README.md` | Helper scripts |
 
@@ -26,6 +32,7 @@ Public-facing docs kept in this repository after cleanup. Prefer updating these 
 |------|---------|
 | `docs/DOCUMENT_INVENTORY.md` | This inventory |
 | `docs/SECURITY_CHANGELOG.md` | Security change IDs (SEC-OPS / SEC-CODE / SEC-CI) |
+| `docs/PUBLIC_RELEASE_CHECKLIST.md` | Remaining GitHub visibility and scan steps for Bookcomet-a |
 | `.github/pull_request_template.md` | PR template |
 
 ## Intentionally not published at root
