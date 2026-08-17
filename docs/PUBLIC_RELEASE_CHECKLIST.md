@@ -5,59 +5,53 @@
 ## Step 1 — Merge and freeze
 
 - [x] Treat Bookcomet-a as the public MVP. Keep the private `Bookcomet` repo private.
-- [x] Record the freeze in [`CONTRIBUTING.md`](../CONTRIBUTING.md): no unrelated feature merges until after public + branch protection.
-- [ ] Merge the public-MVP pull requests into `main` (this PR and, if still open, #1).
+- [x] Record the freeze in [`CONTRIBUTING.md`](../CONTRIBUTING.md).
+- [ ] Merge the public-MVP pull requests into `main`.
 - [ ] Pause unrelated feature work until Step 6 is done.
 
-## Step 2 — Source follow-up (this PR)
+## Step 2 — Source follow-up
 
-- [x] Cloud-AI notice on node-workspace Attach, Files node, and sidebar upload.
-- [x] `.github/dependabot.yml` for pip, npm, and GitHub Actions.
-- [x] Default CodeQL workflow for Python and JavaScript/TypeScript.
-- [x] Fictional workflow diagram at `docs/assets/bookcomet-workflow.svg` (no real customer data).
-- [x] README shows that diagram.
-- [x] `SECURITY.md` keeps GitHub private vulnerability reporting (no separate security mailbox yet).
+- [x] Cloud-AI notice on remaining upload paths.
+- [x] Dependabot + CodeQL workflows.
+- [x] Fictional workflow diagram in README.
 
 ## Step 3 — Scan copies that are not in git
 
-See the dated record in [`PUBLIC_COPY_SCAN.md`](PUBLIC_COPY_SCAN.md).
+See [`PUBLIC_COPY_SCAN.md`](PUBLIC_COPY_SCAN.md).
 
-- [x] Agent scan: 0 releases, 0 tags, 0 LFS, 0 artifacts, wiki/pages/discussions off, no tracked secrets.
-- [ ] Admin: open the two CI run logs and confirm they contain no real documents or keys.
-- [ ] Admin: confirm org Packages and the enabled Projects board are empty of real documents.
-- [ ] If any secret ever appeared, rotate it before going public.
+- [x] Agent scan: 0 releases, 0 tags, 0 LFS, 0 artifacts, no tracked secrets.
+- [ ] Admin: open CI run logs and confirm they contain no real documents or keys.
+- [ ] Admin: confirm org Packages and Projects have no real documents.
 
-## Step 4 — Clean-machine install (manual)
+## Step 4 — Clean-machine install
 
-- [ ] Clone Bookcomet-a into a new empty directory.
-- [ ] Follow README only (no private files or machine-local paths).
-- [ ] Copy env examples and generate a new `JWT_SECRET_KEY`.
-- [ ] `alembic upgrade head`, start API and UI.
-- [ ] Confirm Settings → API and upload UI show the cloud-AI notice.
-- [ ] Backend pytest and frontend lint / test / build.
+See [`CLEAN_MACHINE_INSTALL.md`](CLEAN_MACHINE_INSTALL.md). Repeat with `scripts/clean_machine_verify.sh` in a fresh clone.
 
-## Step 5 — History rewrite only if Step 3 found a leak
+- [x] Agent: fresh directory, README-only install, new `JWT_SECRET_KEY`, `alembic upgrade head`.
+- [x] Agent: backend pytest, frontend lint / test / build.
+- [x] Agent: cloud-AI notice present in Settings and Processing source.
+- [ ] Human: start API + UI on your machine and click through Settings → API and upload.
 
-- [ ] Skip if the scan stayed clean.
-- [ ] If a secret was found: rotate, rewrite in a mirror clone, tell collaborators to re-clone, ask GitHub Support to purge caches.
+## Step 5 — History rewrite
+
+See [`HISTORY_REWRITE.md`](HISTORY_REWRITE.md).
+
+- [x] Skipped. Step 3 found no leak.
 
 ## Step 6 — Make public, then re-apply controls the same day
 
-GitHub drops push rulesets when visibility changes.
+A PR cannot flip visibility. Follow [`GITHUB_PUBLIC_DAY.md`](GITHUB_PUBLIC_DAY.md).
 
 - [ ] Restrict who can change visibility; require 2FA for admins.
 - [ ] Change visibility to public.
-- [ ] Protect `main`: PR required, at least one review, required CI, no force-push.
-- [ ] Enable secret scanning, generic secret detection, and push protection.
-- [ ] Enable dependency graph, Dependabot alerts, and security updates (Dependabot config is already in-repo).
-- [ ] Enable **Code scanning** in Settings → Code security (required on a private repo before SARIF upload works).
-- [ ] Confirm the in-repo CodeQL workflow can upload on `main`.
-- [ ] Enable private vulnerability reporting so `SECURITY.md` has an inbox.
+- [ ] Protect `main` (PR, review, required CI, no force-push).
+- [ ] Enable secret scanning, push protection, Dependabot, Code scanning, private vulnerability reporting.
 - [ ] Confirm Actions stay read-only for fork PRs.
 
-## Step 7 — After public (do not block MVP)
+## Step 7 — After public (source work in this PR)
 
-- Upgrade or formally accept `cryptography` / `ecdsa` findings documented in CI.
-- SBOM generation and signed releases.
-- Stronger at-rest encryption for uploaded documents.
-- A maintained fictional demo dataset.
+- [x] Formal accept record: [`DEPENDENCY_EXCEPTIONS.md`](DEPENDENCY_EXCEPTIONS.md) (`ecdsa` / `cryptography` pins).
+- [x] SBOM workflow: `.github/workflows/sbom.yml` (CycloneDX artifacts).
+- [x] Optional upload at-rest wrap: `UPLOADS_ENCRYPTION_KEY` (SEC-PUB-003).
+- [x] Maintained fictional demo set: [`demo/`](demo/README.md).
+- [ ] Signed GitHub Releases / attestations when the first versioned release exists.

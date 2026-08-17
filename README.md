@@ -248,6 +248,8 @@ This notice also appears in Settings → API, company onboarding before Generate
 
 **Never commit** real `.env` files, local databases, uploads, logs, caches, or credentials. See [`LOCAL_DEV_SETUP.md`](LOCAL_DEV_SETUP.md) for detailed Windows setup, tunnel configuration, security checklists, and troubleshooting.
 
+Fictional import samples live in [`docs/demo/`](docs/demo/README.md). Optional `UPLOADS_ENCRYPTION_KEY` wraps local upload files at rest; see [`PRIVACY.md`](PRIVACY.md).
+
 ## Development checks
 
 Run these checks before opening a pull request or sharing a build:

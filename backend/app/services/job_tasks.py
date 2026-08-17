@@ -91,8 +91,9 @@ async def run_ocr_background_job(job_id: str) -> None:
         db.close()
 
     try:
-        with open(storage_path, "rb") as f:
-            content = f.read()
+        from app.services.file_storage import read_stored_bytes
+
+        content = read_stored_bytes(storage_path)
         upload = UploadFile(filename=filename, file=BytesIO(content))
 
         db_check = SessionLocal()

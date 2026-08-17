@@ -15,6 +15,8 @@ traversal attacks. It is stored in the task_files.original_filename column.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import logging
 import os
 import re
@@ -23,6 +25,9 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
+
+# Optional at-rest wrap for local uploads (SEC-PUB-003). Plaintext files stay readable.
+_ENC_PREFIX = b"BCENC1\n"
 
 _SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
@@ -117,6 +122,50 @@ def assert_file_type(filename: str, data: bytes) -> None:
     raise ValueError(f"Unknown or invalid file format for {ext}")
 
 
+def _fernet_from_env():
+    """Return a Fernet instance when UPLOADS_ENCRYPTION_KEY is set, else None."""
+    raw = (os.getenv("UPLOADS_ENCRYPTION_KEY") or "").strip()
+    if not raw:
+        return None
+    from cryptography.fernet import Fernet
+
+    try:
+        return Fernet(raw.encode("ascii"))
+    except (ValueError, TypeError):
+        digest = hashlib.sha256(raw.encode("utf-8")).digest()
+        return Fernet(base64.urlsafe_b64encode(digest))
+
+
+def wrap_stored_bytes(data: bytes) -> bytes:
+    """Encrypt document bytes when UPLOADS_ENCRYPTION_KEY is set."""
+    fernet = _fernet_from_env()
+    if fernet is None:
+        return data
+    return _ENC_PREFIX + fernet.encrypt(data)
+
+
+def unwrap_stored_bytes(data: bytes) -> bytes:
+    """Decrypt BCENC1 payloads; leave legacy plaintext unchanged."""
+    if not data.startswith(_ENC_PREFIX):
+        return data
+    fernet = _fernet_from_env()
+    if fernet is None:
+        raise ValueError(
+            "Upload is encrypted (BCENC1) but UPLOADS_ENCRYPTION_KEY is not set"
+        )
+    from cryptography.fernet import InvalidToken
+
+    try:
+        return fernet.decrypt(data[len(_ENC_PREFIX) :])
+    except InvalidToken as exc:
+        raise ValueError("Upload decryption failed; check UPLOADS_ENCRYPTION_KEY") from exc
+
+
+def read_stored_bytes(storage_path: str | Path) -> bytes:
+    """Read on-disk upload bytes, decrypting when the BCENC1 prefix is present."""
+    return unwrap_stored_bytes(Path(storage_path).read_bytes())
+
+
 def write_bytes_atomic(dest: Path, data: bytes) -> None:
     """Write bytes via temp file + os.replace to avoid partial reads."""
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -187,7 +236,7 @@ class LocalDiskStorage:
         root_resolved = self._root.resolve()
         if not resolved.is_relative_to(root_resolved):
             raise ValueError("Storage path escapes uploads directory")
-        write_bytes_atomic(dest, data)
+        write_bytes_atomic(dest, wrap_stored_bytes(data))
         logger.debug("[FileStorage] Saved %d bytes → %s", len(data), dest)
         return str(dest)
 
@@ -200,7 +249,7 @@ class LocalDiskStorage:
             norm_ext = f".{norm_ext}" if norm_ext else ""
         assert_file_type(f"input{norm_ext}", data)
         dest = self._root / "background_jobs" / job_id / f"input{norm_ext}"
-        write_bytes_atomic(dest, data)
+        write_bytes_atomic(dest, wrap_stored_bytes(data))
         return str(dest)
 
     def load_path(self, storage_path: str) -> Path:
