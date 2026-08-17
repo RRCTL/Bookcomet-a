@@ -150,6 +150,8 @@ class Settings:
     # File storage (local disk; swap FILE_STORAGE_BACKEND=s3 in production)
     uploads_dir: str = os.getenv("UPLOADS_DIR", "./uploads")
     file_storage_backend: str = os.getenv("FILE_STORAGE_BACKEND", "local")
+    # Optional Fernet wrap for local upload files (SEC-PUB-003). Empty = plaintext on disk.
+    uploads_encryption_key: str = os.getenv("UPLOADS_ENCRYPTION_KEY", "")
     max_upload_size_mb: int = int(os.getenv("MAX_UPLOAD_SIZE_MB", "50"))
     # Keep OCR background job upload on disk for retry-page API (hours). 0 = delete when the job finishes (legacy).
     ocr_job_upload_retention_hours: int = int(os.getenv("OCR_JOB_UPLOAD_RETENTION_HOURS", "24"))

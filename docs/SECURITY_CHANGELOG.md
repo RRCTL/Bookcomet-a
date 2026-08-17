@@ -34,6 +34,8 @@ Stable IDs for security work. Prefer these over informal “phase” names in PR
 | SEC-CODE-013 | Code | Workflow WS auth without JWT in the query string | On `main` |
 | SEC-PUB-001 | Public MVP | Community files, Bookcomet-a URLs, CI least privilege, upload-path cloud AI notice | This PR |
 | SEC-PUB-002 | Public MVP | Freeze note, remaining upload notices, Dependabot, CodeQL, copy scan | This PR |
+| SEC-PUB-003 | Public MVP | Optional `UPLOADS_ENCRYPTION_KEY` wrap for local upload files | This PR |
+| SEC-PUB-004 | Public MVP | Clean-install record, dependency exceptions, SBOM workflow, demo dataset | This PR |
 
 ## Former phase map
 

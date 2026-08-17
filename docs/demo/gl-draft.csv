@@ -1,0 +1,5 @@
+date,account_code,account_name,dr_cr,amount,currency,memo,source
+2026-01-10,6100,Office Expenses,Dr,1500.00,HKD,Acme Supplies Ltd stationery,AP-20260110-001
+2026-01-10,2100,Accounts Payable,Cr,1500.00,HKD,Acme Supplies Ltd stationery,AP-20260110-001
+2026-01-12,1100,Accounts Receivable,Dr,8000.00,HKD,Example Customer Ltd January invoice,AR-20260112-001
+2026-01-12,4000,Sales,Cr,8000.00,HKD,Example Customer Ltd January invoice,AR-20260112-001

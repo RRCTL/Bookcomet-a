@@ -41,7 +41,7 @@ from app.models.chat import (
 )
 from app.models.identity import Membership, User
 from app.models.workflow import WorkflowRun
-from app.services.file_storage import assert_file_type, storage
+from app.services.file_storage import assert_file_type, read_stored_bytes, storage
 
 logger = logging.getLogger(__name__)
 
@@ -755,7 +755,7 @@ async def ap_cross_verify(
             storage_path = Path(tf.storage_path)
             if not storage_path.is_file():
                 raise HTTPException(status_code=404, detail=f"File missing on disk: {tf.id}")
-            content = storage_path.read_bytes()
+            content = read_stored_bytes(storage_path)
             if not content:
                 raise HTTPException(status_code=400, detail=f"Empty file: {tf.original_filename or tf.id}")
 

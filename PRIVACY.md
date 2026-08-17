@@ -21,7 +21,8 @@ The frontend talks to your configured API. It does not ship a Bookcomet-hosted c
 - Removing a company, document, or journal from the UI deletes the corresponding application records when that action succeeds.
 - Files already written under `backend/uploads/` and local SQLite files remain on disk until the operator deletes them.
 - Stopping the process does not wipe data. Uninstalling means deleting the project directory, database file, uploads, logs, and `.env`.
-- Optional SQLCipher (`DATABASE_PASSWORD`) encrypts the SQLite file at rest. It does not encrypt uploaded PDFs or images on disk.
+- Optional SQLCipher (`DATABASE_PASSWORD`) encrypts the SQLite file at rest.
+- Optional `UPLOADS_ENCRYPTION_KEY` wraps newly saved local upload files (prefix `BCENC1`). Existing plaintext files stay readable. OCR still decrypts in memory before a cloud provider call.
 
 ## Cloud vs local AI
 

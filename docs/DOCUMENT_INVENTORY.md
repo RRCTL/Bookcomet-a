@@ -34,6 +34,13 @@ Public-facing docs kept in this repository after cleanup. Prefer updating these 
 | `docs/SECURITY_CHANGELOG.md` | Security change IDs (SEC-OPS / SEC-CODE / SEC-CI) |
 | `docs/PUBLIC_RELEASE_CHECKLIST.md` | Step-by-step public-MVP plan and remaining operator gates |
 | `docs/PUBLIC_COPY_SCAN.md` | Dated scan of GitHub copies that are not in git |
+| `docs/CLEAN_MACHINE_INSTALL.md` | Step 4 README-only install evidence |
+| `docs/HISTORY_REWRITE.md` | Step 5 skip record |
+| `docs/GITHUB_PUBLIC_DAY.md` | Step 6 admin runbook |
+| `docs/DEPENDENCY_EXCEPTIONS.md` | Accepted pip-audit ignores |
+| `docs/demo/README.md` | Fictional demo dataset |
+| `.github/workflows/sbom.yml` | CycloneDX SBOM on CI |
+| `scripts/clean_machine_verify.sh` | README-only install check for Step 4 |
 | `docs/assets/bookcomet-workflow.svg` | Fictional README workflow diagram |
 | `.github/pull_request_template.md` | PR template |
 | `.github/dependabot.yml` | Weekly pip / npm / Actions updates |
