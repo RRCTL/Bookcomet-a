@@ -11,6 +11,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # @eslint/js 10+ peers eslint ^10. Stay on 9.x until eslint,
+      # typescript-eslint, and the flat config are upgraded together.
+      - dependency-name: "@eslint/js"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /
