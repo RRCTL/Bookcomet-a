@@ -1,4 +1,4 @@
-﻿fastapi==0.141.1
+fastapi==0.141.1
 starlette>=1.3.1
 uvicorn[standard]==0.30.6
 python-multipart==0.0.31
@@ -19,7 +19,7 @@ bcrypt>=4.0.0
 # SEC-CODE-009: optional TOTP MFA
 pyotp>=2.9.0
 fastapi-mail>=1.6.5
-pydantic[email]>=2.0.0
+pydantic[email]>=2.13.4
 
 # AI/ML
 # Note: We use requests library directly for AI enhancement API (see ai_enhance_client.py)
