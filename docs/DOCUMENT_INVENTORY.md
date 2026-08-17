@@ -1,0 +1,41 @@
+# Documentation Inventory
+
+Public-facing docs kept in this repository after cleanup. Prefer updating these over adding new root-level notes.
+
+## Onboarding
+
+| Path | Purpose |
+|------|---------|
+| `README.md` | Product overview, stack, quick start |
+| `LOCAL_DEV_SETUP.md` | Local setup, SEC-OPS-001…004 checklists, SEC-CODE boot gates / SQLCipher / MFA / sessions, tunnel, smoke checks |
+| `frontend/README.md` | Frontend package notes |
+| `bin/README.md` | Helper scripts |
+
+## Backend / product docs
+
+| Path | Purpose |
+|------|---------|
+| `backend/PROCESSING_FLOW.md` | Document processing flow |
+| `backend/docs/OCR_PROVIDERS_GUIDE.md` | OCR provider configuration |
+| `backend/docs/AI_ML_CAPABILITIES.md` | AI/OCR capability overview |
+| `backend/app/agent/bookcomet_skills/*/SKILL.md` | Agent skill definitions (ap, ar, bank, other, recon, report) |
+
+## Meta
+
+| Path | Purpose |
+|------|---------|
+| `docs/DOCUMENT_INVENTORY.md` | This inventory |
+| `docs/SECURITY_CHANGELOG.md` | Security change IDs (SEC-OPS / SEC-CODE / SEC-CI) |
+| `.github/pull_request_template.md` | PR template |
+
+## Intentionally not published at root
+
+Historical migration guides, ComfyUI reference notes, bank VLM specs, categorization workflow notes, and Chinese-language implementation reports were removed from the public tree. Local reference trees (`refer/`, `bookcomet-oss-preview/`) remain on disk but are gitignored.
+
+## Do not commit
+
+- Real `.env` files
+- Local databases (e.g. `backend/ai_accounting.db`)
+- Uploads, logs, caches, and `tunnel-credentials.json`
+- OCR/runtime dumps under `backend/transactions/` (CI hygiene rejects these if tracked)
+- Sample statements or extracted JSON that contain real-world customer data (`backend/docs/*.pdf.json`)

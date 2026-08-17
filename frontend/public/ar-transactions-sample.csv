@@ -1,0 +1,3 @@
+date,payer,payee,amount,dr_cr,currency,bank,account_code,category,memo,voucher_no
+2026-01-12,Customer ABC,Your Company Ltd,8000.00,Cr,HKD,HSBC,,Sales,January invoice,AR-20260112-001
+2026-01-18,Customer XYZ,Your Company Ltd,2500.00,Cr,HKD,HSBC,,Sales,Service fee,AR-20260118-001

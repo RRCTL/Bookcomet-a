@@ -1,0 +1,100 @@
+:root {
+  --color-action-primary: #111827;
+  --color-action-primary-fg: #ffffff;
+  --color-action-hover: #1f2937;
+
+  --color-ar: #22c55e;
+  --color-ap: #eab308;
+  --color-bank: #9333ea;
+
+  --color-danger: #dc2626;
+  --color-danger-bg: #fef2f2;
+  --color-danger-fg: #b91c1c;
+
+  --color-bg: #ffffff;
+  --color-sidebar-bg: #f9fafb;
+  --color-surface: #ffffff;
+  --color-border: #e5e7eb;
+  --color-border-strong: #cbd5e1;
+
+  --color-text-primary: #111827;
+  --color-text-secondary: #4b5563;
+  --color-text-muted: #6b7280;
+
+  --accent: #111827;
+  --accent-hover: #1f2937;
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-pill: 999px;
+
+  --sidebar-width: 260px;
+  --controls-width: 380px;
+}
+
+html.dark {
+  --color-action-primary: #f3f4f6;
+  --color-action-primary-fg: #111827;
+  --color-action-hover: #e5e7eb;
+
+  --color-bg: oklch(0.2 0 0);
+  --color-sidebar-bg: oklch(0.16 0 0);
+  --color-surface: oklch(0.27 0 0);
+  --color-border: oklch(0.32 0 0);
+  --color-border-strong: oklch(0.42 0 0);
+
+  --color-text-primary: #f3f4f6;
+  --color-text-secondary: #d1d5db;
+  --color-text-muted: #9ca3af;
+
+  --color-danger-bg: #450a0a;
+  --color-danger-fg: #fca5a5;
+}
+
+@layer components {
+  .btn-primary {
+    @apply inline-flex items-center justify-center rounded-lg bg-gray-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-gray-200;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-850 dark:text-gray-200 dark:hover:bg-gray-800;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center justify-center rounded-lg px-3 py-2 text-sm font-medium text-gray-600 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-gray-300 dark:hover:bg-gray-850;
+  }
+
+  .btn-destructive {
+    @apply inline-flex items-center justify-center rounded-lg bg-red-50 px-3 py-2 text-sm font-medium text-red-700 transition hover:bg-red-100 dark:bg-red-950 dark:text-red-300 dark:hover:bg-red-900;
+  }
+
+  .ow-card {
+    @apply rounded-xl border border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-850;
+  }
+
+  .ow-input {
+    @apply w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:border-gray-400 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100;
+  }
+
+  .ow-chip {
+    @apply inline-block rounded-md px-2 py-0.5 text-[10px] font-medium;
+  }
+
+  .ow-chip--ok {
+    @apply bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300;
+  }
+
+  .ow-chip--warn {
+    @apply bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300;
+  }
+
+  .ow-chip--fail {
+    @apply bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300;
+  }
+
+  .ow-composer {
+    @apply rounded-3xl border border-gray-100/30 bg-white/80 p-3 shadow-lg backdrop-blur-sm dark:border-gray-850/30 dark:bg-gray-900/80;
+  }
+}

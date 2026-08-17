@@ -1,0 +1,76 @@
+.node-workspace .react-flow__pane {
+  background-color: var(--color-bg);
+}
+
+.node-workspace .react-flow__edge-path {
+  stroke: var(--wf-edge, #cbd5e1);
+  stroke-width: 1.5;
+  fill: none;
+}
+
+.node-workspace .react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--wf-accent, #111827);
+}
+
+.node-workspace .react-flow__handle.wf-handle {
+  width: 8px;
+  height: 8px;
+  background: var(--wf-edge, #cbd5e1);
+  border: 2px solid var(--color-sidebar-bg);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.node-workspace .react-flow__node:hover .wf-handle,
+.node-workspace .react-flow__node.selected .wf-handle {
+  opacity: 1;
+}
+
+.node-workspace .react-flow__controls {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  box-shadow: none;
+}
+
+.node-workspace .react-flow__controls-button {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-primary);
+  width: 28px;
+  height: 28px;
+}
+
+.node-workspace .react-flow__controls-button:hover {
+  background: var(--color-sidebar-bg);
+}
+
+.node-workspace .react-flow__controls-button svg {
+  fill: var(--color-text-primary);
+}
+
+.node-workspace .react-flow__minimap {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+}
+
+.node-workspace .react-flow__controls-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.node-workspace .react-flow__node.selected .wf-node {
+  border-color: var(--wf-accent, #111827);
+  box-shadow: 0 0 0 1px var(--wf-accent, #111827);
+}
+
+.node-workspace .react-flow__arrowhead {
+  fill: var(--wf-edge, #cbd5e1);
+}
+
+.node-workspace .react-flow__edge.selected .react-flow__arrowhead {
+  fill: var(--wf-accent, #111827);
+}

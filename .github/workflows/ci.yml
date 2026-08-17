@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio pip-audit
+
+      - name: Dependency security scan (SEC-CODE-006)
+        # PYSEC-2026-1325 (ecdsa via python-jose): no fixed release; JWT uses HS256 only.
+        # PYSEC-2026-3552 (cryptography PKCS7 decrypt): needs cryptography>=50; fastapi-mail<50.
+        run: >
+          pip-audit -r requirements.txt
+          --ignore-vuln PYSEC-2026-1325
+          --ignore-vuln PYSEC-2026-3552
+
+      - name: Validate migrations
+        env:
+          APP_ENV: local
+          DATABASE_URL: sqlite:///./ci_ai_accounting.db
+          JWT_SECRET_KEY: ci-test-jwt-secret-key-at-least-32-chars
+          PYTHONPATH: .
+        run: alembic upgrade head
+
+      - name: Run tests
+        env:
+          APP_ENV: local
+          DATABASE_URL: sqlite:///./ci_ai_accounting.db
+          JWT_SECRET_KEY: ci-test-jwt-secret-key-at-least-32-chars
+          # Placeholder keys so OCR provider import succeeds in unit tests (no real API calls).
+          VLM_API_KEY: ci-test-vlm-api-key
+          LLM_API_KEY: ci-test-llm-api-key
+          PYTHONPATH: .
+        run: pytest
+
+      - name: Export OpenAPI contract
+        env:
+          APP_ENV: local
+          DATABASE_URL: sqlite:///./ci_ai_accounting.db
+          JWT_SECRET_KEY: ci-test-jwt-secret-key-at-least-32-chars
+          VLM_API_KEY: ci-test-vlm-api-key
+          LLM_API_KEY: ci-test-llm-api-key
+          PYTHONPATH: .
+        run: python scripts/export_openapi.py ../frontend/src/services/openapi.json
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Generate API types
+        run: npm run generate:api-types
+
+      - name: Test
+        run: npm run test:run
+
+      - name: Build
+        run: npm run build
+
+  repository-hygiene:
+    name: Repository Hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Block committed runtime artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          forbidden="$(git ls-files | grep -E '(^|/)(\\.env|.*\\.db|.*\\.sqlite3?|.*\\.pyc|debug-.*\\.log)$|^backend/uploads/|^backend/transactions/|^backend/hsbc_debug/|backend/docs/.*\\.pdf\\.json$' || true)"
+          if [ -n "$forbidden" ]; then
+            echo "Forbidden runtime artifacts are tracked:"
+            echo "$forbidden"
+            exit 1
+          fi
+
+      - name: Block debug telemetry and agent log markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          hits="$(git grep -nE '#region agent log|X-Debug-Session-Id|127\.0\.0\.1:(7440|7858)/ingest' -- 'frontend/src' || true)"
+          if [ -n "$hits" ]; then
+            echo "Forbidden debug telemetry markers found in frontend/src:"
+            echo "$hits"
+            exit 1
+          fi

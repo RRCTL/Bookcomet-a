@@ -1,0 +1,20 @@
+# OCR Engines
+paddleocr>=2.7.0.3
+easyocr>=1.7.1
+pytesseract==0.3.10
+
+# PaddleOCR dependencies
+paddlepaddle>=3.0.0
+imgaug
+visualdl
+opencv-contrib-python
+
+# Image processing
+opencv-python>=4.10.0
+Pillow>=10.0.0
+numpy>=1.21
+
+# Note: Tesseract also requires the Tesseract-OCR binary to be installed on the system
+# Windows: Download from https://github.com/UB-Mannheim/tesseract/wiki
+# Direct link: https://digi.bib.uni-mannheim.de/tesseract/tesseract-ocr-w64-setup-5.3.3.20231005.exe
+

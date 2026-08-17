@@ -1,0 +1,27 @@
+.bookcomet-logo {
+  width: auto;
+  display: block;
+  flex-shrink: 0;
+  object-fit: contain;
+  background: transparent;
+}
+
+.bookcomet-logo--landing {
+  height: 28px;
+}
+
+.bookcomet-logo--workspace {
+  height: 34px;
+}
+
+.bookcomet-logo--auth {
+  height: 34px;
+}
+
+.bookcomet-logo--footer {
+  height: 22px;
+}
+
+.bookcomet-logo--picker {
+  height: 36px;
+}

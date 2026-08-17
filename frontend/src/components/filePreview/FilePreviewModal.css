@@ -1,0 +1,138 @@
+.file-preview-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(0 0 0 / 0.4);
+  padding: 1rem;
+}
+
+.file-preview-card {
+  display: flex;
+  flex-direction: column;
+  width: min(90vw, 960px);
+  height: min(85vh, 720px);
+  overflow: hidden;
+}
+
+.file-preview-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-shrink: 0;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--ow-border, #e5e7eb);
+}
+
+.file-preview-close {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 1.25rem;
+  line-height: 1;
+  color: #9ca3af;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.375rem;
+}
+
+.file-preview-close:hover {
+  color: #374151;
+  background: #f3f4f6;
+}
+
+.file-preview-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-preview-download {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+}
+
+.file-preview-switcher {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--ow-border, #e5e7eb);
+  max-height: 5rem;
+  overflow-y: auto;
+}
+
+.file-preview-switcher-btn {
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 9999px;
+  border: 1px solid #e5e7eb;
+  background: #f9fafb;
+  cursor: pointer;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-preview-switcher-btn.active {
+  border-color: #374151;
+  background: #374151;
+  color: #fff;
+}
+
+.file-preview-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fff;
+  overflow: hidden;
+}
+
+.file-preview-loading,
+.file-preview-error,
+.file-preview-unsupported {
+  padding: 2rem;
+  text-align: center;
+  color: #64748b;
+}
+
+.file-preview-error {
+  color: #b91c1c;
+}
+
+.file-preview-retry {
+  margin-top: 0.75rem;
+}
+
+.file-preview-viewer {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+}
+
+.preview-image {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: 4px;
+}
+
+.preview-pdf {
+  width: 100%;
+  height: 100%;
+  border: none;
+  border-radius: 0;
+  flex: 1;
+}

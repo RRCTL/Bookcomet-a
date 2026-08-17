@@ -1,0 +1,810 @@
+.recon-table-container {
+  width: 100%;
+  margin: 16px 0;
+  background: white;
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 1023px) {
+  .recon-table th:first-child,
+  .recon-table td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    background: inherit;
+  }
+  .recon-table thead th:first-child {
+    background: #f9fafb;
+  }
+}
+
+.recon-section {
+  margin-bottom: 32px;
+}
+
+.recon-section:last-child {
+  margin-bottom: 0;
+}
+
+.recon-section h3 {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 16px;
+  color: #1f2937;
+}
+
+.recon-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.recon-table thead {
+  background: #f9fafb;
+  border-bottom: 2px solid #e5e7eb;
+}
+
+.recon-table th {
+  padding: 12px 16px;
+  text-align: left;
+  font-weight: 600;
+  color: #6b7280;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.recon-table td {
+  padding: 14px 16px;
+  border-bottom: 1px solid #f3f4f6;
+  color: #374151;
+}
+
+.matched-row {
+  background: #f0fdf4;
+}
+
+.matched-row:hover {
+  background: #dcfce7;
+  cursor: pointer;
+}
+
+.unmatched-row {
+  background: #fef2f2;
+}
+
+.unmatched-row:hover {
+  background: #fee2e2;
+  cursor: pointer;
+}
+
+.amount {
+  font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
+  text-align: right;
+  font-weight: 600;
+  color: #059669;
+}
+
+.unmatched-row .amount {
+  color: #dc2626;
+}
+
+.match-indicator {
+  text-align: center;
+  font-size: 20px;
+  color: #10b981;
+  font-weight: bold;
+}
+
+.confidence {
+  text-align: center;
+  font-weight: 600;
+  color: #059669;
+  font-size: 13px;
+}
+
+.recon-empty {
+  text-align: center;
+  padding: 40px;
+  color: #9ca3af;
+  font-size: 14px;
+}
+
+/* ── Checkbox column ─────────────────────────────────────────────────────── */
+
+.recon-checkbox-col {
+  width: 40px;
+  text-align: center;
+  padding: 8px !important;
+}
+
+.recon-table input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: #2563eb;
+  flex-shrink: 0;
+}
+
+/* Selected row highlight */
+.recon-row-selected {
+  background: #eff6ff !important;
+  outline: 1px solid #93c5fd;
+  outline-offset: -1px;
+}
+
+.recon-row-selected:hover {
+  background: #dbeafe !important;
+  cursor: pointer;
+}
+
+.unmatched-row {
+  cursor: pointer;
+}
+
+/* ── Matched table scroll wrapper ────────────────────────────────────────── */
+
+.recon-matched-scroll {
+  overflow-x: auto;
+  width: 100%;
+}
+
+/* ── Matched group rows ───────────────────────────────────────────────────── */
+
+.recon-table-matched th,
+.recon-table-matched td {
+  padding: 10px 12px;
+}
+
+.recon-group-row {
+  background: #f0fdf4;
+}
+
+.recon-group-row:hover {
+  background: #dcfce7;
+}
+
+.recon-group-id {
+  font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
+  font-size: 11px;
+  color: #6b7280;
+}
+
+.recon-cardinality-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  background: #dbeafe;
+  color: #1d4ed8;
+  letter-spacing: 0.5px;
+}
+
+.recon-voucher-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.recon-voucher-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  background: #e0f2fe;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #0369a1;
+  font-weight: 500;
+}
+
+.recon-member-remove-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 1px;
+  border-radius: 50%;
+  transition: background 0.15s, color 0.15s;
+}
+
+.recon-member-remove-btn:hover {
+  background: #fecaca;
+  color: #dc2626;
+}
+
+.recon-member-remove-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.recon-diff-nonzero {
+  color: #b45309 !important;
+  font-weight: 700;
+}
+
+/* ── Partial split sub-row (legacy) ─────────────────────────────────────── */
+
+.recon-partial-sub-row {
+  background: #fefce8;
+}
+
+.recon-partial-sub-row td {
+  font-size: 12px;
+  font-style: italic;
+  color: #92400e;
+  border-bottom: 1px dashed #fde68a;
+  padding: 6px 12px;
+}
+
+.recon-partial-label {
+  font-weight: 600;
+  color: #b45309 !important;
+  white-space: nowrap;
+}
+
+.recon-partial-info {
+  color: #78716c !important;
+}
+
+.recon-partial-note {
+  color: #78716c !important;
+}
+
+/* ── 部分配對 row in matched table ──────────────────────────────────────── */
+
+.recon-partial-matched-row {
+  background: #fffbf0;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.recon-partial-matched-row:hover {
+  background: #fff3cc;
+}
+.recon-cardinality-partial {
+  background: #f59e0b !important;
+  color: #fff !important;
+}
+.recon-voucher-chip-partial {
+  background: #fde68a;
+  color: #92400e;
+  border: 1px solid #f59e0b;
+}
+.recon-expand-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: #6b7280;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+.recon-expand-btn:hover {
+  background: #e5e7eb;
+}
+
+/* Inline breakdown row */
+.recon-partial-expand-row td {
+  padding: 0 !important;
+}
+.recon-partial-breakdown {
+  background: #fffbf0;
+  border: 1px solid #f59e0b;
+  border-top: none;
+  padding: 14px 20px;
+  font-size: 0.85rem;
+}
+.recon-breakdown-title {
+  font-weight: 600;
+  color: #92400e;
+  margin-bottom: 12px;
+  font-size: 0.88rem;
+}
+.recon-breakdown-grid {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.recon-breakdown-col {
+  flex: 1;
+  background: #fff;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  padding: 10px 14px;
+}
+.recon-breakdown-label {
+  font-weight: 600;
+  color: #6b7280;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+.recon-breakdown-item {
+  padding: 3px 0;
+  color: #374151;
+  border-bottom: 1px dashed #fde68a;
+}
+.recon-breakdown-item:last-of-type {
+  border-bottom: none;
+}
+.recon-breakdown-total {
+  margin-top: 8px;
+  font-weight: 600;
+  color: #b45309;
+  font-size: 0.83rem;
+}
+.recon-breakdown-arrow {
+  font-size: 1.4rem;
+  color: #f59e0b;
+  align-self: center;
+  padding: 0 4px;
+}
+.recon-breakdown-diff {
+  color: #b45309;
+  font-weight: 500;
+  font-size: 0.83rem;
+  border-top: 1px solid #fde68a;
+  padding-top: 8px;
+}
+
+/* ── Sticky FAB ──────────────────────────────────────────────────────────── */
+
+.recon-multi-fab {
+  position: fixed;
+  bottom: 28px;
+  right: 32px;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: #1e293b;
+  color: #f8fafc;
+  padding: 12px 18px;
+  border-radius: 16px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22), 0 2px 6px rgba(0, 0, 0, 0.14);
+  font-size: 13px;
+  font-weight: 500;
+  animation: fabSlideIn 0.2s ease-out;
+  max-width: 380px;
+}
+
+.recon-fab-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.recon-fab-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.recon-fab-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+  color: #fca5a5;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.recon-fab-notice-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #fca5a5;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.recon-fab-notice-close:hover {
+  color: #f87171;
+}
+
+@keyframes fabSlideIn {
+  from { opacity: 0; transform: translateY(12px) scale(0.95); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.recon-fab-label {
+  white-space: nowrap;
+  color: #94a3b8;
+}
+
+.recon-fab-match-btn {
+  padding: 7px 16px;
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.recon-fab-match-btn:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.recon-fab-match-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.recon-fab-clear-bank-btn {
+  padding: 7px 16px;
+  background: #d97706;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.recon-fab-clear-bank-btn:hover:not(:disabled) {
+  background: #b45309;
+}
+
+.recon-fab-clear-bank-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.recon-fab-clear-btn {
+  padding: 7px 12px;
+  background: transparent;
+  color: #94a3b8;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+
+.recon-fab-clear-btn:hover:not(:disabled) {
+  background: #334155;
+  color: #f1f5f9;
+}
+
+/* ── Partial split notice banner ─────────────────────────────────────────── */
+
+.recon-partial-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 10px 16px;
+  background: #fefce8;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  color: #92400e;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.recon-partial-notice button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  color: #92400e;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.recon-partial-notice button:hover {
+  color: #78350f;
+}
+
+/* ── Export toolbar & filter panel ──────────────────────────────────────── */
+
+.recon-export-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+
+.recon-export-toggle-btn {
+  padding: 6px 14px;
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #475569;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.recon-export-toggle-btn:hover {
+  background: #e2e8f0;
+  border-color: #94a3b8;
+}
+
+.recon-export-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px 20px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 14px 18px;
+  margin-bottom: 16px;
+}
+
+.recon-export-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  flex: 1;
+}
+
+.recon-export-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.recon-export-input,
+.recon-export-select {
+  padding: 6px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #1e293b;
+  background: #fff;
+  min-width: 130px;
+}
+
+.recon-export-input:focus,
+.recon-export-select:focus {
+  outline: 2px solid #3b82f6;
+  outline-offset: 1px;
+  border-color: #3b82f6;
+}
+
+.recon-export-actions {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.recon-export-btn {
+  padding: 7px 16px;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+  white-space: nowrap;
+}
+
+.recon-export-btn-csv {
+  background: #2563eb;
+  color: #fff;
+}
+
+.recon-export-btn-csv:hover {
+  background: #1d4ed8;
+}
+
+.recon-export-btn-print {
+  background: #0f172a;
+  color: #f8fafc;
+}
+
+.recon-export-btn-print:hover {
+  background: #1e293b;
+}
+
+/* ── Print-only header (hidden on screen) ────────────────────────────────── */
+
+.recon-print-header {
+  display: none;
+}
+
+/* ── Print styles ─────────────────────────────────────────────────────────── */
+
+@media print {
+  /* Show only the recon table container; hide everything else on the page */
+  body > * {
+    display: none !important;
+  }
+
+  /* Traverse the DOM tree — each ancestor wrapper needs to be visible */
+  .recon-table-container,
+  .recon-table-container * {
+    display: revert !important;
+  }
+
+  /* Re-hide interactive controls that should not appear on paper */
+  .recon-export-toolbar,
+  .recon-export-panel,
+  .recon-multi-fab,
+  .recon-partial-notice,
+  .recon-checkbox-col,
+  .recon-member-remove-btn,
+  .recon-expand-btn,
+  .recon-fab-actions {
+    display: none !important;
+  }
+
+  /* Show the print-only report header */
+  .recon-print-header {
+    display: block !important;
+    margin-bottom: 20px;
+    padding-bottom: 12px;
+    border-bottom: 2px solid #374151;
+  }
+
+  .recon-print-header h2 {
+    font-size: 18pt;
+    font-weight: 700;
+    color: #000;
+    margin: 0 0 6px;
+  }
+
+  .recon-print-header p {
+    font-size: 10pt;
+    color: #374151;
+    margin: 2px 0;
+  }
+
+  /* Hide confidence and rule columns (too technical for print) */
+  .recon-table-matched th:nth-child(8),
+  .recon-table-matched td:nth-child(8),
+  .recon-table-matched th:nth-child(9),
+  .recon-table-matched td:nth-child(9) {
+    display: none !important;
+  }
+
+  /* Clean table layout for paper */
+  .recon-table-container {
+    display: block !important;
+    box-shadow: none;
+    border-radius: 0;
+    padding: 0;
+    margin: 0;
+    width: 100%;
+  }
+
+  .recon-table {
+    border-collapse: collapse;
+    font-size: 9pt;
+    width: 100%;
+  }
+
+  .recon-table th,
+  .recon-table td {
+    border: 1px solid #9ca3af;
+    padding: 5px 8px;
+    color: #000;
+  }
+
+  .recon-table thead {
+    background: #f3f4f6 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .recon-section {
+    page-break-inside: avoid;
+    margin-bottom: 24px;
+  }
+
+  .recon-section h3 {
+    font-size: 11pt;
+    font-weight: 700;
+    color: #000;
+    margin-bottom: 8px;
+  }
+
+  /* Keep row backgrounds subtle on print */
+  .recon-group-row,
+  .matched-row {
+    background: #f9fafb !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .unmatched-row {
+    background: #fff !important;
+  }
+
+  /* Voucher chips: plain text on print */
+  .recon-voucher-chip {
+    background: none !important;
+    border: none !important;
+    padding: 0 !important;
+    font-size: 9pt;
+    color: #000 !important;
+  }
+
+  .recon-cardinality-badge {
+    background: none !important;
+    color: #000 !important;
+    font-weight: 700;
+    padding: 0 !important;
+  }
+}
+
+/* Partial strip (RECON right panel) */
+.recon-partial-strip {
+  margin: 12px 0;
+  padding: 12px;
+  background: #fffef7;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+}
+.recon-partial-strip-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 10px 0;
+  color: #92400e;
+}
+.recon-partial-strip-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.recon-partial-strip-card {
+  border: 1px solid #fcd34d;
+  border-radius: 8px;
+  background: #fff;
+  overflow: hidden;
+}
+.recon-partial-strip-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+.recon-partial-strip-v {
+  flex: 1;
+  min-width: 0;
+}
+.recon-partial-strip-amt {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.recon-partial-strip-detail {
+  padding: 0 12px 12px;
+  border-top: 1px solid #fde68a;
+}

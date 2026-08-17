@@ -1,0 +1,3 @@
+date,due_date,invoice_number,payee,amount,dr_cr,currency,tax_amount,account_code,category,memo,voucher_no
+2026-01-10,2026-02-10,INV-1001,Acme Supplies Ltd,1500.00,Dr,HKD,0,,Office Expenses,Stationery purchase,AP-20260110-001
+2026-01-15,2026-02-15,INV-1002,Sample Office Ltd,320.50,Dr,HKD,0,,Office Expenses,Printer paper,AP-20260115-001

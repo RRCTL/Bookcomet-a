@@ -1,0 +1,153 @@
+.workspace-welcome-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Align with main chat column: same surface as .chat-panel / .message-list */
+.workspace-welcome {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1.5rem;
+  background: #ffffff;
+}
+
+.workspace-welcome-inner {
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.workspace-welcome-kicker {
+  margin: 0 0 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.workspace-welcome-title {
+  margin: 0 0 12px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.workspace-welcome-lead {
+  margin: 0 0 28px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: #334155;
+}
+
+.workspace-welcome-section {
+  margin-bottom: 28px;
+}
+
+.workspace-welcome-section-title {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.workspace-welcome-section-hint {
+  margin: 0 0 14px;
+  font-size: 13px;
+  color: #64748b;
+}
+
+/* Step 1: same vertical stack as Step 2 / 3 */
+.workspace-welcome-next-stack.workspace-welcome-step1-list {
+  margin-top: 0;
+}
+
+.workspace-welcome-step1-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.workspace-welcome-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.workspace-welcome-card-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  background: #e2e8f0;
+  color: #475569;
+}
+
+.workspace-welcome-card-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+/* Shared primary actions: Use this mode, Go to RECON, Go to RPT */
+.workspace-welcome-next-btn {
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.workspace-welcome-next-btn:hover:not(:disabled) {
+  background: #1f2937;
+  border-color: #1f2937;
+}
+
+.workspace-welcome-section--next {
+  padding-top: 8px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.workspace-welcome-next-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.workspace-welcome-next-card {
+  padding: 16px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+}
+
+.workspace-welcome-next-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+  margin-bottom: 8px;
+}
+
+.workspace-welcome-next-desc {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #64748b;
+}
+
+.workspace-welcome-foot {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.5;
+}

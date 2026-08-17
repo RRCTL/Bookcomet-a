@@ -1,0 +1,121 @@
+.extraction-summary-panel {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.extraction-summary-h2 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 12px 0 8px;
+  color: #111827;
+}
+
+.extraction-summary-msg {
+  margin-bottom: 6px;
+}
+
+/* Collapsible per-file table; closed by default (squeezed) */
+.extraction-details {
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  margin-bottom: 6px;
+  background: #fff;
+}
+
+.extraction-details-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  list-style: none;
+  background: #f9fafb;
+  cursor: pointer;
+  min-height: 32px;
+  font-size: 11px;
+}
+
+.extraction-details-summary::-webkit-details-marker {
+  display: none;
+}
+
+.extraction-chevron {
+  display: inline-block;
+  width: 10px;
+  font-size: 8px;
+  line-height: 1;
+  color: #6b7280;
+  flex-shrink: 0;
+  transition: transform 0.12s ease;
+}
+
+.extraction-details[open] .extraction-chevron {
+  transform: rotate(90deg);
+}
+
+.extraction-filename {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: #111827;
+}
+
+.extraction-kind-meta {
+  flex-shrink: 0;
+  color: #6b7280;
+  font-size: 10px;
+}
+
+.extraction-details-body {
+  padding: 4px 4px 6px;
+  border-top: 1px solid #e5e7eb;
+  background: #fff;
+}
+
+.extraction-summary-table {
+  font-size: 11px;
+}
+
+.extraction-details-summary .extraction-summary-dest-btn {
+  flex-shrink: 0;
+}
+
+.extraction-summary-dest-btn {
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid #c7d2fe;
+  background: #eef2ff;
+  color: #3730a3;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.extraction-summary-dest-btn:hover {
+  background: #e0e7ff;
+}
+
+.extraction-summary-more {
+  font-size: 11px;
+  color: #6b7280;
+  margin: 4px 0 8px;
+  font-style: italic;
+}
+
+.extraction-summary-empty {
+  font-size: 12px;
+  color: #6b7280;
+  font-style: italic;
+  margin-top: 8px;
+}
+
+.extraction-summary-md h1 {
+  font-size: 15px;
+  margin: 0 0 6px;
+}
+
+.extraction-summary-md p {
+  margin: 0 0 4px;
+}

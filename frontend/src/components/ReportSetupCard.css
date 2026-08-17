@@ -1,0 +1,97 @@
+.report-setup-card {
+  background: var(--surface-1, #f9fafb);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 12px;
+  padding: 16px 18px;
+  margin-top: 8px;
+  max-width: 480px;
+}
+
+.report-setup-card.is-generated {
+  opacity: 0.65;
+}
+
+.report-setup-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary, #666);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 14px;
+}
+
+.report-setup-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.report-setup-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.report-setup-field label {
+  font-size: 12px;
+  color: var(--text-secondary, #666);
+  font-weight: 500;
+}
+
+.report-setup-field input[type="date"],
+.report-setup-field input[type="text"],
+.report-setup-field select {
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+  background: var(--surface-0, #fff);
+  color: var(--text-primary, #222);
+  outline: none;
+  transition: border-color 0.15s;
+  width: 100%;
+}
+
+.report-setup-field input:focus,
+.report-setup-field select:focus {
+  border-color: var(--accent, #111827);
+  box-shadow: 0 0 0 3px rgba(17, 24, 39, 0.06);
+}
+
+.report-setup-field input:disabled,
+.report-setup-field select:disabled {
+  background: var(--surface-1, #f3f4f6);
+  cursor: not-allowed;
+}
+
+.report-setup-divider {
+  height: 1px;
+  background: var(--border, #e5e7eb);
+  margin: 4px 0;
+}
+
+.report-setup-actions {
+  margin-top: 14px;
+}
+
+.report-setup-btn-generate {
+  background: var(--accent, #111827);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 20px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.report-setup-btn-generate:hover {
+  background: var(--accent-hover, #1f2937);
+}
+
+.report-setup-done {
+  font-size: 13px;
+  color: var(--success, #16a34a);
+  font-weight: 600;
+}

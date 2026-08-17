@@ -1,0 +1,45 @@
+.ap-modal-pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  max-height: min(280px, 40vh);
+  overflow-y: auto;
+}
+
+.ap-modal-pick-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  color: #111827;
+}
+
+.ap-modal-pick-row:hover {
+  border-color: #d1d5db;
+  background: #f9fafb;
+}
+
+.ap-modal-pick-row--active {
+  border-color: #ca8a04;
+  background: #fefce8;
+}
+
+.ap-modal-pick-row-label {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.ap-modal-pick-check {
+  flex-shrink: 0;
+  color: #ca8a04;
+}

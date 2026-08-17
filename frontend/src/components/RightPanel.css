@@ -1,0 +1,459 @@
+/* ─── Right Panel Container ───────────────────────────────────────────────── */
+
+.right-panel-container {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  border-left: 1px solid #e5e7eb;
+  overflow: hidden;
+}
+
+.right-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  padding: 0 16px;
+  border-bottom: 1px solid #e5e7eb;
+  flex-shrink: 0;
+}
+
+.right-panel-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #374151;
+  flex: 1;
+}
+
+.right-panel-mode-badge {
+  display: inline-block;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 5px;
+}
+
+.right-panel-close-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 1.1rem;
+  color: #9ca3af;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.15s;
+  line-height: 1;
+}
+
+.right-panel-close-btn:hover {
+  color: #374151;
+  background: #f3f4f6;
+}
+
+.right-panel-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+}
+
+.right-panel-empty {
+  padding: 2rem 1.5rem;
+  text-align: center;
+  color: #9ca3af;
+}
+
+.right-panel-empty p {
+  margin: 0.35rem 0;
+  font-size: 0.9rem;
+}
+
+.right-panel-hint {
+  font-size: 0.78rem !important;
+}
+
+.recon-content {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ─── MD Record Viewer ────────────────────────────────────────────────────── */
+
+.md-record-viewer {
+  padding: 16px 18px;
+  font-size: 0.85rem;
+  line-height: 1.7;
+  color: #374151;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.md-record-viewer h1 {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #111827;
+  margin: 0 0 6px;
+  padding-bottom: 6px;
+  border-bottom: 2px solid #e5e7eb;
+}
+
+.md-record-viewer h2 {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #1f2937;
+  margin: 16px 0 6px;
+}
+
+.md-record-viewer h3 {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #374151;
+  margin: 12px 0 4px;
+}
+
+.md-record-viewer hr {
+  border: none;
+  border-top: 1px solid #e5e7eb;
+  margin: 10px 0;
+}
+
+.md-record-viewer p {
+  margin: 4px 0;
+}
+
+.md-record-viewer li {
+  margin: 3px 0 3px 16px;
+  list-style: disc;
+  font-size: 0.82rem;
+  color: #4b5563;
+}
+
+.md-record-viewer code {
+  background: #f1f5f9;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  font-family: 'Courier New', monospace;
+}
+
+.md-record-viewer strong {
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.md-table-wrapper {
+  width: 100%;
+  overflow-x: auto;
+  margin: 8px 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.md-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+  table-layout: auto;
+}
+
+.md-table th {
+  background: #f9fafb;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #374151;
+  padding: 6px 10px;
+  border-bottom: 1px solid #e5e7eb;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.md-table td {
+  padding: 5px 10px;
+  border-bottom: 1px solid #f3f4f6;
+  color: #374151;
+  white-space: nowrap;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.md-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.md-table tbody tr:hover td {
+  background: #f9fafb;
+}
+
+.md-empty {
+  padding: 2rem 1.5rem;
+  text-align: center;
+  color: #9ca3af;
+}
+
+.md-empty p {
+  margin: 0.35rem 0;
+  font-size: 0.9rem;
+}
+
+.md-empty-hint {
+  font-size: 0.78rem !important;
+}
+
+/* ─── RECON Right Panel ────────────────────────────────────────────────────── */
+
+/* Single scroll region: .right-panel-content below header / dup banner */
+.recon-right-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Duplicate alerts banner */
+.recon-dup-banner {
+  flex-shrink: 0;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fffbeb;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.recon-dup-banner-item {
+  padding: 8px 12px;
+  border-left: 3px solid #f59e0b;
+  margin: 4px 8px;
+  border-radius: 0 6px 6px 0;
+  background: #ffffff;
+}
+
+.recon-dup-banner-L2,
+.recon-dup-banner-L4 {
+  border-left-color: #ef4444;
+  background: #fff5f5;
+}
+
+.recon-dup-banner-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #92400e;
+  margin-bottom: 3px;
+}
+
+.recon-dup-banner-L2 .recon-dup-banner-header,
+.recon-dup-banner-L4 .recon-dup-banner-header {
+  color: #991b1b;
+}
+
+.recon-dup-banner-tag {
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.recon-dup-banner-msg {
+  font-size: 11px;
+  color: #374151;
+  margin-bottom: 5px;
+}
+
+.recon-dup-banner-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.recon-dup-banner-actions button {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  border: 1px solid #d1d5db;
+  background: #ffffff;
+  cursor: pointer;
+  color: #374151;
+  transition: background 0.12s;
+}
+
+.recon-dup-banner-actions button:hover {
+  background: #f3f4f6;
+}
+
+.recon-right-panel > .right-panel-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.recon-records-split {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+}
+
+.recon-records-frame {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+/* Clickable toggle header */
+.recon-records-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #374151;
+  background: #f8fafc;
+  border: none;
+  border-bottom: 1px solid transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s;
+  font-family: inherit;
+}
+
+.recon-records-toggle:hover {
+  background: #f1f5f9;
+}
+
+/* Show bottom border only when expanded */
+.recon-records-frame:has(.recon-records-scroll) .recon-records-toggle {
+  border-bottom-color: #e5e7eb;
+}
+
+.recon-chevron {
+  display: inline-block;
+  font-size: 13px;
+  font-weight: 700;
+  color: #9ca3af;
+  transition: transform 0.15s ease;
+  transform: rotate(0deg);
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.recon-chevron.open {
+  transform: rotate(90deg);
+}
+
+.recon-records-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #e5e7eb;
+  color: #6b7280;
+  font-size: 10px;
+  font-weight: 600;
+  min-width: 18px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  margin-left: auto;
+}
+
+.recon-records-scroll {
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+/* Results area below the accordions */
+.recon-results-area {
+  padding: 8px 12px 12px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.recon-result-block {
+  margin-bottom: 12px;
+}
+
+.recon-section-header {
+  font-size: 11px;
+  font-weight: 600;
+  color: #374151;
+  padding: 4px 0;
+  border-bottom: 1px solid #e5e7eb;
+  margin-bottom: 6px;
+}
+
+/* ─── Tap-to-add button on recon chips ──────────────────────────────────────── */
+.recon-chip {
+  position: relative;
+}
+.recon-chip-add-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.85);
+  color: #374151;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: background 0.15s, transform 0.1s;
+  -webkit-tap-highlight-color: transparent;
+}
+.recon-chip-add-btn:hover {
+  background: #3b82f6;
+  color: #fff;
+  border-color: #3b82f6;
+}
+.recon-chip-add-btn:active {
+  transform: scale(0.9);
+}
+
+/* ─── Responsive table scroll ───────────────────────────────────────────────── */
+@media (max-width: 1023px) {
+  .right-panel-content {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .recon-results-area {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .md-table-wrapper {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* Scroll-to-table highlight (wrapper around BankStatementReview / ARAPReview) */
+.ocr-review-table-anchor.ocr-table-highlight {
+  animation: ocr-table-highlight-fade 1.5s ease-out;
+  border-radius: 8px;
+  outline: 2px solid transparent;
+}
+
+@keyframes ocr-table-highlight-fade {
+  0% {
+    outline-color: #facc15;
+    background-color: rgba(254, 240, 138, 0.35);
+  }
+  100% {
+    outline-color: transparent;
+    background-color: transparent;
+  }
+}

@@ -1,0 +1,40 @@
+/*
+ * Legacy design tokens - rollback snapshot for the ERP UI migration.
+ * Import this instead of tokens.css (or set VITE_UI_THEME=legacy) to restore
+ * the pre-ERP look. Kept byte-for-byte in sync with the original tokens.css.
+ */
+:root {
+  --color-action-primary: #111827;
+  --color-action-primary-fg: #ffffff;
+  --color-action-hover: #1f2937;
+
+  --color-ar: #22c55e;
+  --color-ap: #eab308;
+  --color-bank: #9333ea;
+
+  --color-danger: #dc2626;
+  --color-danger-bg: #fef2f2;
+  --color-danger-fg: #b91c1c;
+
+  --color-bg: #ffffff;
+  --color-sidebar-bg: #f9fafb;
+  --color-surface: #ffffff;
+  --color-border: #e5e7eb;
+  --color-border-strong: #cbd5e1;
+
+  --color-text-primary: #111827;
+  --color-text-secondary: #4b5563;
+  --color-text-muted: #6b7280;
+
+  --accent: #111827;
+  --accent-hover: #1f2937;
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-pill: 999px;
+
+  --sidebar-width: 260px;
+  --controls-width: 380px;
+}

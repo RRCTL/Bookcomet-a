@@ -1,0 +1,372 @@
+/* ── Dashboard overlay ─────────────────────────────────────────────────────── */
+.dashboard-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--color-bg, #f3f4f6);
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.dashboard-page {
+  max-width: 960px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+/* ── Header ────────────────────────────────────────────────────────────────── */
+.dashboard-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.dashboard-title {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: var(--color-text-primary, #0f172a);
+  margin: 0 0 4px;
+  letter-spacing: -0.02em;
+}
+
+.dashboard-subtitle {
+  font-size: 0.9rem;
+  color: var(--color-text-muted, #6b7280);
+  margin: 0;
+}
+
+.dashboard-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+/* Period toggle */
+.period-toggle {
+  display: flex;
+  background: #ffffff;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.period-btn {
+  padding: 7px 16px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted, #6b7280);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.period-btn:hover {
+  background: #f9fafb;
+  color: var(--color-text-primary, #0f172a);
+}
+
+.period-btn.active {
+  background: #111827;
+  color: #ffffff;
+}
+
+.dashboard-close {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border, #e5e7eb);
+  background: #ffffff;
+  color: var(--color-text-muted, #6b7280);
+  font-size: 1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+}
+
+.dashboard-close:hover {
+  background: #f9fafb;
+  color: var(--color-text-primary, #0f172a);
+}
+
+/* ── Loading / Error states ────────────────────────────────────────────────── */
+.dashboard-error-banner {
+  padding: 10px 16px;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: var(--radius-md, 8px);
+  color: #c2410c;
+  font-size: 0.85rem;
+}
+
+/* Dimmed state while fetching new period */
+.dashboard-content--loading {
+  opacity: 0.45;
+  pointer-events: none;
+  transition: opacity 0.2s;
+}
+
+/* Skeleton shimmer for loading values */
+.metric-skeleton {
+  display: inline-block;
+  height: 1em;
+  width: 60px;
+  background: linear-gradient(90deg, #e5e7eb 25%, #f3f4f6 50%, #e5e7eb 75%);
+  background-size: 200% 100%;
+  border-radius: 4px;
+  animation: shimmer 1.2s infinite;
+  vertical-align: middle;
+}
+
+.metric-skeleton--sm {
+  width: 40px;
+  height: 0.8em;
+}
+
+@keyframes shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ── Content ───────────────────────────────────────────────────────────────── */
+.dashboard-content {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+/* ── Top metric cards ──────────────────────────────────────────────────────── */
+.metric-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+@media (max-width: 720px) {
+  .metric-cards {
+    grid-template-columns: 1fr;
+  }
+}
+
+.metric-card {
+  background: #ffffff;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: var(--radius-lg, 12px);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  position: relative;
+  overflow: hidden;
+}
+
+.metric-card-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+.metric-card-icon--pages {
+  background: #eff6ff;
+  color: #2563eb;
+}
+
+.metric-card-icon--ai {
+  background: #f0fdf4;
+  color: #16a34a;
+}
+
+.metric-card-icon--cost {
+  background: #fffbeb;
+  color: #d97706;
+}
+
+.metric-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.metric-value {
+  font-size: 2.25rem;
+  font-weight: 700;
+  color: var(--color-text-primary, #0f172a);
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+
+.metric-value--small {
+  font-size: 1.75rem;
+}
+
+.metric-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-text-muted, #6b7280);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-top: 4px;
+}
+
+.metric-sub {
+  font-size: 0.8rem;
+  color: var(--color-text-muted, #6b7280);
+  margin-top: 2px;
+}
+
+/* Completion rate bar */
+.metric-card-bar {
+  height: 4px;
+  background: #f3f4f6;
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+.metric-card-bar-fill {
+  height: 100%;
+  background: #22c55e;
+  border-radius: 2px;
+  transition: width 0.6s ease;
+  min-width: 2px;
+}
+
+/* ── Mode section ──────────────────────────────────────────────────────────── */
+.mode-section-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--color-text-primary, #0f172a);
+  margin: 0 0 14px;
+}
+
+.mode-cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+@media (max-width: 720px) {
+  .mode-cards {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.mode-card {
+  background: #ffffff;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: var(--radius-lg, 12px);
+  padding: 20px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  position: relative;
+  overflow: hidden;
+  transition: box-shadow 0.15s;
+}
+
+.mode-card:hover {
+  box-shadow: 0 4px 12px rgba(0,0,0,0.06);
+}
+
+.mode-card--empty {
+  opacity: 0.55;
+}
+
+.mode-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.mode-card-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.mode-card-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text-secondary, #374151);
+  flex: 1;
+  min-width: 0;
+}
+
+.mode-card-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.mode-card-stats {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.mode-stat {
+  flex: 1;
+  text-align: center;
+}
+
+.mode-stat-value {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--color-text-primary, #0f172a);
+  letter-spacing: -0.02em;
+}
+
+.mode-stat-label {
+  font-size: 0.7rem;
+  color: var(--color-text-muted, #6b7280);
+  margin-top: 2px;
+}
+
+.mode-stat-divider {
+  width: 1px;
+  height: 32px;
+  background: var(--color-border, #e5e7eb);
+  flex-shrink: 0;
+}
+
+/* Colored left accent bar */
+.mode-card-accent {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 12px 0 0 12px;
+}
+
+/* ── Footer note ───────────────────────────────────────────────────────────── */
+.dashboard-footer-note {
+  font-size: 0.75rem;
+  color: var(--color-text-muted, #6b7280);
+  margin: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-border, #e5e7eb);
+}

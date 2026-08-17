@@ -1,0 +1,926 @@
+/* ─── Root container ─────────────────────────────────────────────────────────── */
+.frv-root {
+  font-size: 13px;
+  color: var(--text-primary, #1a1a2e);
+  background: var(--surface-0, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 10px;
+  overflow: hidden;
+  margin-top: 8px;
+}
+
+.frv-gl-strip {
+  padding: 8px 14px;
+  font-size: 12px;
+  background: #ecfeff;
+  border-bottom: 1px solid #a5f3fc;
+  color: #0e7490;
+}
+
+.frv-gl-strip.has-draft {
+  background: #fffbeb;
+  border-bottom-color: #fcd34d;
+  color: #92400e;
+}
+
+.frv-gl-draft-flag {
+  font-weight: 700;
+}
+
+.frv-gl-strip-vouchers {
+  color: #64748b;
+  font-size: 11px;
+}
+
+.frv-gl-superseded {
+  margin: 0;
+  padding: 8px 14px;
+  font-size: 12px;
+  background: #f8fafc;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+}
+
+.frv-gl-superseded summary {
+  cursor: pointer;
+  color: #475569;
+}
+
+.frv-gl-superseded-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.frv-gl-superseded-item {
+  margin-bottom: 10px;
+}
+
+.frv-gl-superseded-strike {
+  text-decoration: line-through;
+  color: #94a3b8;
+  font-weight: 600;
+  margin-right: 8px;
+}
+
+.frv-gl-superseded-by {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.frv-gl-superseded-lines {
+  margin: 4px 0 0 16px;
+  padding-left: 14px;
+  font-size: 11px;
+  color: #64748b;
+}
+
+.frv-txn-badge-draft {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.frv-txn-badge-posted {
+  background: #d1fae5;
+  color: #047857;
+}
+
+/* ─── Header ─────────────────────────────────────────────────────────────────── */
+.frv-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  background: var(--surface-1, #f8fafc);
+}
+
+.frv-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary, #1a1a2e);
+}
+
+.frv-subtitle {
+  font-size: 11px;
+  color: var(--text-secondary, #64748b);
+  margin-top: 2px;
+}
+
+.frv-header-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.frv-btn {
+  border: none;
+  border-radius: 8px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.frv-btn:hover { opacity: 0.85; }
+
+.frv-btn-csv {
+  background: var(--surface-2, #e2e8f0);
+  color: var(--text-primary, #1a1a2e);
+}
+
+.frv-btn-print {
+  background: var(--accent, #111827);
+  color: #fff;
+}
+
+/* ─── Tabs ────────────────────────────────────────────────────────────────────── */
+.frv-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  padding: 0 8px;
+  background: var(--surface-0, #fff);
+}
+
+.frv-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 9px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary, #64748b);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  margin-bottom: -1px;
+}
+
+.frv-tab:hover { color: var(--accent, #111827); }
+
+.frv-tab.active {
+  color: var(--accent, #111827);
+  border-bottom-color: var(--accent, #111827);
+}
+
+/* ─── Tab content ────────────────────────────────────────────────────────────── */
+.frv-tab-content {
+  padding: 12px 0 4px;
+  overflow-x: auto;
+}
+
+/* ─── Table ──────────────────────────────────────────────────────────────────── */
+.frv-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 0 8px;
+}
+
+@media (max-width: 1023px) {
+  .frv-table th:first-child,
+  .frv-table td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    background: inherit;
+  }
+  .frv-table thead th:first-child {
+    background: var(--surface-1, #f1f5f9);
+  }
+}
+
+.frv-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.frv-table th {
+  background: var(--surface-1, #f1f5f9);
+  color: var(--text-secondary, #475569);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 7px 10px;
+  text-align: left;
+  white-space: nowrap;
+  border-bottom: 2px solid var(--border, #e2e8f0);
+}
+
+.frv-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border, #f1f5f9);
+  vertical-align: top;
+}
+
+.frv-table tr:last-child td { border-bottom: none; }
+
+.frv-table tr:hover td {
+  background: var(--surface-1, #f8fafc);
+}
+
+.num-col {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  min-width: 90px;
+}
+
+.code-col {
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--text-secondary, #64748b);
+  white-space: nowrap;
+  min-width: 60px;
+}
+
+.name-col { min-width: 120px; }
+.name-en {
+  font-size: 11px;
+  color: var(--text-secondary, #94a3b8);
+}
+
+/* ─── Category badges ────────────────────────────────────────────────────────── */
+.frv-cat-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+.cat-asset     { background: #dbeafe; color: #1d4ed8; }
+.cat-liability { background: #fee2e2; color: #b91c1c; }
+.cat-equity    { background: #ede9fe; color: #6d28d9; }
+.cat-income    { background: #dcfce7; color: #15803d; }
+.cat-expense   { background: #fef9c3; color: #92400e; }
+
+/* ─── Total / subtotal rows ──────────────────────────────────────────────────── */
+.frv-total-row td {
+  border-top: 2px solid var(--border, #cbd5e1);
+  font-weight: 700;
+  background: var(--surface-1, #f8fafc);
+}
+
+.frv-total-row .total { color: var(--text-primary, #1a1a2e); }
+
+.frv-subtotal-row td {
+  border-top: 1px solid var(--border, #e2e8f0);
+  font-weight: 600;
+  background: var(--surface-1, #f8fafc);
+}
+
+.frv-subtotal-row .subtotal { color: var(--accent, #111827); }
+
+/* ─── Balanced / unbalanced indicators ─────────────────────────────────────── */
+.frv-balanced   { color: #16a34a; font-weight: 700; font-size: 12px; }
+.frv-unbalanced { color: #dc2626; font-weight: 700; font-size: 12px; }
+
+/* ─── Transaction expand ─────────────────────────────────────────────────────── */
+.frv-txn-expand { margin-top: 2px; }
+
+.frv-txn-toggle {
+  background: none;
+  border: none;
+  font-size: 11px;
+  color: var(--text-secondary, #64748b);
+  cursor: pointer;
+  padding: 2px 0;
+  white-space: nowrap;
+}
+
+.frv-txn-toggle.has-unmatched {
+  color: #d97706;
+}
+
+.frv-txn-toggle:hover { color: var(--accent, #111827); }
+
+.frv-txn-list {
+  margin-top: 4px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 5px;
+  overflow: hidden;
+  min-width: 240px;
+}
+
+.frv-txn-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  font-size: 11px;
+  border-bottom: 1px solid var(--border, #f1f5f9);
+}
+
+.frv-txn-row:last-child { border-bottom: none; }
+.frv-txn-row.unmatched { background: #fffbeb; }
+
+.frv-txn-date { color: var(--text-secondary, #94a3b8); white-space: nowrap; }
+.frv-txn-desc { flex: 1; color: var(--text-primary, #374151); }
+.frv-txn-amt  { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+.frv-txn-badge {
+  background: #fef9c3;
+  color: #92400e;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+
+/* ─── Equation / help notes (English-first copy) ─────────────────────────────── */
+.frv-equation-note {
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-secondary, #64748b);
+  padding: 8px 12px;
+  margin: 0 8px 10px;
+  background: var(--surface-1, #f8fafc);
+  border-radius: 6px;
+  border: 1px solid var(--border, #e2e8f0);
+}
+
+.frv-equation-note-zh {
+  display: block;
+  margin-top: 5px;
+  font-size: 10px;
+  color: var(--text-secondary, #94a3b8);
+  font-weight: 500;
+}
+
+/* ─── Accountant single-column statements (P&L / BS · print-friendly) ───────── */
+.frv-acct-doc {
+  max-width: 42rem;
+  margin: 0 auto;
+  padding: 8px 16px 20px;
+  font-size: 13px;
+  color: var(--text-primary, #1a1a2e);
+}
+
+.frv-acct-doc-head {
+  text-align: center;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 2px solid var(--text-primary, #1a1a2e);
+}
+
+.frv-acct-doc-title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.frv-acct-doc-title-zh {
+  margin: 4px 0 0;
+  font-size: 0.92rem;
+  color: var(--text-secondary, #475569);
+}
+
+.frv-acct-doc-meta {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary, #64748b);
+}
+
+.frv-acct-doc-period {
+  margin-top: 4px;
+}
+
+.frv-acct-disclosure {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary, #64748b);
+  margin: 0 0 12px;
+  padding: 6px 10px;
+  background: var(--surface-1, #f8fafc);
+  border-radius: 6px;
+  border: 1px solid var(--border, #e2e8f0);
+}
+
+.frv-acct-disclosure summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text-primary, #475569);
+  padding: 2px 0;
+}
+
+.frv-acct-disclosure[open] summary {
+  margin-bottom: 6px;
+}
+
+.frv-acct-disclosure p {
+  margin: 0;
+  padding-top: 4px;
+  border-top: 1px solid var(--border, #e2e8f0);
+}
+
+.frv-acct-disclosure-zh {
+  display: block;
+  margin-top: 4px;
+  font-size: 10px;
+  color: #94a3b8;
+}
+
+.frv-acct-footnote {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary, #64748b);
+  margin: 0 0 14px;
+  padding: 8px 10px;
+  background: var(--surface-1, #f8fafc);
+  border-radius: 6px;
+  border: 1px solid var(--border, #e2e8f0);
+}
+
+.frv-acct-footnote-compact {
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  font-size: 10px;
+}
+
+.frv-acct-footnote-zh {
+  display: inline;
+  margin-left: 4px;
+  font-size: 10px;
+  color: #94a3b8;
+}
+
+.frv-acct-section {
+  margin-bottom: 20px;
+}
+
+.frv-acct-h3 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary, #64748b);
+  border-bottom: 1px solid var(--border, #cbd5e1);
+  padding-bottom: 4px;
+}
+
+.frv-acct-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.frv-acct-table td {
+  vertical-align: top;
+  padding: 5px 4px 6px;
+  border-bottom: 1px solid var(--border, #f1f5f9);
+}
+
+.frv-acct-td-label {
+  width: 74%;
+}
+
+.frv-acct-td-amt {
+  width: 26%;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.frv-acct-code {
+  display: inline-block;
+  min-width: 2.75rem;
+  margin-right: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary, #64748b);
+  font-variant-numeric: tabular-nums;
+}
+
+.frv-acct-name-en {
+  display: block;
+  font-weight: 500;
+}
+
+.frv-acct-name-zh {
+  display: block;
+  font-size: 11px;
+  color: var(--text-secondary, #64748b);
+  margin-top: 2px;
+}
+
+.frv-acct-note-ref {
+  font-weight: 600;
+  color: #b45309;
+}
+
+.frv-acct-tr-suspense .frv-acct-td-label {
+  background: #fffbeb;
+  border-left: 3px solid #f59e0b;
+  padding-left: 8px;
+}
+
+.frv-acct-tr-subtotal td {
+  border-bottom: 1px solid var(--border, #cbd5e1);
+  background: var(--surface-1, #f8fafc);
+}
+
+.frv-acct-tr-double td {
+  border-top: 3px double var(--text-primary, #334155);
+  border-bottom: 1px solid var(--text-primary, #334155);
+  padding-top: 8px;
+  padding-bottom: 8px;
+  background: var(--surface-1, #f1f5f9);
+}
+
+.frv-acct-tr-nil .frv-acct-nil {
+  font-style: italic;
+  color: #94a3b8;
+}
+
+.frv-acct-tr-net-assets td {
+  border-top: 2px solid var(--border, #94a3b8);
+  border-bottom: 2px solid var(--border, #94a3b8);
+  padding: 10px 4px;
+  background: #f8fafc;
+}
+
+.frv-acct-bs-net-assets {
+  margin-bottom: 20px;
+}
+
+.frv-acct-pl-bottom {
+  margin-top: 8px;
+}
+
+.frv-acct-tr-pl-result td {
+  border-top: 3px double var(--text-primary, #1a1a2e);
+  padding: 12px 4px !important;
+}
+
+.frv-acct-tr-pl-result.profit td {
+  background: #ecfdf5;
+}
+
+.frv-acct-tr-pl-result.loss td {
+  background: #fef2f2;
+}
+
+.frv-acct-bs-check {
+  margin-top: 10px;
+}
+
+/* ─── Balance sheet — at-a-glance (equation + jump to equity) ───────────────── */
+.frv-bs-at-a-glance {
+  margin: 0 0 18px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #cbd5e1);
+  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+}
+
+.frv-bs-at-a-glance.balanced {
+  border-color: #86efac;
+  background: linear-gradient(180deg, #f0fdf4 0%, #ecfdf5 100%);
+}
+
+.frv-bs-at-a-glance.unbalanced {
+  border-color: #fca5a5;
+  background: linear-gradient(180deg, #fef2f2 0%, #fee2e2 100%);
+}
+
+.frv-bs-glance-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary, #64748b);
+  margin-bottom: 8px;
+}
+
+.frv-bs-glance-row2 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.frv-bs-glance-status {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.frv-bs-glance-status.ok { color: #15803d; }
+
+.frv-bs-glance-status.bad { color: #b91c1c; }
+
+.frv-bs-jump-equity {
+  border: 1px solid var(--border, #94a3b8);
+  background: #fff;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary, #334155);
+  cursor: pointer;
+}
+
+.frv-bs-jump-equity:hover {
+  background: var(--surface-1, #f8fafc);
+  border-color: #64748b;
+}
+
+.frv-bs-glance-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.frv-bs-glance-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border, #e8eef4);
+}
+
+.frv-bs-glance-table .frv-bs-glance-amt {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+  width: 36%;
+}
+
+.frv-bs-glance-split td {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary, #94a3b8);
+  background: var(--surface-1, #f8fafc);
+  border-bottom: 1px solid var(--border, #cbd5e1);
+}
+
+.frv-bs-glance-total td {
+  border-top: 2px solid var(--border, #94a3b8);
+  border-bottom: none;
+  padding-top: 8px;
+  background: var(--surface-1, #f1f5f9);
+}
+
+.frv-bs-equity-anchor {
+  scroll-margin-top: 12px;
+}
+
+/* ─── Income Statement ───────────────────────────────────────────────────────── */
+.frv-statement { padding: 0 8px 12px; }
+
+.frv-section { margin-bottom: 16px; }
+
+.frv-section-header {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary, #64748b);
+  padding: 6px 4px 4px;
+  border-bottom: 2px solid var(--border, #e2e8f0);
+  margin-bottom: 0;
+}
+
+.frv-empty-inline {
+  color: var(--text-secondary, #94a3b8);
+  font-style: italic;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.frv-net-result {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 7px;
+  font-weight: 700;
+  font-size: 14px;
+  margin-top: 4px;
+}
+
+.frv-net-result.profit { background: #dcfce7; color: #15803d; }
+.frv-net-result.loss   { background: #fee2e2; color: #b91c1c; }
+
+.frv-net-amount { font-size: 16px; font-variant-numeric: tabular-nums; }
+
+/* ─── Balance Sheet ──────────────────────────────────────────────────────────── */
+.frv-balance-sheet {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 16px;
+}
+
+.frv-bs-equation-top {
+  grid-column: 1 / -1;
+  margin-bottom: 4px;
+}
+
+.frv-bs-col { min-width: 0; }
+
+.frv-bs-col-title {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 4px 8px;
+  color: var(--text-primary, #1a1a2e);
+  border-bottom: 2px solid var(--border, #e2e8f0);
+  margin-bottom: 8px;
+}
+
+.frv-bs-total {
+  font-size: 13px;
+  font-weight: 700;
+  padding: 8px 10px;
+  background: var(--surface-1, #f8fafc);
+  border-top: 2px solid var(--border, #cbd5e1);
+  text-align: right;
+  border-radius: 0 0 5px 5px;
+}
+
+.frv-bs-total-grand {
+  margin-top: 8px;
+  border-top: 3px solid var(--border, #94a3b8);
+  background: var(--surface-2, #f1f5f9);
+}
+
+.frv-bs-net-income {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 10px;
+  background: #f0fdf4;
+  color: #15803d;
+  text-align: right;
+}
+
+.frv-bs-check {
+  grid-column: 1 / -1;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 8px;
+  margin-top: 8px;
+  border-radius: 5px;
+}
+
+.frv-bs-check.balanced   { background: #dcfce7; color: #15803d; }
+.frv-bs-check.unbalanced { background: #fee2e2; color: #b91c1c; }
+
+/* ─── Empty state ────────────────────────────────────────────────────────────── */
+.frv-empty {
+  padding: 24px 16px;
+  text-align: center;
+  max-width: 36rem;
+  margin: 0 auto;
+}
+
+.frv-empty-lead {
+  font-size: 13px;
+  font-weight: 600;
+  font-style: normal;
+  color: var(--text-primary, #374151);
+  margin: 0 0 8px;
+  line-height: 1.45;
+}
+
+.frv-empty-sub {
+  font-size: 12px;
+  font-style: normal;
+  color: var(--text-secondary, #64748b);
+  margin: 0;
+  line-height: 1.55;
+}
+
+/* ─── Footer ─────────────────────────────────────────────────────────────────── */
+.frv-footer {
+  padding: 8px 16px;
+  font-size: 11px;
+  color: var(--text-secondary, #94a3b8);
+  border-top: 1px solid var(--border, #e2e8f0);
+  text-align: right;
+}
+
+/* ─── Suspense account styles ────────────────────────────────────────────────── */
+
+/* Warning strip shown above tab content when suspense items exist */
+.frv-suspense-warning {
+  margin: 0 16px 0;
+  padding: 10px 14px;
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #92400e;
+}
+
+.frv-suspense-warning-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.frv-suspense-warning-zh {
+  display: block;
+  margin-top: 5px;
+  font-weight: 500;
+  font-size: 11px;
+  color: #78716c;
+}
+
+.frv-suspense-warning-list {
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.7;
+}
+
+/* Suspense row in trial balance / balance sheet tables */
+.frv-suspense-row {
+  background: #fffbeb;
+  border-left: 3px solid #f59e0b;
+}
+
+.frv-suspense-row td:first-child {
+  padding-left: 9px;
+}
+
+/* Suspense pill badge */
+.frv-suspense-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  background: #fef3c7;
+  color: #b45309;
+  border: 1px solid #fcd34d;
+  vertical-align: middle;
+}
+
+/* Suspense section header in balance sheet */
+.frv-suspense-section-header {
+  color: #92400e;
+  border-bottom-color: #fcd34d;
+  background: #fffbeb;
+}
+
+.frv-suspense-bs-section {
+  margin-top: 8px;
+}
+
+/* Transaction list reason badges */
+.frv-txn-badge-recon {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.frv-txn-badge-both {
+  background: #fce7f3;
+  color: #9d174d;
+}
+
+/* ─── Print styles ───────────────────────────────────────────────────────────── */
+@media print {
+  body > *:not(.app-shell) { display: none !important; }
+  .app-shell > *:not(.chat-shell) { display: none !important; }
+  .top-bar, .sidebar-panel, .composer, .preview-panel { display: none !important; }
+
+  .frv-root {
+    border: none;
+    box-shadow: none;
+    font-size: 11px;
+  }
+
+  .frv-header-actions,
+  .frv-tabs {
+    display: none !important;
+  }
+
+  .frv-tab-content .frv-table-wrap:not(:first-child) { display: none; }
+
+  .frv-txn-expand { display: none !important; }
+  .frv-txn-list { display: none; }
+  .frv-txn-toggle { display: none; }
+
+  .frv-table th, .frv-table td { padding: 4px 6px; }
+
+  .frv-acct-doc {
+    max-width: 100%;
+    padding: 0 8mm 8mm;
+    font-size: 10.5pt;
+  }
+
+  .frv-acct-doc-head {
+    border-bottom-color: #000;
+  }
+
+  .frv-acct-table td { padding: 3px 4px; }
+
+  .frv-no-print {
+    display: none !important;
+  }
+}

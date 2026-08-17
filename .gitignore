@@ -1,0 +1,84 @@
+# Project root .gitignore
+
+# Binary dependencies (too large for git)
+bin/poppler/
+!bin/README.md
+
+# Keep directory structure
+!bin/.gitkeep
+
+# Large sample/binary files
+backend/stripe.exe
+**/stripe.exe
+*.zip
+*.pdf
+
+# Environment files and local secrets
+.env
+.env.*
+!.env.example
+!*.env.example
+# Misnamed local secrets file (must never be committed)
+backend/env
+/env
+
+# Runtime databases and generated caches
+*.db
+*.sqlite
+*.sqlite3
+__pycache__/
+*.py[cod]
+*.log
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Cursor IDE internal files
+.cursor/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Documentation outputs (generated files)
+*.pdf.backup
+
+# Backend runtime folders (covered by backend/.gitignore but also exclude at root)
+backend/uploads/
+backend/logs/
+backend/tmp/
+backend/temp/
+backend/transactions/
+backend/hsbc_debug/
+backend/docs/*.pdf.json
+backend/**/__pycache__/
+backend/**/*.py[cod]
+backend/*.db
+backend/*.sqlite
+backend/*.sqlite3
+
+# Frontend generated files
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# Third-party reference dumps (local only; do not publish)
+refer/
+
+# Product landing preview (extracted locally)
+bookcomet-oss-preview/
+
+# Cloudflare named-tunnel credentials (see dev/cloudflare-tunnel/config.example.yml)
+dev/cloudflare-tunnel/tunnel-credentials.json
+
+# Personal IDE workspace files
+*.code-workspace

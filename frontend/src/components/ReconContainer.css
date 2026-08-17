@@ -1,0 +1,268 @@
+/* ── Match bar — pinned composer area for RECON mode ── */
+.recon-matchbar {
+  border-top: 1px solid #e5e7eb;
+  background: #ffffff;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* Drop zone */
+.recon-drop-zone {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: flex-start;
+  padding: 8px 16px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f9fafb;
+  min-height: 44px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.recon-drop-zone-empty {
+  align-items: center;
+}
+
+.recon-drop-placeholder {
+  font-size: 13px;
+  color: #9ca3af;
+  user-select: none;
+}
+
+/* Input wrapper */
+.recon-composer-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: #ffffff;
+  border-bottom: 1px solid #f3f4f6;
+  min-height: 44px;
+}
+
+.recon-text-input {
+  flex: 1;
+  border: none;
+  padding: 0;
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  background: transparent;
+  color: #111827;
+}
+
+.recon-text-input::placeholder {
+  color: #9ca3af;
+}
+
+/* Action buttons */
+.recon-composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.recon-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  padding: 5px 10px;
+  cursor: pointer;
+  color: #6b7280;
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: inherit;
+  font-weight: 500;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.recon-action-btn:hover:not(:disabled) {
+  background: #f3f4f6;
+  color: #374151;
+}
+
+.recon-action-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.recon-action-match {
+  background: #2563eb;
+  color: #ffffff;
+  border-radius: 6px;
+  padding: 5px 10px;
+}
+
+.recon-action-match:hover:not(:disabled) {
+  background: #1d4ed8;
+  color: #ffffff;
+}
+
+/* AI Match — primary CTA with gradient */
+.recon-action-ai-match {
+  background: linear-gradient(135deg, #7c3aed, #2563eb);
+  color: #ffffff;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.recon-action-ai-match:hover:not(:disabled) {
+  background: linear-gradient(135deg, #6d28d9, #1d4ed8);
+  color: #ffffff;
+}
+
+.recon-action-ai-match:disabled {
+  background: #9ca3af;
+  opacity: 0.6;
+}
+
+/* Status bar */
+.recon-composer-bottom {
+  padding: 5px 16px;
+  background: #f9fafb;
+  font-size: 11px;
+  color: #6b7280;
+  border-top: 1px solid #f3f4f6;
+}
+
+/* Selected chips in the drop zone */
+.recon-selected-chip {
+  background: #0f172a;
+  color: #ffffff;
+  border-radius: 10px;
+  padding: 4px 8px;
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.recon-selected-chip button {
+  border: none;
+  background: transparent;
+  color: #ffffff;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+}
+
+.recon-selected-chip-locked {
+  background: #14532d;
+  border: 1px solid #16a34a;
+}
+
+.recon-locked-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  background: rgba(134, 239, 172, 0.2);
+  color: #86efac;
+  vertical-align: middle;
+}
+
+/* Pending chips (used in right panel frames) */
+.recon-chip {
+  border-radius: 8px;
+  padding: 6px 8px;
+  cursor: grab;
+  border: 1px solid transparent;
+  display: flex;
+  flex-direction: column;
+}
+
+.recon-chip-source {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+
+.recon-chip-bank {
+  background: #ecfeff;
+  border-color: #a5f3fc;
+}
+
+.recon-chip-title {
+  font-size: 12px;
+  color: #0f172a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recon-chip-meta {
+  font-size: 11px;
+  color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recon-chip-disabled {
+  opacity: 0.65;
+}
+
+/* Match badge */
+.recon-match-badge {
+  display: inline-block;
+  margin-left: 5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 1.4;
+  vertical-align: middle;
+}
+
+.recon-match-badge.is-matchable {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.recon-match-badge.is-missing-id {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.recon-kind-tag {
+  display: inline-block;
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  padding: 1px 5px;
+  font-size: 10px;
+}
+
+.recon-empty {
+  font-size: 11px;
+  color: #94a3b8;
+  padding: 8px 0;
+}
+
+/* ─── Touch targets ─────────────────────────────────────────────────────────── */
+.recon-action-btn {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+/* Drop zone horizontal scroll for chips on narrow screens */
+@media (max-width: 639px) {
+  .recon-drop-zone {
+    max-height: 120px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .recon-selected-chip {
+    flex-shrink: 0;
+  }
+}

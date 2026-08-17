@@ -1,0 +1,289 @@
+.spreadsheet-container {
+  background: #fff;
+  border-radius: 8px;
+  padding: 1rem;
+  margin: 1rem 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.spreadsheet-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.btn-export,
+.btn-copy,
+.btn-add-row,
+.btn-remove-row {
+  padding: 0.5rem 1rem;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.btn-export:hover,
+.btn-copy:hover,
+.btn-add-row:hover,
+.btn-remove-row:hover {
+  background: #e2e8f0;
+  border-color: #94a3b8;
+}
+
+.edit-hint {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: #64748b;
+}
+
+.spreadsheet-wrapper {
+  overflow-x: auto;
+  overflow-y: auto;
+  max-height: 500px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  width: 100%;
+  min-width: 0;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+}
+
+.spreadsheet {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+  background: #fff;
+}
+
+.spreadsheet thead {
+  position: sticky;
+  top: 0;
+  background: #f1f5f9;
+  z-index: 10;
+}
+
+.spreadsheet th {
+  padding: 0.75rem 1rem;
+  text-align: left;
+  font-weight: 600;
+  color: #1e293b;
+  border-bottom: 2px solid #cbd5e1;
+  border-right: 1px solid #e2e8f0;
+  white-space: nowrap;
+}
+
+.spreadsheet th:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 11;
+  background: #f1f5f9;
+}
+
+.spreadsheet tbody tr {
+  border-bottom: 1px solid #e2e8f0;
+  transition: background-color 0.2s;
+}
+
+.spreadsheet tbody tr:hover {
+  background-color: #f8fafc;
+}
+
+.spreadsheet tbody tr.expandable-row {
+  cursor: pointer;
+}
+
+.spreadsheet td {
+  padding: 0.625rem 1rem;
+  border-right: 1px solid #e2e8f0;
+  color: #334155;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spreadsheet td.row-number {
+  background: #f8fafc;
+  font-weight: 600;
+  text-align: center;
+  color: #64748b;
+  position: sticky;
+  left: 0;
+  z-index: 5;
+  border-right: 2px solid #cbd5e1;
+}
+
+.spreadsheet td.row-actions {
+  text-align: center;
+  background: #f8fafc;
+  border-right: 1px solid #e2e8f0;
+}
+
+.btn-remove-row {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+}
+
+.spreadsheet td.cell {
+  cursor: pointer;
+  position: relative;
+}
+
+.spreadsheet td.cell:hover {
+  background-color: #f1f5f9;
+  outline: 1px solid #cbd5e1;
+}
+
+.expanded-row-details td {
+  background: #f8fafc;
+  border-right: 1px solid #e2e8f0;
+  border-top: 1px dashed #cbd5e1;
+}
+
+.expanded-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px 14px;
+  padding: 8px 4px;
+}
+
+.expanded-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.expanded-key {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.expanded-value {
+  font-size: 12px;
+  color: #1e293b;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.expanded-empty {
+  font-size: 12px;
+  color: #64748b;
+  padding: 6px 2px;
+}
+
+.spreadsheet td.cell.match-status-cell {
+  text-align: center;
+}
+
+.spreadsheet td.cell.match-status-cell:hover {
+  background-color: #ffffff;
+  outline: none;
+}
+
+.match-status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.spreadsheet td.cell.editing {
+  padding: 0;
+  background-color: #fff;
+  outline: 2px solid #3b82f6;
+}
+
+.cell-input {
+  width: 100%;
+  height: 100%;
+  padding: 0.625rem 1rem;
+  border: none;
+  outline: none;
+  font-size: 0.875rem;
+  font-family: inherit;
+  background: transparent;
+}
+
+.spreadsheet-footer {
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #e2e8f0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.875rem;
+  color: #64748b;
+}
+
+@media (max-width: 639px) {
+  .spreadsheet-container {
+    padding: 0.65rem 0.5rem;
+    margin: 0.5rem 0;
+  }
+  .spreadsheet-actions {
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-bottom: 0.65rem;
+    padding-bottom: 0.5rem;
+  }
+  .spreadsheet {
+    font-size: 0.68rem;
+  }
+  .spreadsheet th {
+    padding: 0.45rem 0.5rem;
+    font-size: 0.65rem;
+  }
+  .spreadsheet td {
+    padding: 0.35rem 0.45rem;
+    max-width: 160px;
+  }
+  .cell-input {
+    font-size: 0.68rem;
+    padding: 0.35rem 0.45rem;
+  }
+  .spreadsheet-footer {
+    font-size: 0.72rem;
+    margin-top: 0.65rem;
+    padding-top: 0.5rem;
+  }
+  .btn-export,
+  .btn-copy,
+  .btn-add-row,
+  .btn-remove-row {
+    padding: 0.35rem 0.55rem;
+    font-size: 0.72rem;
+  }
+}
+
+/* Scrollbar styling */
+.spreadsheet-wrapper::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.spreadsheet-wrapper::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+
+.spreadsheet-wrapper::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+.spreadsheet-wrapper::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}

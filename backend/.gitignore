@@ -1,0 +1,57 @@
+# Environment variables - NEVER commit these!
+.env
+*.env
+!config.env.example
+# Misnamed local secrets file (must never be committed)
+/env
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+uploads/
+logs/
+tmp/
+temp/
+transactions/
+hsbc_debug/
+docs/*.pdf.json
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+env/
+
+# Alembic
+alembic/versions/__pycache__/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Test files
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Temporary files
+tmp/
+temp/
+*.tmp

@@ -1,0 +1,18 @@
+# Named Cloudflare Tunnel: stable hostnames for local dev.
+#
+# 1. Create a tunnel in Cloudflare Zero Trust → Networks → Tunnels.
+# 2. Download the tunnel credentials JSON into this folder (gitignored) and set credentials-file below.
+# 3. Add public hostnames in the dashboard pointing to this tunnel, matching ingress rules.
+# 4. Run: cloudflared tunnel --config path/to/config.yml run
+#
+# Replace TUNNEL_UUID with your tunnel id and fix credentials-file path.
+
+tunnel: TUNNEL_UUID
+credentials-file: ./tunnel-credentials.json
+
+ingress:
+  - hostname: dev-api.example.com
+    service: http://127.0.0.1:8000
+  - hostname: dev.example.com
+    service: http://127.0.0.1:5173
+  - service: http_status:404

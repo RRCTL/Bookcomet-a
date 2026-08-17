@@ -1,0 +1,29 @@
+/* Node workspace base — maps to Open WebUI / ow tokens */
+
+.node-workspace {
+  --wf-edge: #94a3b8;
+  --wf-accent: #111827;
+  --wf-canvas-dot: #9ca3af;
+
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg);
+  color: var(--color-text-primary);
+  overflow: hidden;
+  font-size: 13px;
+}
+
+html.dark .node-workspace {
+  --wf-edge: #6b7280;
+  --wf-accent: #f3f4f6;
+  --wf-canvas-dot: #374151;
+}
+
+.node-workspace button,
+.node-workspace select,
+.node-workspace input,
+.node-workspace textarea {
+  font-family: inherit;
+  font-size: 12px;
+}

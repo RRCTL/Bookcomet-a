@@ -1,0 +1,82 @@
+.report-gl-draft-pick {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid #c4b5fd;
+  border-radius: 10px;
+  background: #f5f3ff;
+  font-size: 13px;
+}
+
+.report-gl-draft-pick-title {
+  font-weight: 600;
+  color: #5b21b6;
+  margin-bottom: 10px;
+}
+
+.report-gl-draft-pick-zh {
+  font-weight: 400;
+  color: #6d28d9;
+}
+
+.report-gl-draft-pick-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.report-gl-draft-pick-group {
+  margin-top: 10px;
+}
+
+.report-gl-draft-pick-group-key {
+  font-size: 12px;
+  color: #64748b;
+  margin-bottom: 6px;
+}
+
+.report-gl-draft-pick-group-key code {
+  font-size: 11px;
+  background: #fff;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.report-gl-draft-pick-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.report-gl-draft-pick-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 12px;
+  border: 1px solid #a78bfa;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s;
+}
+
+.report-gl-draft-pick-btn:hover {
+  background: #ede9fe;
+}
+
+.report-gl-draft-pick-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6d28d9;
+}
+
+.report-gl-draft-pick-vno {
+  font-weight: 700;
+  color: #1e1b4b;
+}
+
+.report-gl-draft-pick-meta {
+  font-size: 11px;
+  color: #64748b;
+}

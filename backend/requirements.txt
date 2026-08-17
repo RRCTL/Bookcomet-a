@@ -1,0 +1,40 @@
+﻿fastapi==0.141.1
+starlette>=1.3.1
+uvicorn[standard]==0.30.6
+python-multipart==0.0.31
+python-dotenv==1.2.2
+sqlalchemy==2.0.25
+alembic==1.13.1
+# SEC-CODE-007: SQLite at-rest encryption when DATABASE_PASSWORD is set
+sqlcipher3==0.6.2
+psycopg2-binary==2.9.9
+asyncpg==0.29.0
+redis>=5.0.0
+
+# Authentication
+python-jose[cryptography]>=3.3.0
+# Pin below 50 until fastapi-mail allows cryptography>=50 (PYSEC-2026-3552 tracked).
+cryptography>=49.0.0,<50.0.0
+bcrypt>=4.0.0
+# SEC-CODE-009: optional TOTP MFA
+pyotp>=2.9.0
+fastapi-mail>=1.6.5
+pydantic[email]>=2.0.0
+
+# AI/ML
+# Note: We use requests library directly for AI enhancement API (see ai_enhance_client.py)
+# OpenAI SDK is no longer used to avoid httpx compatibility issues with that SDK
+# openai>=1.0.0  # Optional: Keep if needed for other features
+requests>=2.31.0  # Required for DeepSeek API calls
+httpx>=0.27.0  # Required by Starlette/FastAPI TestClient (pytest)
+
+
+# PDF Processing
+PyMuPDF>=1.24.0    # Convert PDF to images (no external dependencies)
+Pillow>=10.0.0     # Image processing
+# Bank/VLM pipelines (RGBâ†’BGR, JPEG write, overlays) â€” used by bank_statement_parser, ocr
+opencv-python-headless>=4.10.0
+
+# Bank statements (Excel/CSV parsing)
+pandas>=2.0.0
+

@@ -1,0 +1,135 @@
+/* ── Company Picker Modal ────────────────────────────────────────────────── */
+
+.cpicker-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 24px;
+  animation: cpicker-fade-in 0.15s ease;
+}
+
+@keyframes cpicker-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.cpicker-card {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  padding: 32px 28px;
+  width: 100%;
+  max-width: 400px;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.12);
+  animation: cpicker-slide-up 0.2s ease;
+}
+
+@keyframes cpicker-slide-up {
+  from { transform: translateY(12px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+/* ── Logo header ─────────────────────────────────────────────────────────── */
+
+.cpicker-logo {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+
+.cpicker-logo h1 {
+  font-size: 17px;
+  font-weight: 600;
+  color: #0f172a;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+
+.cpicker-logo p {
+  font-size: 13px;
+  color: #6b7280;
+  margin: 0;
+}
+
+/* ── Company list ────────────────────────────────────────────────────────── */
+
+.cpicker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cpicker-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s, border-color 0.12s, box-shadow 0.12s;
+  font-family: inherit;
+}
+
+.cpicker-item:hover {
+  background: #f3f4f6;
+  border-color: #d1d5db;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+}
+
+.cpicker-item:active {
+  background: #e5e7eb;
+}
+
+.cpicker-item-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: #111827;
+  color: #ffffff;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.cpicker-item-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.cpicker-item-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f172a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cpicker-item-role {
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 1px;
+}
+
+.cpicker-item-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.cpicker-chevron {
+  color: #9ca3af;
+}

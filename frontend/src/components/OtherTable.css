@@ -1,0 +1,166 @@
+/* OtherTable styles */
+
+.alt-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  font-size: 0.83rem;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.alt-group {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  overflow: visible;
+}
+
+.alt-group-header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.75rem;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.alt-group-title {
+  font-weight: 700;
+  color: #1e293b;
+  font-size: 0.85rem;
+}
+
+.alt-group-count {
+  color: #64748b;
+  font-size: 0.78rem;
+}
+
+.alt-export-btn {
+  margin-left: auto;
+  padding: 0.2rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  font-size: 0.76rem;
+  cursor: pointer;
+  color: #475569;
+  transition: background 0.15s;
+}
+.alt-export-btn:hover { background: #f1f5f9; }
+
+.alt-scroll-wrapper {
+  overflow-x: auto;
+}
+
+.alt-table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 600px;
+}
+
+.alt-table th {
+  background: #f1f5f9;
+  color: #475569;
+  font-weight: 600;
+  font-size: 0.77rem;
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid #e2e8f0;
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.alt-row {
+  border-bottom: 1px solid #f1f5f9;
+  transition: background 0.1s;
+}
+.alt-row:hover { background: #f8fafc; }
+.alt-row:last-child { border-bottom: none; }
+
+.alt-cell {
+  padding: 0.35rem 0.6rem;
+  vertical-align: middle;
+  cursor: default;
+  max-width: 200px;
+}
+.alt-cell:not([style*='width']) { max-width: 200px; }
+.alt-cell-editing { background: #eff6ff; }
+
+.alt-cell-text {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #334155;
+}
+
+.alt-cell-input {
+  width: 100%;
+  padding: 0.15rem 0.3rem;
+  border: 1px solid #3b82f6;
+  border-radius: 3px;
+  font-size: inherit;
+  outline: none;
+  background: #fff;
+}
+
+.alt-hint {
+  padding: 0.3rem 0.75rem;
+  font-size: 0.72rem;
+  color: #94a3b8;
+  border-top: 1px solid #f1f5f9;
+  background: #fafafa;
+}
+
+.alt-empty {
+  color: #94a3b8;
+  text-align: center;
+  padding: 2rem;
+  font-size: 0.88rem;
+}
+
+/* Depreciation sub-table (Phase 6) */
+.alt-depr-section {
+  margin-top: 0.5rem;
+  border-top: 1px dashed #e2e8f0;
+  padding-top: 0.5rem;
+}
+
+.alt-depr-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: #3b82f6;
+  padding: 0.2rem 0;
+  text-decoration: underline;
+}
+
+.alt-depr-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+  margin-top: 0.4rem;
+}
+
+.alt-depr-table th {
+  background: #f0fdf4;
+  color: #166534;
+  font-weight: 600;
+  padding: 0.3rem 0.5rem;
+  text-align: right;
+  border-bottom: 1px solid #bbf7d0;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.alt-depr-table th:first-child { text-align: left; }
+
+.alt-depr-table td {
+  padding: 0.25rem 0.5rem;
+  text-align: right;
+  color: #374151;
+  border-bottom: 1px solid #f0fdf4;
+}
+.alt-depr-table td:first-child { text-align: left; color: #6b7280; }
