@@ -17,7 +17,7 @@ python-jose[cryptography]>=3.3.0
 cryptography>=49.0.0,<50.0.0
 bcrypt>=4.0.0
 # SEC-CODE-009: optional TOTP MFA
-pyotp>=2.9.0
+pyotp>=2.10.0
 fastapi-mail>=1.6.5
 pydantic[email]>=2.13.4
 
