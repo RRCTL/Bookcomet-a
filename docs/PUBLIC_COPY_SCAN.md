@@ -41,6 +41,8 @@ Bank-layout names such as HSBC/BOC/BEA remain in detection prompts on purpose. T
 - Organization-level Packages, Codespaces secrets, and environment secrets are outside this token.
 - If a secret is later found, rotate it first, then follow GitHub’s sensitive-data removal guide.
 
+CodeQL on this private repo needs `actions: read` so SARIF upload can call the workflow-run API. That permission is set in `.github/workflows/codeql.yml`.
+
 ## Next
 
 Continue at Step 4 (clean-machine install) in [`PUBLIC_RELEASE_CHECKLIST.md`](PUBLIC_RELEASE_CHECKLIST.md). Do not make the repository public until that checklist is complete.
