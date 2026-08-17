@@ -43,7 +43,12 @@ jobs:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
 
+      # Private Bookcomet-a does not have code scanning enabled yet. Analyze on
+      # every PR; upload SARIF only on main/schedule, and do not fail the job
+      # if Settings → Code security is still off.
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@v3
         with:
           category: "/language:${{ matrix.language }}"
+          upload: ${{ github.event_name != 'pull_request' }}
+        continue-on-error: ${{ github.event_name != 'pull_request' }}

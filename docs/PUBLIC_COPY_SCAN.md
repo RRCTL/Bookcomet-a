@@ -41,7 +41,7 @@ Bank-layout names such as HSBC/BOC/BEA remain in detection prompts on purpose. T
 - Organization-level Packages, Codespaces secrets, and environment secrets are outside this token.
 - If a secret is later found, rotate it first, then follow GitHub’s sensitive-data removal guide.
 
-CodeQL on this private repo needs `actions: read` so SARIF upload can call the workflow-run API. That permission is set in `.github/workflows/codeql.yml`.
+CodeQL analysis runs, but SARIF upload needs **code scanning enabled** in repository settings. The workflow therefore analyzes on pull requests without uploading, and only attempts upload on `main` / schedule. Grant `actions: read` is already set.
 
 ## Next
 

@@ -50,7 +50,8 @@ GitHub drops push rulesets when visibility changes.
 - [ ] Protect `main`: PR required, at least one review, required CI, no force-push.
 - [ ] Enable secret scanning, generic secret detection, and push protection.
 - [ ] Enable dependency graph, Dependabot alerts, and security updates (Dependabot config is already in-repo).
-- [ ] Confirm CodeQL runs on `main` (workflow is already in-repo).
+- [ ] Enable **Code scanning** in Settings → Code security (required on a private repo before SARIF upload works).
+- [ ] Confirm the in-repo CodeQL workflow can upload on `main`.
 - [ ] Enable private vulnerability reporting so `SECURITY.md` has an inbox.
 - [ ] Confirm Actions stay read-only for fork PRs.
 
