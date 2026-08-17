@@ -33,7 +33,7 @@ httpx>=0.28.1  # Required by Starlette/FastAPI TestClient (pytest)
 PyMuPDF>=1.28.2    # Convert PDF to images (no external dependencies)
 Pillow>=12.3.0     # Image processing
 # Bank/VLM pipelines (RGBâ†’BGR, JPEG write, overlays) â€” used by bank_statement_parser, ocr
-opencv-python-headless>=4.10.0
+opencv-python-headless>=5.0.0.93
 
 # Bank statements (Excel/CSV parsing)
 pandas>=2.0.0
