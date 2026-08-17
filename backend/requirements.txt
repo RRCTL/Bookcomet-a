@@ -15,7 +15,7 @@ redis>=8.1.0
 python-jose[cryptography]>=3.5.0
 # Pin below 50 until fastapi-mail allows cryptography>=50 (PYSEC-2026-3552 tracked).
 cryptography>=49.0.0,<50.0.0
-bcrypt>=4.0.0
+bcrypt>=5.0.0
 # SEC-CODE-009: optional TOTP MFA
 pyotp>=2.10.0
 fastapi-mail>=1.6.5
