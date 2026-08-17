@@ -43,7 +43,7 @@ jobs:
           npm sbom --sbom-format cyclonedx --sbom-type application > ../docs/sbom/frontend.cdx.json
 
       - name: Upload SBOM artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bookcomet-a-sbom
           path: |
