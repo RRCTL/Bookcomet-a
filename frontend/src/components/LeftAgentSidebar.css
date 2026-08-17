@@ -318,6 +318,9 @@
   background: #f9fafb;
   border-color: #d1d5db;
 }
+.sidebar-cloud-ai-notice {
+  margin: 0 12px 10px;
+}
 .sidebar-close-btn {
   display: grid;
   place-items: center;

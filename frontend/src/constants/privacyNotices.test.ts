@@ -15,16 +15,22 @@ describe('CLOUD_AI_DATA_NOTICE', () => {
     expect(CLOUD_AI_DATA_NOTICE).toMatch(/local endpoint/i)
   })
 
-  it('is shown on settings, onboarding, welcome, and processing upload', () => {
+  it('is shown on settings, onboarding, welcome, processing, and remaining upload paths', () => {
     const files = [
       'components/settings/ApiSettingsPanel.tsx',
       'components/OnboardingWizard.tsx',
       'components/WorkspaceWelcome.tsx',
+      'components/LeftAgentSidebar.tsx',
+      'components/CloudAiNotice.tsx',
       'features/erpShell/ProcessingView.tsx',
+      'features/nodeWorkspace/shell/RunComposer.tsx',
+      'features/nodeWorkspace/nodes/workflowNodeTypes.tsx',
     ]
     for (const rel of files) {
       const source = readFileSync(join(srcRoot, rel), 'utf8')
-      expect(source, rel).toContain('CLOUD_AI_DATA_NOTICE')
+      const wired =
+        source.includes('CLOUD_AI_DATA_NOTICE') || source.includes('CloudAiNotice')
+      expect(wired, rel).toBe(true)
     }
   })
 })

@@ -9,6 +9,7 @@ import {
   type ApVlmReceiptSignal,
   type ApVlmTablePreset,
 } from '../../workspace/apComposerOptions'
+import { CloudAiNotice } from '../../../components/CloudAiNotice'
 import type { ARAPTransaction } from '../../../components/ARAPReview'
 import type { BankTransaction } from '../../../components/BankStatementReview'
 import type { WorkflowRun, WorkflowRunFile } from '../workflowApi'
@@ -168,6 +169,7 @@ export function FilesNode({ data }: NodeProps<Node<WorkflowNodeData>>) {
       <button type="button" className="btn-primary mb-2 w-full" onClick={data.onUpload}>
         Add files
       </button>
+      <CloudAiNotice className="cloud-ai-notice--compact mb-2" />
       <ul className="max-h-[120px] list-disc overflow-auto pl-4">
         {files.length === 0 && <li className="text-gray-500">No files yet</li>}
         {files.map(f => {

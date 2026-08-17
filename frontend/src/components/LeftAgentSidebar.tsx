@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { CloudAiNotice } from './CloudAiNotice'
 import './LeftAgentSidebar.css'
 import type { ProcessingMode } from './ModeSelector'
 import type { UserCompany } from '../contexts/AuthContext'
@@ -269,6 +270,7 @@ export function LeftAgentSidebar({
             <button className="sidebar-search-clear" onClick={() => setSearchQuery('')} title="Clear">×</button>
           )}
         </div>
+        {!collapsed ? <CloudAiNotice className="cloud-ai-notice--compact sidebar-cloud-ai-notice" /> : null}
       </div>
 
       {/* Agent Folder List */}

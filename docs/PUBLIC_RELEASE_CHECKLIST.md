@@ -1,52 +1,62 @@
 # Bookcomet-a public release checklist
 
-[RRCTL/Bookcomet-a](https://github.com/RRCTL/Bookcomet-a) is the public MVP repository. Complete this list before changing GitHub visibility to public.
+[RRCTL/Bookcomet-a](https://github.com/RRCTL/Bookcomet-a) is the public MVP. Follow these steps in order. Do not skip ahead to “Make public.”
 
-This checklist cannot be finished by a pull request alone. Items marked **manual** are GitHub or operator actions.
+## Step 1 — Merge and freeze
 
-## Already handled in the source tree
+- [x] Treat Bookcomet-a as the public MVP. Keep the private `Bookcomet` repo private.
+- [x] Record the freeze in [`CONTRIBUTING.md`](../CONTRIBUTING.md): no unrelated feature merges until after public + branch protection.
+- [ ] Merge the public-MVP pull requests into `main` (this PR and, if still open, #1).
+- [ ] Pause unrelated feature work until Step 6 is done.
 
-- [x] Apache-2.0 `LICENSE`
-- [x] `SECURITY.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `PRIVACY.md`, `NOTICE`
-- [x] README clone and issue links point at Bookcomet-a
-- [x] Cloud vs local AI notice in README, Settings → API, onboarding, and upload surfaces
-- [x] Fictional sample CSVs (`Acme Supplies Ltd`, `Example Trading Limited`)
-- [x] `backend/stripe.exe` is not present and is gitignored
-- [x] CI default `permissions: contents: read`
-- [x] CI blocks committed `.env` / databases / debug telemetry markers
-- [x] Short git history (MVP snapshot) with no tags, releases, or Git LFS objects
+## Step 2 — Source follow-up (this PR)
 
-## Manual — scan copies that git cannot see
+- [x] Cloud-AI notice on node-workspace Attach, Files node, and sidebar upload.
+- [x] `.github/dependabot.yml` for pip, npm, and GitHub Actions.
+- [x] Default CodeQL workflow for Python and JavaScript/TypeScript.
+- [x] Fictional workflow diagram at `docs/assets/bookcomet-workflow.svg` (no real customer data).
+- [x] README shows that diagram.
+- [x] `SECURITY.md` keeps GitHub private vulnerability reporting (no separate security mailbox yet).
 
-- [ ] Review GitHub Actions logs, caches, and artifacts on this repository
-- [ ] Confirm there are no Releases, Packages, container images, Pages, Wiki pages, or LFS objects with real documents
-- [ ] Search Issues, Discussions, Projects, and PR comments for real company names, receipts, or secrets
-- [ ] If any secret ever appeared, rotate it before going public
+## Step 3 — Scan copies that are not in git
 
-## Manual — GitHub settings on the day you go public
+See the dated record in [`PUBLIC_COPY_SCAN.md`](PUBLIC_COPY_SCAN.md).
 
-GitHub disables push rulesets when a repository becomes public. Re-check controls immediately after the visibility change.
+- [x] Agent scan: 0 releases, 0 tags, 0 LFS, 0 artifacts, wiki/pages/discussions off, no tracked secrets.
+- [ ] Admin: open the two CI run logs and confirm they contain no real documents or keys.
+- [ ] Admin: confirm org Packages and the enabled Projects board are empty of real documents.
+- [ ] If any secret ever appeared, rotate it before going public.
 
-- [ ] Restrict who can change repository visibility; require 2FA for admins
-- [ ] Protect `main`: pull request, at least one review, required CI, no force-push
-- [ ] Enable Secret scanning, generic secret detection, and push protection
-- [ ] Enable Dependency graph, Dependabot alerts, and Dependabot security updates
-- [ ] Enable default CodeQL for Python and JavaScript/TypeScript
-- [ ] Enable private vulnerability reporting (so `SECURITY.md` has a working inbox)
-- [ ] Confirm Actions workflow permissions stay read-only for pull requests from forks
+## Step 4 — Clean-machine install (manual)
 
-## Manual — clean-machine install
+- [ ] Clone Bookcomet-a into a new empty directory.
+- [ ] Follow README only (no private files or machine-local paths).
+- [ ] Copy env examples and generate a new `JWT_SECRET_KEY`.
+- [ ] `alembic upgrade head`, start API and UI.
+- [ ] Confirm Settings → API and upload UI show the cloud-AI notice.
+- [ ] Backend pytest and frontend lint / test / build.
 
-- [ ] Clone Bookcomet-a into a new empty directory
-- [ ] Follow README only (no private files or machine-local paths)
-- [ ] `alembic upgrade head`, backend tests, frontend lint/test/build
-- [ ] Confirm Settings → API and upload UI show the cloud AI notice
+## Step 5 — History rewrite only if Step 3 found a leak
 
-## After the first public release
+- [ ] Skip if the scan stayed clean.
+- [ ] If a secret was found: rotate, rewrite in a mirror clone, tell collaborators to re-clone, ask GitHub Support to purge caches.
 
-These should not block the local MVP, but they belong on the roadmap:
+## Step 6 — Make public, then re-apply controls the same day
 
-- Upgrade or formally accept `cryptography` / `ecdsa` findings documented in CI
-- SBOM generation and signed releases
-- Stronger at-rest encryption for uploaded documents
-- A maintained fictional demo dataset
+GitHub drops push rulesets when visibility changes.
+
+- [ ] Restrict who can change visibility; require 2FA for admins.
+- [ ] Change visibility to public.
+- [ ] Protect `main`: PR required, at least one review, required CI, no force-push.
+- [ ] Enable secret scanning, generic secret detection, and push protection.
+- [ ] Enable dependency graph, Dependabot alerts, and security updates (Dependabot config is already in-repo).
+- [ ] Confirm CodeQL runs on `main` (workflow is already in-repo).
+- [ ] Enable private vulnerability reporting so `SECURITY.md` has an inbox.
+- [ ] Confirm Actions stay read-only for fork PRs.
+
+## Step 7 — After public (do not block MVP)
+
+- Upgrade or formally accept `cryptography` / `ecdsa` findings documented in CI.
+- SBOM generation and signed releases.
+- Stronger at-rest encryption for uploaded documents.
+- A maintained fictional demo dataset.

@@ -10,8 +10,7 @@ This repository, **[RRCTL/Bookcomet-a](https://github.com/RRCTL/Bookcomet-a)**, 
 
 [Website](https://bookcomet.net/) · [Quick start](#quick-start) · [Privacy](PRIVACY.md) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md)
 
-<!-- Replace with a product screenshot or a 30–60 second workflow GIF before launch. -->
-<!-- ![Bookcomet workflow: document capture to reviewed journals](docs/assets/bookcomet-workflow.gif) -->
+![Bookcomet workflow: document capture to reviewed draft journals](docs/assets/bookcomet-workflow.svg)
 
 ## Why Bookcomet
 
