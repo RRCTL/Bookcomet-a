@@ -41,7 +41,10 @@
     "tailwindcss": "^4.3.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.67.0",
-    "vite": "^7.2.4",
+    "vite": "^8.2.1",
     "vitest": "^4.1.5"
+  },
+  "overrides": {
+    "lightningcss": "1.33.0"
   }
 }
