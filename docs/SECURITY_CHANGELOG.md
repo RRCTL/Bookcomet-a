@@ -36,6 +36,7 @@ Stable IDs for security work. Prefer these over informal “phase” names in PR
 | SEC-PUB-002 | Public MVP | Freeze note, remaining upload notices, Dependabot, CodeQL, copy scan | This PR |
 | SEC-PUB-003 | Public MVP | Optional `UPLOADS_ENCRYPTION_KEY` wrap for local upload files | This PR |
 | SEC-PUB-004 | Public MVP | Clean-install record, dependency exceptions, SBOM workflow, demo dataset | This PR |
+| SEC-PUB-005 | Public MVP | GitHub preflight: full-ref history + Actions/LFS/release scan; admin-only security/branch rows | This PR |
 
 ## Former phase map
 

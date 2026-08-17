@@ -136,7 +136,7 @@ jobs:
         run: |
           set -euo pipefail
           missing=0
-          for f in LICENSE SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md PRIVACY.md NOTICE README.md docs/PUBLIC_COPY_SCAN.md docs/PUBLIC_RELEASE_CHECKLIST.md docs/CLEAN_MACHINE_INSTALL.md docs/HISTORY_REWRITE.md docs/GITHUB_PUBLIC_DAY.md docs/DEPENDENCY_EXCEPTIONS.md docs/demo/README.md .github/dependabot.yml .github/workflows/codeql.yml .github/workflows/sbom.yml; do
+          for f in LICENSE SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md PRIVACY.md NOTICE README.md docs/PUBLIC_COPY_SCAN.md docs/PUBLIC_RELEASE_CHECKLIST.md docs/CLEAN_MACHINE_INSTALL.md docs/HISTORY_REWRITE.md docs/GITHUB_PUBLIC_DAY.md docs/GITHUB_PREFLIGHT.md docs/DEPENDENCY_EXCEPTIONS.md docs/demo/README.md .github/dependabot.yml .github/workflows/codeql.yml .github/workflows/sbom.yml; do
             if [ ! -f "$f" ]; then
               echo "Missing required public file: $f"
               missing=1
