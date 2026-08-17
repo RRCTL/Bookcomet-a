@@ -18,6 +18,10 @@ Follow [`README.md`](README.md) and [`LOCAL_DEV_SETUP.md`](LOCAL_DEV_SETUP.md).
 2. Generate your own `JWT_SECRET_KEY`. Never commit a real `.env`.
 3. Use only fictional company, vendor, customer, and bank-statement data.
 
+## Public-release freeze
+
+Until Bookcomet-a is public and `main` branch protection is re-applied, **do not merge unrelated feature work**. Security, privacy, documentation, and public-release PRs only. Work only in this repository, not the private `Bookcomet` original.
+
 ## Branch and pull requests
 
 1. Create a feature branch from `main`.

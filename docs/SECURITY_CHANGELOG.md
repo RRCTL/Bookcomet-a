@@ -33,6 +33,7 @@ Stable IDs for security work. Prefer these over informal “phase” names in PR
 | SEC-CODE-012 | Code | Harden `/settings/env` mask + lock process-wide keys | On `main` |
 | SEC-CODE-013 | Code | Workflow WS auth without JWT in the query string | On `main` |
 | SEC-PUB-001 | Public MVP | Community files, Bookcomet-a URLs, CI least privilege, upload-path cloud AI notice | This PR |
+| SEC-PUB-002 | Public MVP | Freeze note, remaining upload notices, Dependabot, CodeQL, copy scan | This PR |
 
 ## Former phase map
 

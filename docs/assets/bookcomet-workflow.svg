@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 280" role="img" aria-labelledby="title desc">
+  <title id="title">Bookcomet fictional workflow</title>
+  <desc id="desc">Example Trading Limited path from upload through reviewable draft journals. No real customer data.</desc>
+  <rect width="960" height="280" rx="16" fill="#f4f5f7"/>
+  <rect x="16" y="16" width="928" height="248" rx="12" fill="#ffffff" stroke="#bfdbfe"/>
+  <text x="36" y="44" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="700" fill="#1e3a8a">bookcomet  example-workflow.json</text>
+  <text x="780" y="44" font-family="Inter, system-ui, sans-serif" font-size="11" fill="#16a34a">fictional demo</text>
+  <path d="M 168 150 C 188 150 188 110 208 110" fill="none" stroke="#2563eb" stroke-width="2"/>
+  <path d="M 350 110 C 370 110 370 150 390 150" fill="none" stroke="#2563eb" stroke-width="2"/>
+  <path d="M 532 150 C 552 150 552 110 572 110" fill="none" stroke="#2563eb" stroke-width="2"/>
+  <path d="M 714 110 C 734 110 734 150 754 150" fill="none" stroke="#2563eb" stroke-width="2"/>
+  <g>
+    <rect x="36" y="110" width="132" height="80" rx="10" fill="#ffffff" stroke="#bfdbfe"/>
+    <rect x="36" y="110" width="4" height="80" rx="2" fill="#2563eb"/>
+    <text x="52" y="140" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="700" fill="#1e3a8a">Upload</text>
+    <text x="52" y="168" font-family="Inter, system-ui, sans-serif" font-size="10" fill="#6b7280">PDF / image / CSV</text>
+  </g>
+  <g>
+    <rect x="208" y="70" width="142" height="80" rx="10" fill="#ffffff" stroke="#bfdbfe"/>
+    <rect x="208" y="70" width="4" height="80" rx="2" fill="#2563eb"/>
+    <text x="224" y="100" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="700" fill="#1e3a8a">VLM / OCR</text>
+    <text x="224" y="128" font-family="Inter, system-ui, sans-serif" font-size="10" fill="#6b7280">Extract rows</text>
+  </g>
+  <g>
+    <rect x="390" y="110" width="142" height="80" rx="10" fill="#ffffff" stroke="#bfdbfe"/>
+    <rect x="390" y="110" width="4" height="80" rx="2" fill="#2563eb"/>
+    <text x="406" y="140" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="700" fill="#1e3a8a">AP · AR · Bank</text>
+    <text x="406" y="168" font-family="Inter, system-ui, sans-serif" font-size="10" fill="#6b7280">Review grids</text>
+  </g>
+  <g>
+    <rect x="572" y="70" width="142" height="80" rx="10" fill="#ffffff" stroke="#bfdbfe"/>
+    <rect x="572" y="70" width="4" height="80" rx="2" fill="#2563eb"/>
+    <text x="588" y="100" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="700" fill="#1e3a8a">Reconcile</text>
+    <text x="588" y="128" font-family="Inter, system-ui, sans-serif" font-size="10" fill="#6b7280">Bank to ledger</text>
+  </g>
+  <g>
+    <rect x="754" y="110" width="154" height="80" rx="10" fill="#ffffff" stroke="#bfdbfe"/>
+    <rect x="754" y="110" width="4" height="80" rx="2" fill="#2563eb"/>
+    <text x="770" y="140" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="700" fill="#1e3a8a">Draft GL</text>
+    <text x="770" y="168" font-family="Inter, system-ui, sans-serif" font-size="10" fill="#6b7280">Human review</text>
+  </g>
+  <text x="36" y="242" font-family="Inter, system-ui, sans-serif" font-size="11" fill="#6b7280">Example Trading Limited · Acme Supplies Ltd · Sample Bank  fictional names only</text>
+</svg>

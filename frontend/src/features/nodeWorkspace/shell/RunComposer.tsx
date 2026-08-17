@@ -7,6 +7,7 @@ import {
 } from '../../workspace/apComposerOptions'
 import type { WorkflowRunFile } from '../workflowApi'
 import { formatFilePageCount } from '../filePageLabel'
+import { CloudAiNotice } from '../../../components/CloudAiNotice'
 import {
   ComposerFilesOverlay,
   handleComposerDragOver,
@@ -179,6 +180,7 @@ export function RunComposer({
         </div>
       ) : null}
 
+      <CloudAiNotice className="cloud-ai-notice--compact mb-2" />
       <div className="flex flex-wrap items-center gap-2">
         <button type="button" className="btn-ghost rounded-full px-3" onClick={onAttach}>
           Attach

@@ -32,8 +32,12 @@ Public-facing docs kept in this repository after cleanup. Prefer updating these 
 |------|---------|
 | `docs/DOCUMENT_INVENTORY.md` | This inventory |
 | `docs/SECURITY_CHANGELOG.md` | Security change IDs (SEC-OPS / SEC-CODE / SEC-CI) |
-| `docs/PUBLIC_RELEASE_CHECKLIST.md` | Remaining GitHub visibility and scan steps for Bookcomet-a |
+| `docs/PUBLIC_RELEASE_CHECKLIST.md` | Step-by-step public-MVP plan and remaining operator gates |
+| `docs/PUBLIC_COPY_SCAN.md` | Dated scan of GitHub copies that are not in git |
+| `docs/assets/bookcomet-workflow.svg` | Fictional README workflow diagram |
 | `.github/pull_request_template.md` | PR template |
+| `.github/dependabot.yml` | Weekly pip / npm / Actions updates |
+| `.github/workflows/codeql.yml` | CodeQL for Python and JavaScript/TypeScript |
 
 ## Intentionally not published at root
 
