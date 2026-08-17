@@ -4,7 +4,7 @@ easyocr>=1.7.1
 pytesseract==0.3.10
 
 # PaddleOCR dependencies
-paddlepaddle>=3.0.0
+paddlepaddle>=3.3.1
 imgaug
 visualdl
 opencv-contrib-python
