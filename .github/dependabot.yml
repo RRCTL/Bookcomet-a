@@ -19,6 +19,15 @@ updates:
       # plugin-react 6+ peers vite ^8. Stay on 5.x until Vite 8 is adopted.
       - dependency-name: "@vitejs/plugin-react"
         update-types: ["version-update:semver-major"]
+    groups:
+      # React 19 requires react and react-dom to share an exact version
+      # (PR #28 failed tests when only react was bumped).
+      react-core:
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
 
   - package-ecosystem: github-actions
     directory: /
