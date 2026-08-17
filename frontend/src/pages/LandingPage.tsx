@@ -448,9 +448,20 @@ export default function LandingPage() {
             <a href="#roadmap" className="lp-footer-link">
               Roadmap
             </a>
+            <a
+              href="https://github.com/RRCTL/Bookcomet-a"
+              className="lp-footer-link"
+              rel="noopener noreferrer"
+            >
+              GitHub
+            </a>
           </div>
           <p className="lp-footer-copy">
-            © {new Date().getFullYear()} Bookcomet. Open-source AI accounting workspace.
+            © {new Date().getFullYear()} Bookcomet. Public MVP on{' '}
+            <a href="https://github.com/RRCTL/Bookcomet-a" rel="noopener noreferrer">
+              Bookcomet-a
+            </a>
+            . Cloud OCR/AI sends document and company profile data to the provider you configure.
           </p>
         </div>
       </footer>

@@ -1,0 +1,36 @@
+Bookcomet
+Copyright 2026 Bookcomet contributors
+
+This product is licensed under the Apache License, Version 2.0.
+See the LICENSE file in the project root.
+
+This NOTICE file is provided for Apache-2.0 attribution. It does not
+modify the License.
+
+Third-party software
+--------------------
+
+Bookcomet depends on open-source Python and npm packages declared in
+`backend/requirements.txt` and `frontend/package-lock.json`. Those
+packages retain their own copyright and license terms. Review lockfiles
+and each package’s license before redistribution.
+
+Optional / not redistributed in this repository
+-----------------------------------------------
+
+- Poppler (GPL) may be downloaded locally for PDF rasterization. The
+  `bin/poppler/` tree is gitignored and is not part of the Bookcomet-a
+  source release. See `bin/README.md`.
+- OCR, VLM, and LLM providers (for example DeepSeek-compatible or
+  OpenAI-compatible gateways) are configured by the operator. Bookcomet
+  does not bundle those models or their weights.
+- No Stripe CLI binary or other unexplained vendor executable is
+  included in this repository.
+
+Trademarks
+----------
+
+Bank names that appear in detection keywords and layout prompts (for
+example HSBC, BOC, BEA) identify statement formats the software can
+parse. The Apache-2.0 license does not grant trademark rights, and
+those names do not imply endorsement by the banks.

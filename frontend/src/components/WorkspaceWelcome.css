@@ -36,10 +36,21 @@
 }
 
 .workspace-welcome-lead {
-  margin: 0 0 28px;
+  margin: 0 0 12px;
   font-size: 14px;
   line-height: 1.6;
   color: #334155;
+}
+
+.workspace-welcome-privacy {
+  margin: 0 0 28px;
+  padding: 10px 12px;
+  border: 1px solid #fcd34d;
+  border-radius: 8px;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .workspace-welcome-section {

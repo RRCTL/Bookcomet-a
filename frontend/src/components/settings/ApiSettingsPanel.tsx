@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { CLOUD_AI_DATA_NOTICE } from '../../constants/privacyNotices'
 import {
   API_GATEWAY_IDS,
   getApiSettings,
@@ -208,8 +209,7 @@ export function ApiSettingsPanel() {
           Shared OpenAI-compatible gateways for this server. Optional gateways inherit blank fields from VLM at runtime.
         </p>
         <p className="api-cloud-ai-notice" role="note">
-          When using cloud OCR / AI, uploaded document images and some company information will be sent to
-          your configured AI service provider. Select a local endpoint to keep data on this device.
+          {CLOUD_AI_DATA_NOTICE}
         </p>
       </div>
 

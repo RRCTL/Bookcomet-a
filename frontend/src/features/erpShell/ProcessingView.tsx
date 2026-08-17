@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { CLOUD_AI_DATA_NOTICE } from '../../constants/privacyNotices'
 import { useAuth } from '../../contexts/AuthContext'
 import { useResizeDrag } from '../../hooks/useResizeDrag'
 import {
@@ -1141,6 +1142,9 @@ export function ProcessingView() {
             e.target.value = ''
           }}
         />
+        <p className="erp-proc-cloud-ai-notice" role="note">
+          {CLOUD_AI_DATA_NOTICE}
+        </p>
         <div className="erp-proc-toolbar-actions">
           <button
             className="erp-btn"
