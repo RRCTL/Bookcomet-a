@@ -37,18 +37,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # Init talks to GitHub's CodeQL API. That call 429s or 5xxs, and this
+      # private repo does not have code scanning enabled yet. Do not fail the
+      # job on those infra errors (PR #21 failed in 36s on a 429 while fetching
+      # github/codeql-action — no Python finding).
       - name: Initialize CodeQL
+        id: codeql-init
         uses: github/codeql-action/init@v4
+        continue-on-error: true
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
 
-      # Private Bookcomet-a does not have code scanning enabled yet. Analyze on
-      # every PR; upload SARIF only on main/schedule, and do not fail the job
-      # if Settings → Code security is still off.
+      # Analyze on every PR; upload SARIF only on main/schedule. Skip analyze
+      # when init did not finish. continue-on-error covers upload/API flakes
+      # after a successful init.
       - name: Perform CodeQL analysis
+        if: steps.codeql-init.outcome == 'success'
         uses: github/codeql-action/analyze@v4
+        continue-on-error: true
         with:
           category: "/language:${{ matrix.language }}"
           upload: ${{ github.event_name != 'pull_request' }}
-        continue-on-error: ${{ github.event_name != 'pull_request' }}
