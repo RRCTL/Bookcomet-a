@@ -2,9 +2,9 @@
 
 A pull request cannot flip visibility or enable Security-tab products. An admin of [RRCTL/Bookcomet-a](https://github.com/RRCTL/Bookcomet-a) must do this **on the same day** the repository becomes public. GitHub drops push rulesets when visibility changes.
 
-Do this only after Steps 4 and 5 in [`PUBLIC_RELEASE_CHECKLIST.md`](PUBLIC_RELEASE_CHECKLIST.md).
+Do this only after Steps 4 and 5 in [`PUBLIC_RELEASE_CHECKLIST.md`](PUBLIC_RELEASE_CHECKLIST.md) and the agent scan in [`GITHUB_PREFLIGHT.md`](GITHUB_PREFLIGHT.md).
 
-The agent token cannot enable Security-tab products or change visibility (`403 Resource not accessible by integration`). An org admin must use the GitHub UI.
+The agent token cannot enable Security-tab products, branch protection, or change visibility (`403 Resource not accessible by integration`). Code scanning is **not enabled** yet (API). An org admin must use the GitHub UI.
 
 ## Before you click Make public
 

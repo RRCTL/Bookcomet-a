@@ -19,8 +19,8 @@
 
 See [`PUBLIC_COPY_SCAN.md`](PUBLIC_COPY_SCAN.md).
 
-- [x] Agent scan: 0 releases, 0 tags, 0 LFS, 0 artifacts, no tracked secrets.
-- [ ] Admin: open CI run logs and confirm they contain no real documents or keys.
+- [x] Agent scan: 0 releases, 0 tags, 0 LFS, no tracked secrets. Artifacts are SBOM-only. See [`GITHUB_PREFLIGHT.md`](GITHUB_PREFLIGHT.md).
+- [ ] Admin: open a sample of Actions **logs** and confirm they contain no real documents or keys.
 - [ ] Admin: confirm org Packages and Projects have no real documents.
 
 ## Step 4 — Clean-machine install
@@ -36,7 +36,7 @@ See [`CLEAN_MACHINE_INSTALL.md`](CLEAN_MACHINE_INSTALL.md). Repeat with `scripts
 
 See [`HISTORY_REWRITE.md`](HISTORY_REWRITE.md).
 
-- [x] Skipped. Step 3 found no leak.
+- [x] Skipped. Full-ref history scan found no leak ([`HISTORY_REWRITE.md`](HISTORY_REWRITE.md)).
 
 ## Step 6 — Make public, then re-apply controls the same day
 

@@ -37,10 +37,12 @@ Public-facing docs kept in this repository after cleanup. Prefer updating these 
 | `docs/CLEAN_MACHINE_INSTALL.md` | Step 4 README-only install evidence |
 | `docs/HISTORY_REWRITE.md` | Step 5 skip record |
 | `docs/GITHUB_PUBLIC_DAY.md` | Step 6 admin runbook |
+| `docs/GITHUB_PREFLIGHT.md` | ZIP-cannot-prove GitHub history / Actions / security scan |
 | `docs/DEPENDENCY_EXCEPTIONS.md` | Accepted pip-audit ignores |
 | `docs/demo/README.md` | Fictional demo dataset |
 | `.github/workflows/sbom.yml` | CycloneDX SBOM on CI |
 | `scripts/clean_machine_verify.sh` | README-only install check for Step 4 |
+| `scripts/github_history_scan.sh` | Full-ref secret / runtime-path scan |
 | `docs/assets/bookcomet-workflow.svg` | Fictional README workflow diagram |
 | `.github/pull_request_template.md` | PR template |
 | `.github/dependabot.yml` | Weekly pip / npm / Actions updates |
