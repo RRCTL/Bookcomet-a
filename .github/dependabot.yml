@@ -16,6 +16,9 @@ updates:
       # typescript-eslint, and the flat config are upgraded together.
       - dependency-name: "@eslint/js"
         update-types: ["version-update:semver-major"]
+      # plugin-react 6+ peers vite ^8. Stay on 5.x until Vite 8 is adopted.
+      - dependency-name: "@vitejs/plugin-react"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /
