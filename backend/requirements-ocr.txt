@@ -11,7 +11,7 @@ opencv-contrib-python
 
 # Image processing
 opencv-python>=4.10.0
-Pillow>=10.0.0
+Pillow>=12.3.0
 numpy>=1.21
 
 # Note: Tesseract also requires the Tesseract-OCR binary to be installed on the system
