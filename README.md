@@ -187,6 +187,9 @@ python -m venv .venv
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 copy config.env.example .env
+# Required before first run: generate a secret and set it in .env
+python -c "import secrets; print(secrets.token_urlsafe(64))"
+# Edit .env: uncomment/set JWT_SECRET_KEY=<paste-generated-value> (>=32 chars)
 alembic upgrade head
 python run.py
 ```
@@ -199,9 +202,14 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 cp config.env.example .env
+# Required before first run: generate a secret and set it in .env
+python -c "import secrets; print(secrets.token_urlsafe(64))"
+# Edit .env: uncomment/set JWT_SECRET_KEY=<paste-generated-value> (>=32 chars)
 alembic upgrade head
 python run.py
 ```
+
+The API refuses to start until `JWT_SECRET_KEY` is set (at least 32 characters). See [`LOCAL_DEV_SETUP.md`](LOCAL_DEV_SETUP.md) (**SEC-OPS-001**) for full local security setup.
 
 The API starts at [`http://localhost:8000`](http://localhost:8000), with interactive documentation at [`http://localhost:8000/docs`](http://localhost:8000/docs).
 
