@@ -11,12 +11,24 @@ python -m venv .venv
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 copy config.env.example .env
-# Required before first run: generate a secret and set it in .env
+# Required: set JWT_SECRET_KEY before alembic / run.py (steps below)
 python -c "import secrets; print(secrets.token_urlsafe(64))"
-# Edit .env: uncomment/set JWT_SECRET_KEY=<paste-generated-value> (>=32 chars)
+# notepad .env  →  change "# JWT_SECRET_KEY=" to "JWT_SECRET_KEY=<paste>" (no #)
+# findstr JWT_SECRET_KEY .env   →  must show an uncommented line
 alembic upgrade head
 python run.py
 ```
+
+**Windows: set `JWT_SECRET_KEY` after `copy config.env.example .env`**
+
+1. Generate: `python -c "import secrets; print(secrets.token_urlsafe(64))"`
+2. Open: `notepad .env`
+3. Find `# JWT_SECRET_KEY=` and change it to `JWT_SECRET_KEY=<paste-generated-value>` — remove the `#`, no spaces around `=`
+4. Save and close Notepad
+5. Confirm: `findstr JWT_SECRET_KEY .env` (line must **not** start with `#`)
+6. Then: `python -m alembic upgrade head` and `python run.py`
+
+Do **not** run `copy config.env.example .env` again after editing, or you will overwrite the secret.
 
 The API refuses to start until `JWT_SECRET_KEY` is set. Complete **SEC-OPS-001** below before day-to-day use.
 
@@ -49,14 +61,25 @@ Do this **after** `copy config.env.example .env` and **before** day-to-day use. 
 1. Generate a strong JWT secret and set it in `backend/.env`:
 
 ```powershell
-# Windows PowerShell
+# Windows PowerShell (or use the python one-liner below in cmd)
 [Convert]::ToBase64String((1..64 | ForEach-Object { Get-Random -Maximum 256 }) -as [byte[]])
+```
+
+```cmd
+REM Windows cmd (venv active, from backend\)
+python -c "import secrets; print(secrets.token_urlsafe(64))"
+notepad .env
+REM Find "# JWT_SECRET_KEY=" → set "JWT_SECRET_KEY=<paste>" with NO leading #
+findstr JWT_SECRET_KEY .env
 ```
 
 ```bash
 # Linux / macOS
 openssl rand -base64 64 | tr -d '\n'
+# or: python -c "import secrets; print(secrets.token_urlsafe(64))"
 ```
+
+Edit `backend/.env` so the key is **uncommented** (a leading `#` means the app ignores the line):
 
 ```env
 JWT_SECRET_KEY=<paste-generated-value>
@@ -65,6 +88,8 @@ APP_ENV=local
 HOST=127.0.0.1
 REGISTER_INVITE_CODE=
 ```
+
+Do **not** re-run `copy config.env.example .env` after saving the secret.
 
 **Pure local (recommended):** leave `REGISTER_INVITE_CODE` empty. The Create account page will **not** ask for an invite code. There is no invite code in GitHub — you only create one later if you open a public tunnel (see below).
 

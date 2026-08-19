@@ -187,9 +187,9 @@ python -m venv .venv
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 copy config.env.example .env
-# Required before first run: generate a secret and set it in .env
+# Required before first run — generate a secret:
 python -c "import secrets; print(secrets.token_urlsafe(64))"
-# Edit .env: uncomment/set JWT_SECRET_KEY=<paste-generated-value> (>=32 chars)
+# Then set it in .env (see “Set JWT_SECRET_KEY” below)
 alembic upgrade head
 python run.py
 ```
@@ -202,14 +202,57 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 cp config.env.example .env
-# Required before first run: generate a secret and set it in .env
+# Required before first run — generate a secret:
 python -c "import secrets; print(secrets.token_urlsafe(64))"
-# Edit .env: uncomment/set JWT_SECRET_KEY=<paste-generated-value> (>=32 chars)
+# Then set it in .env (see “Set JWT_SECRET_KEY” below)
 alembic upgrade head
 python run.py
 ```
 
-The API refuses to start until `JWT_SECRET_KEY` is set (at least 32 characters). See [`LOCAL_DEV_SETUP.md`](LOCAL_DEV_SETUP.md) (**SEC-OPS-001**) for full local security setup.
+#### Set `JWT_SECRET_KEY` (required before `alembic` / `python run.py`)
+
+The API refuses to start until `JWT_SECRET_KEY` is set (at least 32 characters). Copying `config.env.example` leaves the key commented out (`# JWT_SECRET_KEY=`), so you must uncomment and paste a generated value.
+
+**Windows (cmd or PowerShell), from `backend` with the venv active:**
+
+1. Generate a secret (copy the printed line):
+
+```cmd
+python -c "import secrets; print(secrets.token_urlsafe(64))"
+```
+
+2. Open the env file:
+
+```cmd
+notepad .env
+```
+
+3. Find `# JWT_SECRET_KEY=` and change it to an **uncommented** line (no `#`, no spaces around `=`):
+
+```env
+JWT_SECRET_KEY=<paste-generated-value>
+```
+
+4. Save and close Notepad.
+
+5. Confirm the key is set (must **not** start with `#`):
+
+```cmd
+findstr JWT_SECRET_KEY .env
+```
+
+6. Then run migrations and start the API:
+
+```cmd
+python -m alembic upgrade head
+python run.py
+```
+
+Do **not** run `copy config.env.example .env` again after editing, or you will overwrite the secret.
+
+**Linux / macOS:** edit `backend/.env` the same way (uncomment `JWT_SECRET_KEY=` and paste the generated value), then run `alembic upgrade head` and `python run.py`.
+
+See [`LOCAL_DEV_SETUP.md`](LOCAL_DEV_SETUP.md) (**SEC-OPS-001**) for full local security setup.
 
 The API starts at [`http://localhost:8000`](http://localhost:8000), with interactive documentation at [`http://localhost:8000/docs`](http://localhost:8000/docs).
 
