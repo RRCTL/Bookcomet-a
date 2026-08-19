@@ -278,6 +278,7 @@ function nodeDetailLines(state?: NodeState): { k: string; v: string }[] {
   push('Feedback', o.feedback)
   push('Re-VLM focus', o.rescan_focus)
   push('Note', o.rescan_note)
+  push('Expected receipts', o.expected_receipt_count)
   const reason = String(o.reason ?? '').trim()
   if (reason && !lines.some(l => l.v === reason)) push('Reason', reason)
   if (typeof o.row_count === 'number') push('Rows', o.row_count)
@@ -817,7 +818,13 @@ export function ProcessingView() {
   }, [])
 
   const handleReVlmConfirm = useCallback(
-    async ({ taskFileIds, rescanReasons, rescanNote, workflow }: ReVlmConfirmPayload) => {
+    async ({
+      taskFileIds,
+      rescanReasons,
+      rescanNote,
+      expectedReceiptCount,
+      workflow,
+    }: ReVlmConfirmPayload) => {
       if (!activeRun || taskFileIds.length === 0 || busy) return
       setShowReVlm(false)
       setReVlmInitialFileIds([])
@@ -827,6 +834,7 @@ export function ProcessingView() {
         applyRunReVlmLocally(activeRun, taskFileIds, {
           rescanReasons,
           rescanNote: rescanNote || undefined,
+          expectedReceiptCount: expectedReceiptCount ?? null,
         }),
         true,
       )
@@ -848,6 +856,7 @@ export function ProcessingView() {
         const updated = await workflowApi.reVlm(companyId, runForReVlm.id, taskFileIds, {
           rescan_reasons: rescanReasons,
           rescan_note: rescanNote || null,
+          expected_receipt_count: expectedReceiptCount ?? null,
         })
         applyRunFromServer(updated, true)
         void reloadRuns()

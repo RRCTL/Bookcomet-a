@@ -39,6 +39,7 @@ export const RE_VLM_REASON_CHIPS: ReVlmReasonChip[] = [
 ]
 
 export const RE_VLM_NOTE_MAX_LEN = 200
+export const RE_VLM_EXPECTED_COUNT_MAX = 36
 
 export function suggestRescanReasons(file: WorkflowRunFile): ReVlmReasonId[] {
   const out: ReVlmReasonId[] = []
@@ -75,5 +76,7 @@ export type ReVlmConfirmPayload = {
   taskFileIds: string[]
   rescanReasons: ReVlmReasonId[]
   rescanNote: string
+  /** Optional hard expected physical receipt count (any N). */
+  expectedReceiptCount?: number | null
   workflow?: ReVlmWorkflowSettings
 }

@@ -1,5 +1,8 @@
 from app.services.re_vlm_hints import (
     build_rescan_prompt_block,
+    normalize_expected_receipt_count,
+    parse_expected_receipt_count,
+    resolve_expected_receipt_count,
     sanitize_rescan_note,
     validate_rescan_reasons,
 )
@@ -11,7 +14,6 @@ def test_validate_rescan_reasons_drops_unknown_and_dedupes():
 
 
 def test_validate_rescan_reasons_caps_count():
-    raw = list(validate_rescan_reasons([]))  # noqa: sanity
     many = [
         "missed_receipts",
         "too_many_splits",
@@ -50,6 +52,16 @@ def test_build_rescan_prompt_block_includes_markers_and_content():
     assert "rule memory" not in block.lower()
 
 
+def test_build_rescan_prompt_block_includes_expected_count():
+    block = build_rescan_prompt_block(
+        reasons=[],
+        note=None,
+        prior_summary=None,
+        expected_receipt_count=10,
+    )
+    assert "Expected physical receipt count on this page: 10" in block
+
+
 def test_structured_prompt_includes_rescan_supplement():
     from app.api.ocr import _build_ap_multi_receipt_structured_prompt
 
@@ -78,3 +90,35 @@ def test_structured_prompt_cross_verify_and_rescan_both_append():
     )
     assert "Verifier pass" in prompt
     assert "[USER RE-SCAN INSTRUCTIONS" in prompt
+
+
+def test_parse_expected_receipt_count_any_n():
+    assert parse_expected_receipt_count("Page has 9 taxi receipts") == 9
+    assert parse_expected_receipt_count("expect 7 slips") == 7
+    assert parse_expected_receipt_count("receipts: 10") == 10
+    assert parse_expected_receipt_count("just taxi fees") is None
+    assert parse_expected_receipt_count("1 receipt") is None  # need >= 2
+
+
+def test_normalize_expected_receipt_count():
+    assert normalize_expected_receipt_count(7) == 7
+    assert normalize_expected_receipt_count("10") == 10
+    assert normalize_expected_receipt_count(1) is None
+    assert normalize_expected_receipt_count(99) is None
+    assert normalize_expected_receipt_count(None) is None
+
+
+def test_resolve_expected_receipt_count_hard_vs_soft():
+    n, source, strength = resolve_expected_receipt_count(explicit=10, note="Page has 9 taxi receipts")
+    assert n == 10
+    assert source == "user_asserted"
+    assert strength == "hard"
+
+    n, source, strength = resolve_expected_receipt_count(explicit=None, note="Page has 7 receipts")
+    assert n == 7
+    assert source == "note_parsed"
+    assert strength == "soft"
+
+    n, source, strength = resolve_expected_receipt_count(explicit=None, note="unclear")
+    assert n is None
+    assert strength == "unknown"

@@ -232,13 +232,16 @@ async def test_re_vlm_passes_rescan_hints_to_process_one_file():
                         ["tf-1"],
                         rescan_reasons=["wrong_amount", "missed_receipts"],
                         rescan_note="Three taxi receipts",
+                        expected_receipt_count=3,
                     )
 
     mock_process.assert_awaited_once()
     kwargs = mock_process.call_args.kwargs
     assert kwargs["rescan_reasons"] == ["wrong_amount", "missed_receipts"]
     assert kwargs["rescan_note"] == "Three taxi receipts"
+    assert kwargs["expected_receipt_count"] == 3
     assert any("Re-VLM reasons" in line.get("message", "") for line in run.console_log_json)
+    assert any("expected_receipts: 3" in line.get("message", "") for line in run.console_log_json)
 
 
 def test_prepare_re_vlm_node_states_resets_stale_finished_nodes():

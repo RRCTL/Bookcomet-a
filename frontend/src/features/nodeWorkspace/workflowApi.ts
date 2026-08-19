@@ -337,6 +337,7 @@ export const workflowApi = {
       force_process?: boolean
       rescan_reasons?: string[]
       rescan_note?: string | null
+      expected_receipt_count?: number | null
     },
   ) =>
     wfJson<WorkflowRun>(companyId, `/api/workflows/runs/${id}/re-vlm`, {
@@ -347,6 +348,7 @@ export const workflowApi = {
         force_process: options?.force_process ?? false,
         rescan_reasons: options?.rescan_reasons ?? [],
         rescan_note: options?.rescan_note ?? null,
+        expected_receipt_count: options?.expected_receipt_count ?? null,
       }),
     }),
   forceProcess: (companyId: string, runId: string, taskFileId: string) =>
@@ -466,7 +468,11 @@ const OCR_PRODUCER_NODE_TYPES = new Set(['VLM_API', 'VLMProposer', 'VLMDoubleChe
 export function applyRunReVlmLocally(
   run: WorkflowRun,
   taskFileIds: string[],
-  options?: { rescanReasons?: string[]; rescanNote?: string },
+  options?: {
+    rescanReasons?: string[]
+    rescanNote?: string
+    expectedReceiptCount?: number | null
+  },
 ): WorkflowRun {
   const idSet = new Set(taskFileIds)
   const files = run.files.map(f =>
@@ -485,11 +491,16 @@ export function applyRunReVlmLocally(
     .filter((l): l is string => Boolean(l))
   const focus = chipLabels.length > 0 ? chipLabels.join(', ') : undefined
   const note = (options?.rescanNote ?? '').trim() || undefined
+  const expected =
+    typeof options?.expectedReceiptCount === 'number' && options.expectedReceiptCount >= 2
+      ? options.expectedReceiptCount
+      : undefined
   const ocrDetail: Record<string, unknown> = { file_count: taskFileIds.length }
   if (focus) ocrDetail.rescan_focus = focus
   if (note) ocrDetail.rescan_note = note
+  if (expected != null) ocrDetail.expected_receipt_count = expected
   if (focus) ocrDetail.reason = `Re-VLM: ${focus}`
-  else if (note) ocrDetail.reason = 'Re-VLM'
+  else if (note || expected != null) ocrDetail.reason = 'Re-VLM'
   for (const node of graphNodes) {
     if (ocrIds.has(node.id)) {
       nodeStates[node.id] = { status: 'running', detail: ocrDetail }
