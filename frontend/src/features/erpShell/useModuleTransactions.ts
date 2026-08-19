@@ -392,7 +392,7 @@ export function useModuleTransactions(mode: string, companyId: string) {
     async (selectedKeys: Set<string>) => {
       setError(null)
       try {
-        let meta = resolveAnchor(rows, selectedKeys)
+        const meta = resolveAnchor(rows, selectedKeys)
         let runId = meta?.runId
         let batchId = meta?.batchId
         let runTitle = meta?.runTitle
@@ -458,7 +458,7 @@ export function useModuleTransactions(mode: string, companyId: string) {
       if (txs.length === 0) return 0
       setError(null)
       try {
-        let meta = resolveAnchor(rows, selectedKeys)
+        const meta = resolveAnchor(rows, selectedKeys)
         let runId = meta?.runId
         let batchId = meta?.batchId
         let runTitle = meta?.runTitle
