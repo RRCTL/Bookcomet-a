@@ -58,6 +58,7 @@ from app.services.extraction_validation import (
     dedupe_ar_ap_rows_within_file,
 )
 from app.services.re_vlm_hints import (
+    normalize_expected_receipt_count,
     rescan_reason_labels,
     sanitize_rescan_note,
     validate_rescan_reasons,
@@ -1140,6 +1141,7 @@ class WorkflowService:
         ap_force_cross_verify: bool = False,
         rescan_reasons: list[str] | None = None,
         rescan_note: str | None = None,
+        expected_receipt_count: int | None = None,
     ) -> dict[str, Any]:
         from app.services.abuse_guard import company_ocr_concurrency
 
@@ -1163,6 +1165,7 @@ class WorkflowService:
         trace_id = str(uuid.uuid4())
         validated_reasons = validate_rescan_reasons(rescan_reasons)
         safe_note = sanitize_rescan_note(rescan_note)
+        expected_count = normalize_expected_receipt_count(expected_receipt_count)
         prior_summary = _rescan_prior_summary_for_run_file(run_file)
 
         try:
@@ -1185,6 +1188,7 @@ class WorkflowService:
                         rescan_reasons=validated_reasons or None,
                         rescan_note=safe_note or None,
                         rescan_prior_summary=prior_summary or None,
+                        expected_receipt_count=expected_count,
                     )
         except WorkflowRunCancelled:
             run_file.file_status = "pending"
@@ -1226,6 +1230,29 @@ class WorkflowService:
             run_file.result_summary_json = result
             db.commit()
             return {"ok": False, "warning": True, "needs_confirmation": True, "result": result}
+
+        count_val = result.get("count_validation") if isinstance(result, dict) else None
+        if isinstance(count_val, dict):
+            if (
+                count_val.get("status") == "mismatch"
+                and str(count_val.get("assertion_strength") or "").lower() == "hard"
+            ):
+                expected = count_val.get("expected_receipt_count")
+                accepted = count_val.get("accepted_region_count")
+                extracted = count_val.get("extracted_region_count")
+                run_file.file_status = "warning"
+                run_file.error_text = (
+                    f"count_mismatch: expected={expected} "
+                    f"accepted={accepted} extracted={extracted}"
+                )
+                run_file.result_summary_json = result
+                db.commit()
+                return {
+                    "ok": False,
+                    "warning": True,
+                    "count_mismatch": True,
+                    "result": result,
+                }
 
         run_file.file_status = "ok"
         run_file.gate_result = None
@@ -1701,9 +1728,11 @@ class WorkflowService:
         force_process: bool = False,
         rescan_reasons: list[str] | None = None,
         rescan_note: str | None = None,
+        expected_receipt_count: int | None = None,
     ) -> WorkflowRun:
         validated_reasons = validate_rescan_reasons(rescan_reasons)
         safe_note = sanitize_rescan_note(rescan_note)
+        expected_count = normalize_expected_receipt_count(expected_receipt_count)
         receipt_signal, table_preset = receipt_settings(run.graph_json)
         multi_confirmed = receipt_signal == "multi_per_page" or force_process
         vlm_kwargs = WorkflowService._vlm_ocr_kwargs(run)
@@ -1742,11 +1771,16 @@ class WorkflowService:
         )
         run.run_status = "executing"
         _append_console(run, "info", f"Re-VLM {len(run_files)} file(s)...")
-        if validated_reasons or safe_note:
+        if validated_reasons or safe_note or expected_count is not None:
             labels = rescan_reason_labels(validated_reasons)
             reason_text = ", ".join(labels) if labels else "none"
             note_suffix = f"; note: {safe_note}" if safe_note else ""
-            _append_console(run, "info", f"Re-VLM reasons: {reason_text}{note_suffix}")
+            count_suffix = (
+                f"; expected_receipts: {expected_count}" if expected_count is not None else ""
+            )
+            _append_console(
+                run, "info", f"Re-VLM reasons: {reason_text}{note_suffix}{count_suffix}"
+            )
         _clear_run_cancel(run)
         db.commit()
         await workflow_event_hub.snapshot(run.id, run.run_status, run.node_states_json)
@@ -1780,6 +1814,7 @@ class WorkflowService:
                         multi_receipt_confirmed=file_multi or multi_confirmed,
                         rescan_reasons=validated_reasons,
                         rescan_note=safe_note,
+                        expected_receipt_count=expected_count,
                         **vlm_kwargs,
                     )
                 )

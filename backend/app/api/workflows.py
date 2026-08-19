@@ -88,6 +88,7 @@ class ReVlmRequest(BaseModel):
     force_process: bool = False
     rescan_reasons: list[str] = Field(default_factory=list)
     rescan_note: Optional[str] = None
+    expected_receipt_count: Optional[int] = None
 
 
 class MoveRunFileBatchRequest(BaseModel):
@@ -1075,6 +1076,7 @@ async def re_vlm_run(
         force_process=body.force_process,
         rescan_reasons=body.rescan_reasons,
         rescan_note=body.rescan_note,
+        expected_receipt_count=body.expected_receipt_count,
     )
     return _run_out(run, db)
 

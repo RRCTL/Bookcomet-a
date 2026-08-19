@@ -1359,7 +1359,13 @@ export default function NodeWorkspace() {
     }
   }
 
-  const handleReVlm = async ({ taskFileIds, rescanReasons, rescanNote, workflow }: ReVlmConfirmPayload) => {
+  const handleReVlm = async ({
+    taskFileIds,
+    rescanReasons,
+    rescanNote,
+    expectedReceiptCount,
+    workflow,
+  }: ReVlmConfirmPayload) => {
     if (!activeRun || !companyId || taskFileIds.length === 0 || busyRunId === activeRun.id) return
     setShowReVlm(false)
     setReVlmInitialFileIds([])
@@ -1370,6 +1376,7 @@ export default function NodeWorkspace() {
     const optimistic = applyRunReVlmLocally(activeRun, taskFileIds, {
       rescanReasons,
       rescanNote: rescanNote || undefined,
+      expectedReceiptCount: expectedReceiptCount ?? null,
     })
     setFullRunFromServer(optimistic)
     syncNodes(optimistic, undefined, true)
@@ -1400,6 +1407,7 @@ export default function NodeWorkspace() {
       const r = await workflowApi.reVlm(companyId, runId, taskFileIds, {
         rescan_reasons: rescanReasons,
         rescan_note: rescanNote || null,
+        expected_receipt_count: expectedReceiptCount ?? null,
       })
       setFullRunFromServer(r)
       syncNodes(r, undefined, true)

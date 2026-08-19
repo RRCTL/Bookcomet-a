@@ -42,7 +42,12 @@ from app.services.rule_memory_parser import (
     extract_ai_instructions as _extract_ai_instructions,
 )
 from app.services.exclusion_service import apply_exclusion_rules_to_rows as _apply_exclusions
-from app.services.re_vlm_hints import build_rescan_prompt_block
+from app.services.re_vlm_hints import (
+    build_rescan_prompt_block,
+    normalize_expected_receipt_count,
+    resolve_expected_receipt_count,
+    validate_rescan_reasons,
+)
 from app.services.chart_of_accounts import get_prompt_account_lines
 from app.services.decision_evidence import build_decision_evidence
 from app.services.document_gate import (
@@ -2410,12 +2415,15 @@ async def _ap_vlm_layout_try_receipt_regions(
     ocr_provider_name: str,
     ocr_model_override: str,
     background_job_id: str | None = None,
+    rescan_supplement: str | None = None,
+    expected_receipt_count: int | None = None,
 ) -> list[dict[str, int]] | None:
     """
     Optional VLM-first layout: thumbnail + JSON boxes. Returns pixel regions or None to fall back.
     """
     thumb_path: str | None = None
     max_attempts = 1 + AP_VLM_LAYOUT_MAX_RETRIES
+    expected = normalize_expected_receipt_count(expected_receipt_count)
     try:
         thumb_path, _tw, _th, full_w, full_h = _write_ap_layout_thumbnail(
             image_path, AP_VLM_LAYOUT_THUMB_MAX_SIDE,
@@ -2431,12 +2439,25 @@ async def _ap_vlm_layout_try_receipt_regions(
                 if use_repair
                 else AP_VLM_LAYOUT_DETECTION_PROMPT
             )
+            layout_hints: list[str] = []
+            if expected is not None:
+                layout_hints.append(
+                    f"User-stated physical receipt count for this page: {expected}. "
+                    f'Set "count" to {expected} and return exactly {expected} boxes in '
+                    '"receipts" (one box per distinct slip). Do not invent empty slips.'
+                )
+            sup = (rescan_supplement or "").strip()
+            if sup:
+                layout_hints.append(sup)
+            if layout_hints:
+                prompt = prompt + "\n\n" + "\n".join(layout_hints)
             logger.info(
-                "[AP layout] attempt=%s/%s prompt=%s max_retries_env=%s",
+                "[AP layout] attempt=%s/%s prompt=%s max_retries_env=%s expected_count=%s",
                 attempt + 1,
                 max_attempts,
                 "repair" if use_repair else "initial",
                 AP_VLM_LAYOUT_MAX_RETRIES,
+                expected,
             )
             result = await _ocr_service.recognize(
                 thumb_path,
@@ -2548,6 +2569,9 @@ async def _run_ap_multi_receipt_ocr_from_image(
     pdf_page_num: int = 1,
     background_job_id: str | None = None,
     rescan_supplement: str | None = None,
+    expected_receipt_count: int | None = None,
+    count_assertion_strength: str = "unknown",
+    prefer_denser_split: bool = False,
 ) -> dict | None:
     """
     pdf_page_num: the actual PDF page this image came from (1-based).
@@ -2555,6 +2579,10 @@ async def _run_ap_multi_receipt_ocr_from_image(
     rather than the receipt-region index within the page.
     """
     _raise_if_bg_job_cancelled(background_job_id)
+    expected = normalize_expected_receipt_count(expected_receipt_count)
+    strength = (count_assertion_strength or "unknown").strip().lower()
+    if strength not in ("hard", "soft", "unknown"):
+        strength = "unknown"
     receipt_regions: list[dict[str, int]] = []
     layout_ok = False
     if processing_mode == "AP" and AP_VLM_LAYOUT_CROP_ENABLED:
@@ -2563,6 +2591,8 @@ async def _run_ap_multi_receipt_ocr_from_image(
             ocr_provider_name=ocr_provider_name,
             ocr_model_override=ocr_model_override,
             background_job_id=background_job_id,
+            rescan_supplement=rescan_supplement,
+            expected_receipt_count=expected,
         )
         if vlm_regs is not None:
             receipt_regions = vlm_regs
@@ -2614,19 +2644,55 @@ async def _run_ap_multi_receipt_ocr_from_image(
             "[AP] Auto-detection found ≤1 region but user confirmed multi-receipt; "
             "attempting forced split of image.",
         )
-        receipt_regions = _force_split_receipt_regions(image_path)
+        receipt_regions = _force_split_receipt_regions(
+            image_path,
+            expected_receipt_count=expected,
+        )
+        seg_source = "force_split"
         if len(receipt_regions) < 2:
             logger.warning(
                 "[AP] Forced split also failed; falling back to single-receipt processing.",
             )
             return None
 
+    # Count-aware / missed-receipt recovery: prefer denser or count-matching geometry
+    # when baseline under-segments (e.g. 3 tall columns for a 3x3 page of slips).
+    if confirmed or prefer_denser_split or expected is not None:
+        forced = _force_split_receipt_regions(
+            image_path,
+            expected_receipt_count=expected,
+        )
+        if forced and len(forced) >= 2:
+            use_forced = False
+            if expected is not None:
+                cur_gap = abs(len(receipt_regions) - expected)
+                forced_gap = abs(len(forced) - expected)
+                if forced_gap < cur_gap or (
+                    forced_gap == cur_gap and len(forced) > len(receipt_regions)
+                ):
+                    use_forced = True
+            elif prefer_denser_split and len(forced) > len(receipt_regions):
+                use_forced = True
+            elif confirmed and len(forced) > len(receipt_regions):
+                # Multi-receipt confirmed: prefer denser H×V evidence over sparse OpenCV boxes.
+                use_forced = True
+            if use_forced:
+                logger.info(
+                    "[AP] Count-aware recovery: %s regions (%s) → %s regions (force_split)",
+                    len(receipt_regions),
+                    seg_source,
+                    len(forced),
+                )
+                receipt_regions = forced
+                seg_source = "force_split_count_recovery"
+
     logger.info(
         "[AP] Detected %s receipt regions (source=%s); processing as multi-receipt image "
-        "(crop_concurrency=%s).",
+        "(crop_concurrency=%s expected_count=%s).",
         len(receipt_regions),
         seg_source,
         AP_CROP_OCR_CONCURRENCY,
+        expected,
     )
     cropped_paths = _crop_receipt_regions(image_path, receipt_regions)
     n_crops = len(cropped_paths)
@@ -2854,6 +2920,28 @@ async def _run_ap_multi_receipt_ocr_from_image(
     else:
         _mr_job_outcome = "partial"
 
+    extracted_region_count = sum(
+        1
+        for p in all_pages_results
+        if isinstance(p, dict) and p.get("status") != "error"
+    )
+    count_status = "not_asserted"
+    if expected is not None:
+        count_status = (
+            "matched"
+            if len(receipt_regions) == expected and extracted_region_count == expected
+            else "mismatch"
+        )
+    count_validation = {
+        "expected_receipt_count": expected,
+        "assertion_strength": strength if expected is not None else "unknown",
+        "candidate_region_count": len(receipt_regions),
+        "accepted_region_count": len(receipt_regions),
+        "extracted_region_count": extracted_region_count,
+        "seg_source": seg_source,
+        "status": count_status,
+    }
+
     return {
         "trace_id": trace_id,
         "filename": filename,
@@ -2863,11 +2951,13 @@ async def _run_ap_multi_receipt_ocr_from_image(
         "ocr_job_outcome": _mr_job_outcome,
         "provider": ocr_provider_name,
         "processing_mode": processing_mode,
+        "count_validation": count_validation,
         "processing_steps": {
             "multi_receipt_split": "completed",
             "ocr_provider": ocr_provider_name,
             "pages_processed": len(all_pages_results),
             "structured_ocr_second_pass": "completed",
+            "seg_source": seg_source,
         }
     }
 
@@ -3926,7 +4016,66 @@ def _detect_receipt_regions_pil(image_path: str) -> list[dict[str, int]]:
         return []
 
 
-def _force_split_receipt_regions(image_path: str) -> list[dict[str, int]]:
+def _grid_regions_from_axis_strips(
+    v_regions: list[dict[str, int]],
+    h_regions: list[dict[str, int]],
+) -> list[dict[str, int]]:
+    """Cartesian product of vertical × horizontal strips → page-native cells (any N)."""
+    cells: list[dict[str, int]] = []
+    for hr in h_regions:
+        for vr in v_regions:
+            cells.append(
+                {
+                    "x": int(vr["x"]),
+                    "y": int(hr["y"]),
+                    "w": int(vr["w"]),
+                    "h": int(hr["h"]),
+                }
+            )
+    return cells
+
+
+def _pick_force_split_hypothesis(
+    v_regions: list[dict[str, int]],
+    h_regions: list[dict[str, int]],
+    *,
+    expected_count: int | None = None,
+) -> list[dict[str, int]]:
+    """
+    Choose among 1-axis strips and optional 2D grid without assuming a fixed layout.
+
+    When both axes produce multi-region strips, the grid hypothesis is considered.
+    An optional expected_count ranks hypotheses by closeness to N (7, 9, 10, …).
+    """
+    candidates: list[list[dict[str, int]]] = []
+    if len(v_regions) > 1 and len(h_regions) > 1:
+        grid = _grid_regions_from_axis_strips(v_regions, h_regions)
+        if len(grid) > 1:
+            candidates.append(grid)
+    if len(v_regions) > 1:
+        candidates.append(v_regions)
+    if len(h_regions) > 1:
+        candidates.append(h_regions)
+    if not candidates:
+        return []
+
+    expected = normalize_expected_receipt_count(expected_count)
+    if expected is not None:
+        exact = [c for c in candidates if len(c) == expected]
+        if exact:
+            return exact[0]
+        candidates.sort(key=lambda c: (abs(len(c) - expected), -len(c)))
+        return candidates[0]
+
+    # No asserted count: prefer densest credible hypothesis (grid when both axes work).
+    return max(candidates, key=len)
+
+
+def _force_split_receipt_regions(
+    image_path: str,
+    *,
+    expected_receipt_count: int | None = None,
+) -> list[dict[str, int]]:
     """
     N-way splitter used when the user confirmed multiple receipts but automatic
     detection found only one region.
@@ -3934,6 +4083,9 @@ def _force_split_receipt_regions(image_path: str) -> list[dict[str, int]]:
     Improvements over the old binary split:
     - Finds ALL significant whitespace gaps (not just the single largest one),
       enabling 3-way, 4-way, etc. splits for composite scans.
+    - When BOTH horizontal and vertical gaps are credible, builds a 2D grid of
+      cells (any rows×cols product) instead of discarding one axis.
+    - Optional expected_receipt_count ranks hypotheses toward any N.
     - Uses a noise-tolerant threshold instead of requiring exactly-zero ink,
       so JPEG/scanner artifacts in gap columns no longer break detection.
     - Searches across 5–95 % of the image (old code restricted to 30–70 %).
@@ -4055,20 +4207,19 @@ def _force_split_receipt_regions(image_path: str) -> list[dict[str, int]]:
             inv_x = orig_w / float(scan_w)
             inv_y = orig_h / float(scan_h)
 
-            # Try both axes and pick the one that produces more valid regions.
             v_centres = _find_all_gap_centres(col_ink, scan_w)
             h_centres = _find_all_gap_centres(row_ink, scan_h)
 
             v_regions = _gaps_to_regions_h(v_centres, scan_w, inv_x, orig_w, orig_h, is_vertical=True)
             h_regions = _gaps_to_regions_h(h_centres, scan_h, inv_y, orig_h, orig_w, is_vertical=False)
 
-            # Prefer the axis with more splits; tie-break by image orientation.
-            if len(v_regions) > 1 and len(h_regions) > 1:
-                return v_regions if len(v_regions) >= len(h_regions) else h_regions
-            if len(v_regions) > 1:
-                return v_regions
-            if len(h_regions) > 1:
-                return h_regions
+            picked = _pick_force_split_hypothesis(
+                v_regions,
+                h_regions,
+                expected_count=expected_receipt_count,
+            )
+            if picked:
+                return picked
 
             # Last resort: centre half-split along the longer axis.
             if orig_w >= orig_h:
@@ -4530,6 +4681,7 @@ async def ocr_test_core(
     rescan_reasons: list[str] | None = None,
     rescan_note: str | None = None,
     rescan_prior_summary: str | None = None,
+    expected_receipt_count: int | None = None,
 ) -> dict:
     """Core OCR pipeline (shared by /ocr/test and background OCR jobs).
 
@@ -4660,12 +4812,32 @@ async def ocr_test_core(
             if processing_mode == "BANK"
             else (AP_MULTI_RECEIPT_DOCUMENT_PARSING_PROMPT if processing_mode in ("AR", "AP") else None)
         )
+        _expected_count, _count_source, _count_strength = resolve_expected_receipt_count(
+            explicit=expected_receipt_count,
+            note=rescan_note,
+        )
+        _prefer_denser_split = "missed_receipts" in validate_rescan_reasons(rescan_reasons or [])
         _rescan_block = build_rescan_prompt_block(
             reasons=rescan_reasons,
             note=rescan_note,
             prior_summary=rescan_prior_summary,
+            expected_receipt_count=_expected_count,
         )
         _rescan_supplement = _rescan_block or None
+        _multi_receipt_kwargs = {
+            "rescan_supplement": _rescan_supplement,
+            "expected_receipt_count": _expected_count,
+            "count_assertion_strength": _count_strength,
+            "prefer_denser_split": _prefer_denser_split,
+        }
+        if _expected_count is not None:
+            logger.info(
+                "   [M-VDU] expected_receipt_count=%s source=%s strength=%s prefer_denser=%s",
+                _expected_count,
+                _count_source,
+                _count_strength,
+                _prefer_denser_split,
+            )
         # Stage 1 enhancement: inject AI Behaviour Instructions from rule memory into the VLM prompt
         _stage1_rule_md = _load_rule_memory_for_ocr(db, company_id, processing_mode)
         _stage1_hints = _extract_ai_instructions(_stage1_rule_md)
@@ -5024,7 +5196,7 @@ async def ocr_test_core(
                                             confirmed=multi_receipt_confirmed,
                                             pdf_page_num=page_num,
                                             background_job_id=background_job_id,
-                                            rescan_supplement=_rescan_supplement,
+                                            **_multi_receipt_kwargs,
                                         )
                                         if multi_result is not None:
                                             pending_events.append({
@@ -5511,7 +5683,7 @@ async def ocr_test_core(
                                 confirmed=multi_receipt_confirmed,
                                 pdf_page_num=1,
                                 background_job_id=background_job_id,
-                                rescan_supplement=_rescan_supplement,
+                                **_multi_receipt_kwargs,
                             )
                             if multi_receipt_result is not None:
                                 return multi_receipt_result
@@ -5588,7 +5760,7 @@ async def ocr_test_core(
                         confirmed=multi_receipt_confirmed,
                         pdf_page_num=1,
                         background_job_id=background_job_id,
-                        rescan_supplement=_rescan_supplement,
+                        **_multi_receipt_kwargs,
                     )
                     if multi_receipt_result is not None:
                         return multi_receipt_result

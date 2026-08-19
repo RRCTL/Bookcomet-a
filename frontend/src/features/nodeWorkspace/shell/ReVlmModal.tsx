@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 
 import {
 
+  RE_VLM_EXPECTED_COUNT_MAX,
+
   RE_VLM_NOTE_MAX_LEN,
 
   RE_VLM_REASON_CHIPS,
@@ -113,6 +115,8 @@ export function ReVlmModal({
   )
 
   const [note, setNote] = useState('')
+
+  const [expectedCount, setExpectedCount] = useState('')
 
   const [workflowDraft, setWorkflowDraft] = useState<ReVlmWorkflowSettings | null>(null)
 
@@ -482,6 +486,40 @@ export function ReVlmModal({
 
         <label className="mb-4 block text-sm">
 
+          <span className="mb-1 block font-medium">Expected physical receipts (optional)</span>
+
+          <input
+
+            type="number"
+
+            min={2}
+
+            max={RE_VLM_EXPECTED_COUNT_MAX}
+
+            className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"
+
+            value={expectedCount}
+
+            placeholder="e.g. 7, 9, or 10 — any count"
+
+            onChange={e => setExpectedCount(e.target.value)}
+
+          />
+
+          <span className="mt-1 block text-xs text-gray-500">
+
+            Hard count assertion for this Re-VLM. Used to rank segmentation hypotheses and
+
+            block silent success on mismatch. Leave blank if unsure.
+
+          </span>
+
+        </label>
+
+
+
+        <label className="mb-4 block text-sm">
+
           <span className="mb-1 block font-medium">Additional note (optional)</span>
 
           <textarea
@@ -529,6 +567,16 @@ export function ReVlmModal({
                 rescanReasons: selectedReasons,
 
                 rescanNote: note.trim(),
+
+                expectedReceiptCount: (() => {
+
+                  const n = Number.parseInt(expectedCount, 10)
+
+                  if (!Number.isFinite(n) || n < 2 || n > RE_VLM_EXPECTED_COUNT_MAX) return null
+
+                  return n
+
+                })(),
 
                 workflow: workflowDraft ?? undefined,
 
