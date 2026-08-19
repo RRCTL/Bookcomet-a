@@ -1,12 +1,11 @@
 import { StrictMode, lazy, Suspense } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { BrowserRouter, Navigate, Routes, Route } from 'react-router-dom'
 import './index.css'
 import { AuthProvider } from './contexts/AuthContext.tsx'
 import { AuthGuard, AuthLoadingScreen } from './components/AuthGuard.tsx'
 import { WorkspaceErrorBoundary } from './components/WorkspaceErrorBoundary.tsx'
 
-const LandingPage = lazy(() => import('./pages/LandingPage.tsx'))
 const LoginPage = lazy(() => import('./pages/LoginPage.tsx'))
 const RegisterPage = lazy(() => import('./pages/RegisterPage.tsx'))
 /** Lazy so public routes do not load the workspace graph; workspace is its own chunk. */
@@ -32,7 +31,7 @@ createRoot(document.getElementById('root')!).render(
       <AuthProvider>
         <Suspense fallback={<AuthLoadingScreen />}>
           <Routes>
-            <Route path="/" element={<LandingPage />} />
+            <Route path="/" element={<Navigate to="/login" replace />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
             <Route

@@ -4,7 +4,7 @@ const LOGO_SRC = '/bookcomet-logo.png'
 const INTRINSIC_WIDTH = 1024
 const INTRINSIC_HEIGHT = 768
 
-export type BookcometLogoVariant = 'landing' | 'workspace' | 'auth' | 'footer' | 'picker'
+export type BookcometLogoVariant = 'workspace' | 'auth' | 'footer' | 'picker'
 
 type Props = {
   variant: BookcometLogoVariant
