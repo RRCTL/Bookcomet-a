@@ -36,10 +36,19 @@ export type FlatRow = {
   tx: Tx
 }
 
+/** Title for runs created from Books Add Row / Import CSV when the module has no VLM batches yet. */
+export const MANUAL_MODULE_RUN_TITLE = 'Manual / CSV entry'
+
+export function isManualModuleRunTitle(title: string | null | undefined): boolean {
+  return (title || '').trim() === MANUAL_MODULE_RUN_TITLE
+}
+
 /**
  * Runs whose rows belong in the destination module. Only approved runs appear:
  * awaiting_review (pre-approval) is excluded so unapproved rows stay in Processing
  * until the user approves. coa_running onward means approval already happened.
+ *
+ * Manual / CSV entry drafts are included so Add Row / Import work before any VLM run exists.
  */
 const INCLUDED_STATUSES = new Set([
   'coa_running',
@@ -47,6 +56,16 @@ const INCLUDED_STATUSES = new Set([
   'done',
   'saved',
 ])
+
+function isModuleRunCandidate(run: {
+  processing_removed_at?: string | null
+  run_status: string
+  title?: string | null
+}): boolean {
+  if (isManualModuleRunTitle(run.title)) return true
+  if (run.processing_removed_at) return false
+  return INCLUDED_STATUSES.has(run.run_status.toLowerCase())
+}
 
 /** VLM finished timestamp: the VLM/merge node `finished_at`, else the latest across nodes. */
 export function vlmFinishedAt(run: WorkflowRun): string | null {
@@ -99,6 +118,7 @@ export function useModuleTransactions(mode: string, companyId: string) {
   const [rows, setRows] = useState<FlatRow[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [preparing, setPreparing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [dirty, setDirty] = useState<Set<string>>(new Set())
 
@@ -107,6 +127,9 @@ export function useModuleTransactions(mode: string, companyId: string) {
   const basePayloadsRef = useRef<Map<string, Tx>>(new Map())
   const batchInfoRef = useRef<Map<string, { runId: string; batchId: string }>>(new Map())
   const seqRef = useRef(0)
+  /** In-session manual batch created when the module had no existing VLM/approved rows. */
+  const pendingManualRef = useRef<{ runId: string; batchId: string; run: WorkflowRun } | null>(null)
+  const ensuringManualRef = useRef<Promise<{ runId: string; batchId: string; run: WorkflowRun }> | null>(null)
 
   const reload = useCallback(async () => {
     setLoading(true)
@@ -114,11 +137,10 @@ export function useModuleTransactions(mode: string, companyId: string) {
     try {
       const all = await workflowApi.listRuns(companyId)
       const candidates = all.filter(
-        r =>
-          !r.processing_removed_at &&
-          r.processing_mode === upper &&
-          INCLUDED_STATUSES.has(r.run_status.toLowerCase()),
+        r => (r.processing_mode || '').toUpperCase() === upper && isModuleRunCandidate(r),
       )
+      pendingManualRef.current = null
+      ensuringManualRef.current = null
       const runsMap = new Map<string, WorkflowRun>()
       const base = new Map<string, Tx>()
       const info = new Map<string, { runId: string; batchId: string }>()
@@ -158,11 +180,26 @@ export function useModuleTransactions(mode: string, companyId: string) {
             })
           })
         }
+        // Empty manual containers still need a batch key so Add/Import can attach without creating another run.
+        if (isManualModuleRunTitle(title) && Object.keys(loaded).length === 0) {
+          const batchId = `manual-${full.id}`
+          const key = `${full.id}::${batchId}`
+          base.set(key, isBank ? { bankTransactions: [] } : { arapTransactions: [] })
+          info.set(key, { runId: full.id, batchId })
+        }
       })
 
       runsRef.current = runsMap
       basePayloadsRef.current = base
       batchInfoRef.current = info
+      // Prefer an existing manual container for the next empty-module Add/Import.
+      for (const meta of info.values()) {
+        const run = runsMap.get(meta.runId)
+        if (run && isManualModuleRunTitle(run.title)) {
+          pendingManualRef.current = { runId: meta.runId, batchId: meta.batchId, run }
+          break
+        }
+      }
       setRows(next)
       setDirty(new Set())
     } catch (err) {
@@ -271,106 +308,221 @@ export function useModuleTransactions(mode: string, companyId: string) {
     )
   }, [])
 
-  const addRow = useCallback(
-    (selectedKeys: Set<string>) => {
-      setRows(prev => {
-        const anchor = resolveAnchor(prev, selectedKeys)
-        if (!anchor) return prev
-        const blank: Tx = isBank
-          ? {
-              id_number: '',
-              date: new Date().toISOString().slice(0, 10),
-              account_type: '',
-              particulars: '',
-              deposit: null,
-              withdrawal: null,
-              balance: undefined,
-              currency: 'HKD',
-              account_code: '',
-              category: '',
-              source_file: '',
-              manual_entry: true,
-              // Keeps multi-batch reload attribution for AP/AR/Bank Add Row.
-              upload_batch_id: anchor.batchId,
-            }
-          : {
-              id_number: '',
-              date: new Date().toISOString().slice(0, 10),
-              transaction_type: upper === 'AP' ? 'AP' : 'AR',
-              amount: null,
-              debit: null,
-              credit: null,
-              dr_cr: defaultDrCr(upper),
-              currency: 'HKD',
-              payer: '',
-              payee: '',
-              bank: '',
-              account_code: '',
-              category: '',
-              memo: '',
-              source_file: '',
-              manual_entry: true,
-              upload_batch_id: anchor.batchId,
-            }
-        const newRow: FlatRow = {
-          key: `${anchor.runId}::${anchor.batchId}::${seqRef.current++}`,
-          runId: anchor.runId,
-          batchId: anchor.batchId,
-          runTitle: anchor.runTitle,
-          vlmAt: anchor.vlmAt,
-          runStatus: anchor.runStatus,
-          taskId: anchor.taskId,
-          // Manual Add Row — no OCR source file; Preview column shows "Manual".
-          fileId: null,
-          filename: '',
-          tx: blank,
-        }
-        markDirty(anchor.runId, anchor.batchId)
-        const idx = prev.findIndex(r => r.key === anchor.key)
-        const next = [...prev]
-        next.splice(idx + 1, 0, newRow)
-        return next
+  /** Create (or reuse) a manual run+batch when the module has no existing rows to attach to. */
+  const ensureManualBatch = useCallback(async (): Promise<{ runId: string; batchId: string; run: WorkflowRun }> => {
+    if (pendingManualRef.current) return pendingManualRef.current
+
+    for (const meta of batchInfoRef.current.values()) {
+      const run = runsRef.current.get(meta.runId)
+      if (run && isManualModuleRunTitle(run.title)) {
+        const info = { runId: meta.runId, batchId: meta.batchId, run }
+        pendingManualRef.current = info
+        return info
+      }
+    }
+
+    if (ensuringManualRef.current) return ensuringManualRef.current
+
+    const pending = (async () => {
+      const created = await workflowApi.createRun(companyId, upper)
+      const run = await workflowApi.patchRunMeta(companyId, created.id, {
+        title: MANUAL_MODULE_RUN_TITLE,
+        // Keep Processing clean — Books owns this container until VLM batches exist.
+        remove_from_processing: true,
       })
+      const batchId = `manual-${crypto.randomUUID()}`
+      const key = `${run.id}::${batchId}`
+      runsRef.current.set(run.id, run)
+      batchInfoRef.current.set(key, { runId: run.id, batchId })
+      basePayloadsRef.current.set(key, isBank ? { bankTransactions: [] } : { arapTransactions: [] })
+      const info = { runId: run.id, batchId, run }
+      pendingManualRef.current = info
+      return info
+    })()
+
+    ensuringManualRef.current = pending
+    try {
+      return await pending
+    } finally {
+      if (ensuringManualRef.current === pending) ensuringManualRef.current = null
+    }
+  }, [companyId, upper, isBank])
+
+  const blankTx = useCallback(
+    (batchId: string): Tx =>
+      isBank
+        ? {
+            id_number: '',
+            date: new Date().toISOString().slice(0, 10),
+            account_type: '',
+            particulars: '',
+            deposit: null,
+            withdrawal: null,
+            balance: undefined,
+            currency: 'HKD',
+            account_code: '',
+            category: '',
+            source_file: '',
+            manual_entry: true,
+            upload_batch_id: batchId,
+          }
+        : {
+            id_number: '',
+            date: new Date().toISOString().slice(0, 10),
+            transaction_type: upper === 'AP' ? 'AP' : 'AR',
+            amount: null,
+            debit: null,
+            credit: null,
+            dr_cr: defaultDrCr(upper),
+            currency: 'HKD',
+            payer: '',
+            payee: '',
+            bank: '',
+            account_code: '',
+            category: '',
+            memo: '',
+            source_file: '',
+            manual_entry: true,
+            upload_batch_id: batchId,
+          },
+    [isBank, upper],
+  )
+
+  const addRow = useCallback(
+    async (selectedKeys: Set<string>) => {
+      setError(null)
+      try {
+        const meta = resolveAnchor(rows, selectedKeys)
+        let runId = meta?.runId
+        let batchId = meta?.batchId
+        let runTitle = meta?.runTitle
+        let vlmAt = meta?.vlmAt ?? null
+        let runStatus = meta?.runStatus
+        let taskId = meta?.taskId
+
+        if (!runId || !batchId) {
+          setPreparing(true)
+          const manual = await ensureManualBatch()
+          runId = manual.runId
+          batchId = manual.batchId
+          runTitle = manual.run.title || MANUAL_MODULE_RUN_TITLE
+          vlmAt = null
+          runStatus = manual.run.run_status
+          taskId = manual.run.task_id
+        }
+
+        const anchorRunId = runId
+        const anchorBatchId = batchId
+        const anchorTitle = runTitle || MANUAL_MODULE_RUN_TITLE
+        const anchorVlmAt = vlmAt
+        const anchorStatus = runStatus || 'draft'
+        const anchorTaskId = taskId || ''
+
+        setRows(prev => {
+          const live = resolveAnchor(prev, selectedKeys)
+          const useRunId = live?.runId ?? anchorRunId
+          const useBatchId = live?.batchId ?? anchorBatchId
+          const newRow: FlatRow = {
+            key: `${useRunId}::${useBatchId}::${seqRef.current++}`,
+            runId: useRunId,
+            batchId: useBatchId,
+            runTitle: live?.runTitle ?? anchorTitle,
+            vlmAt: live?.vlmAt ?? anchorVlmAt,
+            runStatus: live?.runStatus ?? anchorStatus,
+            taskId: live?.taskId ?? anchorTaskId,
+            fileId: null,
+            filename: '',
+            tx: blankTx(useBatchId),
+          }
+          markDirty(useRunId, useBatchId)
+          if (live) {
+            const idx = prev.findIndex(r => r.key === live.key)
+            const next = [...prev]
+            next.splice(idx + 1, 0, newRow)
+            return next
+          }
+          return [...prev, newRow]
+        })
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Could not add a row.')
+      } finally {
+        setPreparing(false)
+      }
     },
-    [isBank, upper, markDirty, resolveAnchor],
+    [rows, resolveAnchor, ensureManualBatch, blankTx, markDirty],
   )
 
   /** Append CSV-imported manual rows onto the selected (or latest) batch — Save to persist. */
   const importRows = useCallback(
-    (txs: Tx[], selectedKeys: Set<string>): number => {
+    async (txs: Tx[], selectedKeys: Set<string>): Promise<number> => {
       if (txs.length === 0) return 0
-      // Resolve against current rows before setState — updater runs later, so a
-      // count set inside setRows always stayed 0 and showed a false failure alert.
-      const anchor = resolveAnchor(rows, selectedKeys)
-      if (!anchor) return 0
-      markDirty(anchor.runId, anchor.batchId)
-      setRows(prev => {
-        const live = resolveAnchor(prev, selectedKeys) ?? anchor
-        const newRows: FlatRow[] = txs.map(raw => ({
-          key: `${live.runId}::${live.batchId}::${seqRef.current++}`,
-          runId: live.runId,
-          batchId: live.batchId,
-          runTitle: live.runTitle,
-          vlmAt: live.vlmAt,
-          runStatus: live.runStatus,
-          taskId: live.taskId,
-          fileId: null,
-          filename: '',
-          tx: {
-            ...raw,
-            manual_entry: true,
-            upload_batch_id: live.batchId,
-            source_file: raw.source_file ?? '',
-          },
-        }))
-        const idx = prev.findIndex(r => r.key === live.key)
-        const next = [...prev]
-        next.splice(idx < 0 ? prev.length : idx + 1, 0, ...newRows)
-        return next
-      })
-      return txs.length
+      setError(null)
+      try {
+        const meta = resolveAnchor(rows, selectedKeys)
+        let runId = meta?.runId
+        let batchId = meta?.batchId
+        let runTitle = meta?.runTitle
+        let vlmAt = meta?.vlmAt ?? null
+        let runStatus = meta?.runStatus
+        let taskId = meta?.taskId
+
+        if (!runId || !batchId) {
+          setPreparing(true)
+          const manual = await ensureManualBatch()
+          runId = manual.runId
+          batchId = manual.batchId
+          runTitle = manual.run.title || MANUAL_MODULE_RUN_TITLE
+          vlmAt = null
+          runStatus = manual.run.run_status
+          taskId = manual.run.task_id
+        }
+
+        const anchorRunId = runId
+        const anchorBatchId = batchId
+        const anchorTitle = runTitle || MANUAL_MODULE_RUN_TITLE
+        const anchorVlmAt = vlmAt
+        const anchorStatus = runStatus || 'draft'
+        const anchorTaskId = taskId || ''
+
+        markDirty(anchorRunId, anchorBatchId)
+        setRows(prev => {
+          const live = resolveAnchor(prev, selectedKeys)
+          const useRunId = live?.runId ?? anchorRunId
+          const useBatchId = live?.batchId ?? anchorBatchId
+          const newRows: FlatRow[] = txs.map(raw => ({
+            key: `${useRunId}::${useBatchId}::${seqRef.current++}`,
+            runId: useRunId,
+            batchId: useBatchId,
+            runTitle: live?.runTitle ?? anchorTitle,
+            vlmAt: live?.vlmAt ?? anchorVlmAt,
+            runStatus: live?.runStatus ?? anchorStatus,
+            taskId: live?.taskId ?? anchorTaskId,
+            fileId: null,
+            filename: '',
+            tx: {
+              ...raw,
+              manual_entry: true,
+              upload_batch_id: useBatchId,
+              source_file: raw.source_file ?? '',
+            },
+          }))
+          if (live) {
+            const idx = prev.findIndex(r => r.key === live.key)
+            const next = [...prev]
+            next.splice(idx < 0 ? prev.length : idx + 1, 0, ...newRows)
+            return next
+          }
+          return [...prev, ...newRows]
+        })
+        return txs.length
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'CSV import failed.')
+        return 0
+      } finally {
+        setPreparing(false)
+      }
     },
-    [rows, markDirty, resolveAnchor],
+    [rows, resolveAnchor, ensureManualBatch, markDirty],
   )
 
   const deleteRows = useCallback(
@@ -486,6 +638,7 @@ export function useModuleTransactions(mode: string, companyId: string) {
     rows,
     loading,
     saving,
+    preparing,
     deploying: isCoaDeploying(upper),
     error,
     dirty,

@@ -541,15 +541,11 @@ export function ModuleTransactionGrid({ module }: Props) {
     const file = e.target.files?.[0]
     e.target.value = ''
     if (!file) return
-    if (tx.rows.length === 0) {
-      window.alert('Import CSV needs at least one existing batch. Process files in Processing first, then import.')
-      return
-    }
     const csvMode = (mode === 'AP' || mode === 'AR' || mode === 'BANK' ? mode : 'AR') as ModuleCsvMode
     try {
       const text = await file.text()
       const txs = parseModuleCsvTransactions(text, csvMode)
-      const n = tx.importRows(txs, selectedIds)
+      const n = await tx.importRows(txs, selectedIds)
       if (n === 0) {
         window.alert('No rows were imported.')
         return
@@ -646,8 +642,14 @@ export function ModuleTransactionGrid({ module }: Props) {
       </FilterBar>
 
       <div className="erp-gridbar">
-        <button type="button" className="erp-btn" onClick={() => tx.addRow(selectedIds)} disabled={tx.rows.length === 0}>
-          Add Row
+        <button
+          type="button"
+          className="erp-btn"
+          onClick={() => void tx.addRow(selectedIds)}
+          disabled={tx.loading || tx.saving || tx.deploying || tx.preparing}
+          title="Add a blank transaction row"
+        >
+          {tx.preparing ? 'Preparing...' : 'Add Row'}
         </button>
         <button type="button" className="erp-btn danger" onClick={onDelete} disabled={selectedIds.size === 0}>
           Delete Selected
@@ -656,7 +658,7 @@ export function ModuleTransactionGrid({ module }: Props) {
           type="button"
           className="erp-btn"
           onClick={() => void tx.deployCodes(selectedIds.size > 0 ? selectedIds : undefined)}
-          disabled={tx.rows.length === 0 || tx.saving || tx.deploying}
+          disabled={tx.rows.length === 0 || tx.saving || tx.deploying || tx.preparing}
           title="Use AI to assign Chart of Accounts codes"
         >
           {tx.deploying ? 'Deploying...' : 'Deploy Codes'}
@@ -665,7 +667,7 @@ export function ModuleTransactionGrid({ module }: Props) {
           type="button"
           className="erp-btn"
           onClick={() => importInputRef.current?.click()}
-          disabled={tx.rows.length === 0 || tx.saving || tx.deploying}
+          disabled={tx.loading || tx.saving || tx.deploying || tx.preparing}
           title="Import transactions from CSV (no VLM). Save afterwards to persist."
         >
           Import CSV
@@ -722,7 +724,7 @@ export function ModuleTransactionGrid({ module }: Props) {
         onToggleAll={toggleAll}
         loading={tx.loading}
         error={tx.error}
-        emptyText={`No ${module.label} transactions yet. Process files in Processing.`}
+        emptyText={`No ${module.label} transactions yet. Add a row, import CSV, or process files in Processing.`}
       />
 
       <GridFooter

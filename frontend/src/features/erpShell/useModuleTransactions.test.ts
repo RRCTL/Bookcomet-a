@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { WorkflowRun } from '../nodeWorkspace/workflowApi'
-import { vlmFinishedAt } from './useModuleTransactions'
+import {
+  isManualModuleRunTitle,
+  MANUAL_MODULE_RUN_TITLE,
+  vlmFinishedAt,
+} from './useModuleTransactions'
 
 function run(nodeStates: Record<string, unknown> | null, processingMode = 'AP'): WorkflowRun {
   return {
@@ -53,5 +57,19 @@ describe('vlmFinishedAt', () => {
     )
     expect(r.processing_mode).toBe('AR')
     expect(vlmFinishedAt(r)).toBe('2026-06-02T08:00:00Z')
+  })
+})
+
+describe('isManualModuleRunTitle', () => {
+  it('matches the Books manual / CSV container title', () => {
+    expect(isManualModuleRunTitle(MANUAL_MODULE_RUN_TITLE)).toBe(true)
+    expect(isManualModuleRunTitle(`  ${MANUAL_MODULE_RUN_TITLE}  `)).toBe(true)
+  })
+
+  it('rejects ordinary Processing run titles', () => {
+    expect(isManualModuleRunTitle('Untitled')).toBe(false)
+    expect(isManualModuleRunTitle('AP invoices')).toBe(false)
+    expect(isManualModuleRunTitle('')).toBe(false)
+    expect(isManualModuleRunTitle(null)).toBe(false)
   })
 })
