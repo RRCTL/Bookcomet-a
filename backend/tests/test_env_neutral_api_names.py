@@ -33,12 +33,29 @@ def test_provider_falls_back_to_llm_api_key(monkeypatch: pytest.MonkeyPatch):
     assert p._api_key == "llm-key"
 
 
-def test_provider_raises_without_any_key(monkeypatch: pytest.MonkeyPatch):
+def test_provider_constructs_without_any_key(monkeypatch: pytest.MonkeyPatch):
+    """Empty VLM/LLM keys must not block API boot / registry construction."""
     _clear_vlm_env(monkeypatch)
+    monkeypatch.setenv("VLM_API_KEY", "")
+    monkeypatch.setenv("LLM_API_KEY", "")
+    from app.ocr.providers import DeepSeekOcrProvider, OcrProviderRegistry
+
+    p = DeepSeekOcrProvider()
+    assert p._api_key == ""
+    reg = OcrProviderRegistry()
+    assert reg.get("DeepSeek-OCR") is not None
+
+
+@pytest.mark.asyncio
+async def test_provider_recognize_requires_key(monkeypatch: pytest.MonkeyPatch):
+    _clear_vlm_env(monkeypatch)
+    monkeypatch.setenv("VLM_API_KEY", "")
+    monkeypatch.setenv("LLM_API_KEY", "")
     from app.ocr.providers import DeepSeekOcrProvider
 
+    p = DeepSeekOcrProvider()
     with pytest.raises(RuntimeError, match="VLM_API_KEY"):
-        DeepSeekOcrProvider()
+        await p.recognize("/nonexistent.png")
 
 
 def test_chat_client_prefers_llm_names(monkeypatch: pytest.MonkeyPatch):

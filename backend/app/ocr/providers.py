@@ -64,14 +64,19 @@ class DeepSeekOcrProvider(OcrProvider):
         ).upper()
         self._jpeg_quality = int(os.getenv("VLM_JPEG_QUALITY") or "85")
 
-        if not self._api_key:
-            raise RuntimeError(
-                "VLM OCR API key missing. Set VLM_API_KEY (or LLM_API_KEY)."
-            )
+        # Allow construction with an empty key so the API can boot for local setup
+        # (Settings → API). Calls to recognize() still require a configured key.
 
     def set_model(self, model: str | None) -> None:
         """Explicitly set the model for the next recognize() call (takes priority over env var)."""
         self._explicit_model = model or None
+
+    def _require_api_key(self) -> None:
+        if not (self._api_key or "").strip():
+            raise RuntimeError(
+                "VLM OCR API key missing. Set VLM_API_KEY (or LLM_API_KEY) "
+                "in backend/.env or Settings → API before running OCR."
+            )
 
     async def recognize(
         self,
@@ -84,6 +89,7 @@ class DeepSeekOcrProvider(OcrProvider):
         import asyncio
 
         logger = logging.getLogger(__name__)
+        self._require_api_key()
 
         if not os.path.exists(image_path):
             raise RuntimeError(f"Image file not found: {image_path}")
