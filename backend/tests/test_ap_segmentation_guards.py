@@ -100,8 +100,14 @@ def test_pick_force_split_hypothesis_ranks_by_any_expected_count() -> None:
     picked = ocr._pick_force_split_hypothesis(v, h2, expected_count=4)
     assert len(picked) == 4
     picked7 = ocr._pick_force_split_hypothesis(v, h2, expected_count=7)
-    # closest among {4 grid, 2 v, 2 h} → 4
     assert len(picked7) == 4
+
+
+def test_ar_ap_row_has_business_signal() -> None:
+    assert ocr._ar_ap_row_has_business_signal({"amount": "12.5", "payee": "Cafe"})
+    assert ocr._ar_ap_row_has_business_signal({"amount": "12.5", "date": "2024-01-01"})
+    assert not ocr._ar_ap_row_has_business_signal({"amount": "", "payee": "Cafe"})
+    assert not ocr._ar_ap_row_has_business_signal({"amount": "12.5", "payee": ""})
 
 
 def test_force_split_tokyo_taxi_page_yields_nine_cells(tmp_path) -> None:
@@ -110,8 +116,13 @@ def test_force_split_tokyo_taxi_page_yields_nine_cells(tmp_path) -> None:
 
     pdf = Path(
         "/home/ubuntu/.cursor/projects/workspace/uploads/"
-        "96c6a5a8-2d86-4bc7-ba23-1ff8372a61a4_2f94.pdf"
+        "Cash_20250429_Tokyo_taxi_fees_d31c.pdf"
     )
+    if not pdf.is_file():
+        pdf = Path(
+            "/home/ubuntu/.cursor/projects/workspace/uploads/"
+            "96c6a5a8-2d86-4bc7-ba23-1ff8372a61a4_2f94.pdf"
+        )
     if not pdf.is_file():
         return
     doc = fitz.open(pdf)
@@ -120,6 +131,39 @@ def test_force_split_tokyo_taxi_page_yields_nine_cells(tmp_path) -> None:
     pix.save(str(img_path))
     regions = ocr._force_split_receipt_regions(str(img_path), expected_receipt_count=9)
     assert len(regions) == 9
-    # Also works when note-style expected count is omitted: densest grid still preferred.
     regions_auto = ocr._force_split_receipt_regions(str(img_path))
     assert len(regions_auto) == 9
+
+
+def test_force_split_filters_empty_margins_on_side_by_side(tmp_path) -> None:
+    """Side-by-side receipts must not keep blank left-margin strips."""
+    import fitz
+
+    pdf = Path("/home/ubuntu/.cursor/projects/workspace/uploads/expense-sample_b325.pdf")
+    if not pdf.is_file():
+        return
+    doc = fitz.open(pdf)
+    pix = doc[0].get_pixmap(dpi=150)
+    img_path = tmp_path / "expense_p1.png"
+    pix.save(str(img_path))
+    regions = ocr._force_split_receipt_regions(str(img_path))
+    assert len(regions) == 2
+    for reg in regions:
+        assert ocr._region_ink_fraction(str(img_path), reg) >= ocr.AP_SEG_MIN_INK_FRACTION
+
+
+def test_force_split_sample2024_pages(tmp_path) -> None:
+    """Multi-page HK receipt collage: p1=4, p2=3 side-by-side (no empty bottom row)."""
+    import fitz
+
+    pdf = Path("/home/ubuntu/.cursor/projects/workspace/uploads/2024____5__9fa6.pdf")
+    if not pdf.is_file():
+        return
+    doc = fitz.open(pdf)
+    expected = {0: 4, 1: 3}
+    for pi, want in expected.items():
+        pix = doc[pi].get_pixmap(dpi=150)
+        img_path = tmp_path / f"s2024_p{pi+1}.png"
+        pix.save(str(img_path))
+        regions = ocr._force_split_receipt_regions(str(img_path))
+        assert len(regions) == want, f"page {pi+1}: got {len(regions)} want {want}"
