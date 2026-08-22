@@ -11,10 +11,9 @@ import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping, Optional
 
 from fastapi import APIRouter, File, HTTPException, UploadFile, Form, Depends
-from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -392,6 +391,11 @@ try:
     AP_CROP_MAX_ASPECT_RATIO = float(os.getenv("AP_CROP_MAX_ASPECT_RATIO", "12.0"))
 except ValueError:
     AP_CROP_MAX_ASPECT_RATIO = 12.0
+try:
+    AP_SEG_MIN_INK_FRACTION = float(os.getenv("AP_SEG_MIN_INK_FRACTION", "0.025"))
+except ValueError:
+    AP_SEG_MIN_INK_FRACTION = 0.025
+AP_SEG_MIN_INK_FRACTION = max(0.0, min(AP_SEG_MIN_INK_FRACTION, 0.5))
 try:
     AP_SEG_MULTI_MIN_REGION_AREA_FRAC = float(
         os.getenv("AP_SEG_MULTI_MIN_REGION_AREA_FRAC", "0.06")
@@ -2686,6 +2690,27 @@ async def _run_ap_multi_receipt_ocr_from_image(
                 receipt_regions = forced
                 seg_source = "force_split_count_recovery"
 
+    # Drop near-blank margin strips before OCR (N-agnostic noise rejection).
+    if len(receipt_regions) >= 2:
+        filtered = _filter_credible_receipt_regions(image_path, receipt_regions)
+        if filtered and len(filtered) != len(receipt_regions):
+            logger.info(
+                "[AP] Low-ink filter: %s → %s credible regions",
+                len(receipt_regions),
+                len(filtered),
+            )
+            receipt_regions = filtered
+            if seg_source and "ink_filter" not in seg_source:
+                seg_source = f"{seg_source}+ink_filter"
+
+    if len(receipt_regions) < 2:
+        if not confirmed:
+            return None
+        logger.warning(
+            "[AP] Fewer than 2 credible regions after ink filter; cannot multi-split.",
+        )
+        return None
+
     logger.info(
         "[AP] Detected %s receipt regions (source=%s); processing as multi-receipt image "
         "(crop_concurrency=%s expected_count=%s).",
@@ -2900,9 +2925,29 @@ async def _run_ap_multi_receipt_ocr_from_image(
             if p.get("status") == "error":
                 continue
             ae = p.get("ai_enhanced") or {}
+            usable_rows: list[dict[str, Any]] = []
             for row in ae.get("tsv_rows") or []:
-                if isinstance(row, dict):
-                    batch_rows.append(row)
+                if not isinstance(row, dict):
+                    continue
+                if not _ar_ap_row_has_business_signal(row):
+                    # Empty / incomplete extraction must not become a normal AP/AR row.
+                    flags = list(row.get("validation_flags") or []) if isinstance(row.get("validation_flags"), list) else []
+                    if "incomplete_extraction" not in flags:
+                        flags.append("incomplete_extraction")
+                    row["validation_flags"] = flags
+                    row["needs_review"] = True
+                    continue
+                usable_rows.append(row)
+            if not usable_rows and ae.get("tsv_rows"):
+                p["status"] = "incomplete_extraction"
+                p["error_code"] = "INCOMPLETE_EXTRACTION"
+                p["error_detail"] = "Region produced no usable amount/identity fields"
+                crop_errors += 1
+            else:
+                batch_rows.extend(usable_rows)
+                if isinstance(ae, dict):
+                    ae["tsv_rows"] = usable_rows
+                    p["ai_enhanced"] = ae
         _extraction_validation.apply_batch_duplicate_flags_ar_ap(batch_rows)
     finally:
         for crop_path in cropped_paths:
@@ -2923,7 +2968,7 @@ async def _run_ap_multi_receipt_ocr_from_image(
     extracted_region_count = sum(
         1
         for p in all_pages_results
-        if isinstance(p, dict) and p.get("status") != "error"
+        if isinstance(p, dict) and p.get("status") not in ("error", "incomplete_extraction")
     )
     count_status = "not_asserted"
     if expected is not None:
@@ -4035,17 +4080,170 @@ def _grid_regions_from_axis_strips(
     return cells
 
 
+def _region_ink_fraction(image_path: str, region: dict[str, int]) -> float:
+    """Fraction of pixels darker than near-white in a page-native region (0..1)."""
+    from PIL import Image
+
+    try:
+        with Image.open(image_path) as img:
+            gray = img.convert("L")
+            x = max(0, int(region.get("x", 0)))
+            y = max(0, int(region.get("y", 0)))
+            w = max(0, int(region.get("w", 0)))
+            h = max(0, int(region.get("h", 0)))
+            if w < 1 or h < 1:
+                return 0.0
+            crop = gray.crop((x, y, x + w, y + h))
+            # Downsample for speed on large crops.
+            max_side = 240
+            cw, ch = crop.size
+            scale = min(1.0, max_side / float(max(cw, ch)))
+            if scale < 1.0:
+                crop = crop.resize(
+                    (max(1, int(cw * scale)), max(1, int(ch * scale))),
+                    Image.BILINEAR,
+                )
+            hist = crop.histogram()
+            dark = sum(hist[:245])
+            total = sum(hist) or 1
+            return dark / float(total)
+    except Exception:
+        return 0.0
+
+
+def _filter_credible_receipt_regions(
+    image_path: str,
+    regions: list[dict[str, int]],
+    *,
+    min_ink_fraction: float | None = None,
+) -> list[dict[str, int]]:
+    """
+    Drop near-blank / margin strips that are not physical receipts.
+
+    N-agnostic: does not invent boxes; only removes low-ink noise regions.
+    """
+    thr = AP_SEG_MIN_INK_FRACTION if min_ink_fraction is None else float(min_ink_fraction)
+    thr = max(0.0, min(thr, 0.5))
+    kept: list[dict[str, int]] = []
+    for reg in regions:
+        if not isinstance(reg, dict):
+            continue
+        ink = _region_ink_fraction(image_path, reg)
+        if ink < thr:
+            logger.info(
+                "[AP seg] drop low-ink region ink=%.4f thr=%.4f box=%s",
+                ink,
+                thr,
+                reg,
+            )
+            continue
+        kept.append(reg)
+    return kept
+
+
+def _refine_tall_column_regions(
+    image_path: str,
+    regions: list[dict[str, int]],
+) -> list[dict[str, int]]:
+    """
+    Sub-split tall column strips when they contain stacked receipts.
+
+    Runs force-split on each column-like crop and maps credible sub-boxes
+    back to page coordinates. Keeps the parent when sub-split is not useful.
+    """
+    from PIL import Image
+
+    if len(regions) < 1:
+        return regions
+    try:
+        with Image.open(image_path) as img:
+            page_w, page_h = img.size
+    except Exception:
+        return regions
+
+    refined: list[dict[str, int]] = []
+    changed = False
+    for reg in regions:
+        w = int(reg.get("w", 0))
+        h = int(reg.get("h", 0))
+        x = int(reg.get("x", 0))
+        y = int(reg.get("y", 0))
+        tall = page_h > 0 and (h / float(page_h)) >= 0.70
+        narrow = page_w > 0 and (w / float(page_w)) <= 0.60
+        if not (tall and narrow and h >= 200 and w >= 80):
+            refined.append(reg)
+            continue
+
+        crop_path = None
+        try:
+            with Image.open(image_path) as img:
+                crop = img.crop((x, y, x + w, y + h))
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".col-refine.png")
+                crop_path = tmp.name
+                tmp.close()
+                crop.save(crop_path, format="PNG")
+            sub = _force_split_receipt_regions(crop_path, refine_columns=False)
+            sub = _filter_credible_receipt_regions(crop_path, sub) if sub else []
+            # Only accept when the crop itself splits into multiple credible slips.
+            if len(sub) >= 2:
+                for s in sub:
+                    refined.append(
+                        {
+                            "x": x + int(s["x"]),
+                            "y": y + int(s["y"]),
+                            "w": int(s["w"]),
+                            "h": int(s["h"]),
+                        }
+                    )
+                changed = True
+            else:
+                refined.append(reg)
+        except Exception:
+            refined.append(reg)
+        finally:
+            if crop_path and os.path.isfile(crop_path):
+                try:
+                    os.remove(crop_path)
+                except OSError:
+                    pass
+
+    if not changed:
+        return regions
+    final = _filter_credible_receipt_regions(image_path, refined)
+    return final if len(final) >= 2 else regions
+
+
+def _ar_ap_row_has_business_signal(row: Mapping[str, Any]) -> bool:
+    """Row-quality gate: amount plus at least one identity-ish field."""
+    if not isinstance(row, Mapping):
+        return False
+    amount = str(row.get("amount") or "").strip()
+    if not amount or amount in {"0", "0.0", "0.00"}:
+        return False
+    identity = (
+        str(row.get("payee") or "").strip()
+        or str(row.get("payer") or "").strip()
+        or str(row.get("voucher_no") or "").strip()
+        or str(row.get("date") or "").strip()
+        or str(row.get("bank") or "").strip()
+    )
+    return bool(identity)
+
+
 def _pick_force_split_hypothesis(
     v_regions: list[dict[str, int]],
     h_regions: list[dict[str, int]],
     *,
     expected_count: int | None = None,
+    image_path: str | None = None,
 ) -> list[dict[str, int]]:
     """
     Choose among 1-axis strips and optional 2D grid without assuming a fixed layout.
 
     When both axes produce multi-region strips, the grid hypothesis is considered.
     An optional expected_count ranks hypotheses by closeness to N (7, 9, 10, …).
+    When image_path is set, low-ink cells are filtered before ranking so empty
+    margins do not win as "densest".
     """
     candidates: list[list[dict[str, int]]] = []
     if len(v_regions) > 1 and len(h_regions) > 1:
@@ -4059,22 +4257,73 @@ def _pick_force_split_hypothesis(
     if not candidates:
         return []
 
+    def _credible(cands: list[dict[str, int]]) -> list[dict[str, int]]:
+        if not image_path:
+            return list(cands)
+        filtered = _filter_credible_receipt_regions(image_path, cands)
+        return filtered if filtered else list(cands)
+
+    scored: list[tuple[list[dict[str, int]], list[dict[str, int]]]] = [
+        (raw, _credible(raw)) for raw in candidates
+    ]
+
     expected = normalize_expected_receipt_count(expected_count)
     if expected is not None:
-        exact = [c for c in candidates if len(c) == expected]
+        exact = [(raw, cred) for raw, cred in scored if len(cred) == expected]
         if exact:
-            return exact[0]
-        candidates.sort(key=lambda c: (abs(len(c) - expected), -len(c)))
-        return candidates[0]
+            # Prefer lower noise among exact matches.
+            exact.sort(key=lambda pair: (len(pair[0]) - len(pair[1]), -len(pair[1])))
+            return exact[0][1]
+        scored.sort(
+            key=lambda pair: (
+                abs(len(pair[1]) - expected),
+                len(pair[0]) - len(pair[1]),
+                -len(pair[1]),
+            )
+        )
+        return scored[0][1]
 
-    # No asserted count: prefer densest credible hypothesis (grid when both axes work).
-    return max(candidates, key=len)
+    # No asserted count: maximize credible regions, then minimize noise fraction.
+    # Prefer cleaner proposals when a denser grid is mostly empty cells.
+    def _mean_ink(regs: list[dict[str, int]]) -> float:
+        if not image_path or not regs:
+            return 0.0
+        return sum(_region_ink_fraction(image_path, r) for r in regs) / float(len(regs))
+
+    scored.sort(
+        key=lambda pair: (
+            -len(pair[1]),
+            (len(pair[0]) - len(pair[1])) / max(1, len(pair[0])),
+            -_mean_ink(pair[1]),
+        )
+    )
+    best_raw, best_cred = scored[0]
+    best_noise = (len(best_raw) - len(best_cred)) / max(1, len(best_raw))
+    if best_noise >= 0.25:
+        # Dense-but-noisy grid: prefer a cleaner candidate within 1 of best count.
+        cleaner = [
+            pair
+            for pair in scored
+            if (len(pair[0]) - len(pair[1])) / max(1, len(pair[0])) < 0.20
+            and len(pair[1]) >= max(2, len(best_cred) - 1)
+        ]
+        if cleaner:
+            cleaner.sort(
+                key=lambda pair: (
+                    (len(pair[0]) - len(pair[1])) / max(1, len(pair[0])),
+                    -len(pair[1]),
+                    -_mean_ink(pair[1]),
+                )
+            )
+            return cleaner[0][1]
+    return best_cred
 
 
 def _force_split_receipt_regions(
     image_path: str,
     *,
     expected_receipt_count: int | None = None,
+    refine_columns: bool = False,
 ) -> list[dict[str, int]]:
     """
     N-way splitter used when the user confirmed multiple receipts but automatic
@@ -4086,6 +4335,7 @@ def _force_split_receipt_regions(
     - When BOTH horizontal and vertical gaps are credible, builds a 2D grid of
       cells (any rows×cols product) instead of discarding one axis.
     - Optional expected_receipt_count ranks hypotheses toward any N.
+    - Low-ink / empty-margin cells are filtered before accepting a hypothesis.
     - Uses a noise-tolerant threshold instead of requiring exactly-zero ink,
       so JPEG/scanner artifacts in gap columns no longer break detection.
     - Searches across 5–95 % of the image (old code restricted to 30–70 %).
@@ -4217,23 +4467,50 @@ def _force_split_receipt_regions(
                 v_regions,
                 h_regions,
                 expected_count=expected_receipt_count,
+                image_path=image_path,
             )
             if picked:
-                return picked
+                out = _filter_credible_receipt_regions(image_path, picked) or picked
+                # Optional column refine is opt-in: default off because single receipts
+                # often contain horizontal text gaps that look like stacked slips.
+                if refine_columns and len(out) >= 1:
+                    refined = _refine_tall_column_regions(image_path, out)
+                    if 2 <= len(refined) <= max(len(out) * 3, 2):
+                        # Accept only when each child is a substantial share of its parent.
+                        ok_children = True
+                        for reg in out:
+                            kids = [
+                                r
+                                for r in refined
+                                if r["x"] >= reg["x"]
+                                and r["y"] >= reg["y"]
+                                and r["x"] + r["w"] <= reg["x"] + reg["w"] + 2
+                                and r["y"] + r["h"] <= reg["y"] + reg["h"] + 2
+                            ]
+                            if len(kids) <= 1:
+                                continue
+                            parent_h = max(1, int(reg["h"]))
+                            if any(int(k["h"]) < 0.28 * parent_h for k in kids):
+                                ok_children = False
+                                break
+                        if ok_children:
+                            out = refined
+                return out
 
             # Last resort: centre half-split along the longer axis.
             if orig_w >= orig_h:
                 split_x = max(int(orig_w * 0.25), min(int(orig_w * 0.75), orig_w // 2))
-                return [
+                fallback = [
                     {"x": 0,       "y": 0, "w": split_x,          "h": orig_h},
                     {"x": split_x, "y": 0, "w": orig_w - split_x, "h": orig_h},
                 ]
             else:
                 split_y = max(int(orig_h * 0.25), min(int(orig_h * 0.75), orig_h // 2))
-                return [
+                fallback = [
                     {"x": 0, "y": 0,       "w": orig_w, "h": split_y},
                     {"x": 0, "y": split_y, "w": orig_w, "h": orig_h - split_y},
                 ]
+            return _filter_credible_receipt_regions(image_path, fallback) or fallback
     except Exception:
         return []
 
