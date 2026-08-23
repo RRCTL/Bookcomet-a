@@ -8,6 +8,8 @@ import { WorkspaceErrorBoundary } from './components/WorkspaceErrorBoundary.tsx'
 
 const LoginPage = lazy(() => import('./pages/LoginPage.tsx'))
 const RegisterPage = lazy(() => import('./pages/RegisterPage.tsx'))
+/** TF-01/TF-02 UX preview — public, no auth; synthetic geometry only. */
+const TableFirstPreviewPage = lazy(() => import('./features/mvduPreview/TableFirstPreviewPage.tsx'))
 /** Lazy so public routes do not load the workspace graph; workspace is its own chunk. */
 const WorkspaceApp = lazy(() => import('./features/workspace/WorkspaceApp'))
 const NodeWorkspace = lazy(() => import('./features/nodeWorkspace/NodeWorkspace'))
@@ -34,6 +36,7 @@ createRoot(document.getElementById('root')!).render(
             <Route path="/" element={<Navigate to="/login" replace />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
+            <Route path="/mvdu-table-first-preview" element={<TableFirstPreviewPage />} />
             <Route
               path="/*"
               element={
