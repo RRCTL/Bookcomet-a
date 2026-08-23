@@ -65,6 +65,7 @@ from app.services.abuse_guard import (
 )
 from app.services.job_tasks import OcrBackgroundJobCancelled, background_job_cancelled
 from app.services import extraction_validation as _extraction_validation
+from app.services import receipt_image_quality as _receipt_image_quality
 from app.ocr import cross_check as _ocr_cross_check
 from app.services.ap_vlm_cross_merge import (
     _min_tsv_confidence,
@@ -2721,6 +2722,14 @@ async def _run_ap_multi_receipt_ocr_from_image(
     )
     cropped_paths = _crop_receipt_regions(image_path, receipt_regions)
     n_crops = len(cropped_paths)
+    quality_temp_paths: list[str] = []
+    page_quality: dict[str, Any] | None = None
+    if _receipt_image_quality.quality_enabled():
+        try:
+            page_quality = _receipt_image_quality.probe_page(image_path)
+        except Exception as exc:
+            logger.warning("[AQ] page quality probe failed: %s", exc)
+            page_quality = {"error": str(exc)[:300]}
     sem = asyncio.Semaphore(AP_CROP_OCR_CONCURRENCY)
     crop_pass_image_options: dict | None = None
     if AP_CROP_OCR_IMAGE_MAX_SIDE > 0:
@@ -2751,15 +2760,40 @@ async def _run_ap_multi_receipt_ocr_from_image(
     ) -> dict:
         async with sem:
             _raise_if_bg_job_cancelled(background_job_id)
+            ocr_image_path = crop_path
+            quality_audit: dict[str, Any] | None = None
+            if _receipt_image_quality.quality_enabled():
+                try:
+                    prepared = _receipt_image_quality.prepare_crop_for_ocr(crop_path)
+                    ocr_image_path = prepared.path
+                    quality_audit = prepared.audit
+                    for tp in prepared.temp_paths:
+                        quality_temp_paths.append(tp)
+                except Exception as exc:
+                    logger.warning(
+                        "   [AQ] crop %s quality prepare failed: %s",
+                        page_num,
+                        exc,
+                    )
+                    quality_audit = {
+                        "enabled": True,
+                        "selection": "original",
+                        "error": str(exc)[:400],
+                    }
             logger.info(
-                "   [AP %s/%s] OCR pass 1/2 (document parsing) with %s model=%s...",
+                "   [AP %s/%s] OCR pass 1/2 (document parsing) with %s model=%s%s...",
                 page_num,
                 n_crops,
                 ocr_provider_name,
                 AP_MULTI_RECEIPT_OCR_MODEL,
+                (
+                    f" aq={quality_audit.get('selection')}"
+                    if isinstance(quality_audit, dict)
+                    else ""
+                ),
             )
             page_ocr_result = await _ocr_service.recognize(
-                crop_path,
+                ocr_image_path,
                 provider_name=ocr_provider_name,
                 model=AP_MULTI_RECEIPT_OCR_MODEL,
                 prompt_override=ocr_prompt_override or AP_MULTI_RECEIPT_DOCUMENT_PARSING_PROMPT,
@@ -2783,7 +2817,7 @@ async def _run_ap_multi_receipt_ocr_from_image(
                 _raise_if_bg_job_cancelled(background_job_id)
                 ai_enhanced_fields = await _extract_ar_ap_ai_fields_routed(
                     ocr_text=pass1_text,
-                    img_path=crop_path,
+                    img_path=ocr_image_path,
                     page_num=page_num,
                     ocr_provider_name=ocr_provider_name,
                     ocr_model_override=ocr_model_override or AP_MULTI_RECEIPT_OCR_MODEL,
@@ -2805,7 +2839,7 @@ async def _run_ap_multi_receipt_ocr_from_image(
                 primary_model=ocr_model_override or AP_MULTI_RECEIPT_OCR_MODEL,
                 ai_primary=ai_enhanced_fields,
                 ocr_text=pass1_text,
-                img_path=crop_path,
+                img_path=ocr_image_path,
                 page_num=page_num,
                 ocr_provider_name=ocr_provider_name,
                 image_options=crop_pass_image_options,
@@ -2821,6 +2855,7 @@ async def _run_ap_multi_receipt_ocr_from_image(
                         pdf_page_num=pdf_page_num,
                         parent_image_size=parent_wh,
                     )
+                    _receipt_image_quality.attach_image_quality_provenance(row, quality_audit)
 
             return {
                 "page": pdf_page_num,
@@ -2831,6 +2866,7 @@ async def _run_ap_multi_receipt_ocr_from_image(
                 "field_confidence": filtered_result["overall_confidence"],
                 "ai_enhanced": ai_enhanced_fields,
                 "receipt_bbox": receipt_bbox,
+                "image_quality": quality_audit,
             }
 
     all_pages_results: list[dict] = []
@@ -2956,6 +2992,12 @@ async def _run_ap_multi_receipt_ocr_from_image(
                     os.remove(crop_path)
             except Exception:
                 pass
+        for qpath in quality_temp_paths:
+            try:
+                if os.path.exists(qpath):
+                    os.remove(qpath)
+            except Exception:
+                pass
 
     n_crop = len(cropped_paths)
     if crop_errors == 0:
@@ -2997,12 +3039,16 @@ async def _run_ap_multi_receipt_ocr_from_image(
         "provider": ocr_provider_name,
         "processing_mode": processing_mode,
         "count_validation": count_validation,
+        "page_image_quality": page_quality,
         "processing_steps": {
             "multi_receipt_split": "completed",
             "ocr_provider": ocr_provider_name,
             "pages_processed": len(all_pages_results),
             "structured_ocr_second_pass": "completed",
             "seg_source": seg_source,
+            "receipt_image_quality": (
+                "enabled" if _receipt_image_quality.quality_enabled() else "disabled"
+            ),
         }
     }
 
