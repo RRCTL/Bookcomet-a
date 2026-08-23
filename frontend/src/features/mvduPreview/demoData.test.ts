@@ -21,5 +21,16 @@ describe('table-first preview demoData', () => {
     expect(next.regions.filter(r => r.status === 'ocr_done').map(r => r.label)).toEqual(
       expect.arrayContaining(['R1', 'R2', 'R3a', 'R3b']),
     )
+    // R1/R2 amounts unchanged (targeted, not whole-file)
+    expect(next.rows.find(r => r.region_id === 'rrg_r1')?.amount).toBe(328.5)
+    expect(next.rows.find(r => r.region_id === 'rrg_r2')?.amount).toBe(86.0)
+  })
+
+  it('does not re-split an already superseded conflict region', () => {
+    const once = applySplitConflict(initialRegions(), initialRows(), 'rrg_r3')
+    const twice = applySplitConflict(once.regions, once.rows, 'rrg_r3')
+    expect(twice.rows.filter(r => r.region_id.startsWith('rrg_r3')).length).toBe(
+      once.rows.filter(r => r.region_id.startsWith('rrg_r3')).length,
+    )
   })
 })

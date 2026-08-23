@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   applySplitConflict,
   initialRegions,
@@ -41,6 +41,13 @@ export default function TableFirstPreviewPage() {
   const [previewOpen, setPreviewOpen] = useState(true)
   const [showSuperseded, setShowSuperseded] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
+  const toastTimerRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current != null) window.clearTimeout(toastTimerRef.current)
+    }
+  }, [])
 
   const visibleRows = useMemo(
     () => rows.filter(r => showSuperseded || r.review_state !== 'superseded'),
@@ -52,19 +59,25 @@ export default function TableFirstPreviewPage() {
 
   function flash(msg: string) {
     setToast(msg)
-    window.setTimeout(() => setToast(null), 3200)
+    if (toastTimerRef.current != null) window.clearTimeout(toastTimerRef.current)
+    toastTimerRef.current = window.setTimeout(() => setToast(null), 3200)
   }
 
-  function onSplitConflict() {
-    if (!selectedRegion || selectedRegion.status !== 'conflict') {
+  /** Pass regionId explicitly — do not rely on React state that may not have flushed yet. */
+  function onSplitConflict(regionId?: string | null) {
+    const id = regionId ?? selectedRegionId
+    const target = regions.find(r => r.region_id === id)
+    if (!target || target.status !== 'conflict') {
       flash('Select the red conflict region (R3) to split + targeted re-OCR.')
       return
     }
-    const next = applySplitConflict(regions, rows, selectedRegion.region_id)
+    const next = applySplitConflict(regions, rows, target.region_id)
     setRegions(next.regions)
     setRows(next.rows)
-    const firstChild = next.regions.find(r => r.region_id.endsWith('_a'))
-    setSelectedRegionId(firstChild?.region_id ?? null)
+    const firstChildId = `${target.region_id}_a`
+    setSelectedRegionId(
+      next.regions.some(r => r.region_id === firstChildId) ? firstChildId : null,
+    )
     flash('Targeted re-OCR: only split crops re-ran. Other rows unchanged.')
   }
 
@@ -74,7 +87,7 @@ export default function TableFirstPreviewPage() {
         <div className="mx-auto flex max-w-[1400px] flex-wrap items-center justify-between gap-3">
           <div>
             <p className="m-0 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-              M-VDU preview · TF-01 + TF-02 · no PR
+              M-VDU preview · TF-01 + TF-02 · synthetic only
             </p>
             <h1 className="m-0 text-lg font-semibold tracking-tight">Table-First Immediate OCR</h1>
             <p className="m-0 mt-0.5 text-sm text-slate-600">
@@ -185,7 +198,7 @@ export default function TableFirstPreviewPage() {
                                 e.stopPropagation()
                                 setSelectedRegionId(row.region_id)
                                 setPreviewOpen(true)
-                                onSplitConflict()
+                                onSplitConflict(row.region_id)
                               }}
                             >
                               Split + re-OCR

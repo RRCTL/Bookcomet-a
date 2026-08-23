@@ -101,7 +101,7 @@ export function RegionPreviewPanel({ regions, selectedRegionId, onSelect }: Prop
                   fontSize={11}
                   fontFamily="ui-sans-serif, system-ui, sans-serif"
                 >
-                  {region.source.replace('_', ' ')}
+                  {region.source.replaceAll('_', ' ')}
                   {region.hold_ocr ? ' · OCR held' : ''}
                 </text>
                 {/* Abstract content lines — not real receipt text */}
