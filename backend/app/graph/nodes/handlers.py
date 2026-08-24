@@ -94,6 +94,8 @@ _MANAGER_LLM_ROW_KEYS = frozenset(
         "payment_status",
         "source_file",
         "file_position",
+        "_page",
+        "page",
         "transaction_type",
         "amount",
         "total",
