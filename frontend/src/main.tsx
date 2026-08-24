@@ -12,6 +12,10 @@ const RegisterPage = lazy(() => import('./pages/RegisterPage.tsx'))
 const TableFirstPreviewPage = import.meta.env.DEV
   ? lazy(() => import('./features/mvduPreview/TableFirstPreviewPage.tsx'))
   : null
+/** AQ-01/AQ-02 quality preview — SVG + metric fixtures; DEV builds only. */
+const AqQualityPreviewPage = import.meta.env.DEV
+  ? lazy(() => import('./features/mvduPreview/AqQualityPreviewPage.tsx'))
+  : null
 /** Lazy so public routes do not load the workspace graph; workspace is its own chunk. */
 const WorkspaceApp = lazy(() => import('./features/workspace/WorkspaceApp'))
 const NodeWorkspace = lazy(() => import('./features/nodeWorkspace/NodeWorkspace'))
@@ -40,6 +44,9 @@ createRoot(document.getElementById('root')!).render(
             <Route path="/register" element={<RegisterPage />} />
             {import.meta.env.DEV && TableFirstPreviewPage ? (
               <Route path="/mvdu-table-first-preview" element={<TableFirstPreviewPage />} />
+            ) : null}
+            {import.meta.env.DEV && AqQualityPreviewPage ? (
+              <Route path="/mvdu-aq-quality-preview" element={<AqQualityPreviewPage />} />
             ) : null}
             <Route
               path="/*"
