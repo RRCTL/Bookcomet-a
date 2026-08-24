@@ -41,4 +41,17 @@ describe('readImageQuality', () => {
       }).present,
     ).toBe(false)
   })
+
+  it('reads bare row.image_quality when provenance wrapper missing', () => {
+    const info = readImageQuality({
+      image_quality: {
+        enabled: true,
+        status: 'clear',
+        ui_label: 'Original · clear',
+        selection: 'original_selected',
+      },
+    })
+    expect(info.present).toBe(true)
+    expect(info.status).toBe('clear')
+  })
 })
