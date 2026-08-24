@@ -12,6 +12,11 @@ import {
   normalizeDrCr,
 } from '../features/erpShell/arapDebitCredit'
 import { coaNameMapFromOptionLabels } from '../utils/coaDisplay'
+import {
+  IMAGE_QUALITY_METRIC_KEYS,
+  imageQualityChipStyle,
+  readImageQuality,
+} from '../utils/imageQualityUi'
 
 const EMPTY_LOCK_KEYS: ReadonlySet<string> = new Set()
 
@@ -222,6 +227,7 @@ export function ARAPReview({
     transactions.map((t, i) => ({ ...normalizeARAPRow(t, filename), _id: i }))
   )
   const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [qualityPanelOpen, setQualityPanelOpen] = useState(true)
 
   // Re-sync rows when the parent updates the transactions prop.
   // Match by list index so each row keeps a unique _id (duplicate id_number must not share _id).
@@ -469,6 +475,18 @@ export function ARAPReview({
   const apRows = rows.filter(r => String(r.transaction_type).toUpperCase() === 'AP')
   const totalAR = arRows.reduce((s, r) => s + (r.amount ?? 0), 0)
   const totalAP = apRows.reduce((s, r) => s + (r.amount ?? 0), 0)
+  const qualityRows = useMemo(
+    () => rows.filter(r => readImageQuality(r).present).length,
+    [rows],
+  )
+  const selectedQualityRow = useMemo(() => {
+    if (selected.size !== 1) return null
+    const id = Array.from(selected)[0]
+    const row = rows.find(r => r._id === id)
+    if (!row) return null
+    const iq = readImageQuality(row)
+    return iq.present ? { row, iq } : null
+  }, [rows, selected])
 
   const { isMobile } = useViewport()
   const S = useMemo(() => resolveARAPStyles(isMobile), [isMobile])
@@ -536,6 +554,11 @@ export function ARAPReview({
           </button>
         )}
         <div style={{ flex: 1 }} />
+        {qualityRows > 0 && (
+          <div style={{ ...S.rowCount, marginRight: 12 }} title="Rows with AQ image-quality provenance">
+            Image quality: {qualityRows} rows
+          </div>
+        )}
         <div style={S.rowCount}>{rows.length} transactions</div>
       </div>
 
@@ -575,6 +598,7 @@ export function ARAPReview({
                   <th style={{ ...S.th, minWidth: 90 }}>Category</th>
                   <th style={{ ...S.th, minWidth: 200 }}>Description</th>
                   <th style={{ ...S.th, minWidth: 90 }}>Payment Status</th>
+                  <th style={{ ...S.th, minWidth: 120 }}>Image quality</th>
                   <th style={{ ...S.th, width: 70 }}>Confidence</th>
                 </>
               ) : (
@@ -590,6 +614,7 @@ export function ARAPReview({
                   <th style={{ ...S.th, minWidth: 130 }}>Account Code</th>
                   <th style={{ ...S.th, minWidth: 90 }}>Category</th>
                   <th style={{ ...S.th, minWidth: 220 }}>Memo</th>
+                  <th style={{ ...S.th, minWidth: 120 }}>Image quality</th>
                   <th style={{ ...S.th, width: 70 }}>Confidence</th>
                 </>
               )}
@@ -607,6 +632,8 @@ export function ARAPReview({
               const exclusionReasons: string[] = Array.isArray(row.exclusion_reasons) ? row.exclusion_reasons : []
               const reviewTitle = [...exclusionReasons, ...extractionFlags].filter(Boolean).join(' | ')
               const rowBg = isSelected ? '#e6f4ea' : needsReview ? '#fff5f5' : glPosted ? '#fffbeb' : locked ? '#f0fdf4' : undefined
+              const imageQuality = readImageQuality(row)
+              const iqChip = imageQualityChipStyle(imageQuality.status)
               return (
                 <tr
                   key={row._id}
@@ -1049,6 +1076,40 @@ export function ARAPReview({
                     </td>
                   )}
 
+                  {/* Image quality (AQ provenance) */}
+                  <td style={S.td} onClick={e => e.stopPropagation()}>
+                    {imageQuality.present ? (
+                      <button
+                        type="button"
+                        title={imageQuality.reason || imageQuality.uiLabel}
+                        onClick={() => {
+                          setSelected(new Set([row._id]))
+                          setQualityPanelOpen(true)
+                        }}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          maxWidth: 140,
+                          border: `1px solid ${iqChip.border}`,
+                          background: iqChip.bg,
+                          color: iqChip.fg,
+                          borderRadius: 4,
+                          fontSize: 11,
+                          fontWeight: 600,
+                          padding: '3px 8px',
+                          cursor: 'pointer',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {imageQuality.uiLabel || imageQuality.status || 'Quality'}
+                      </button>
+                    ) : (
+                      <span style={{ color: '#9ca3af', fontSize: 11 }}>—</span>
+                    )}
+                  </td>
+
                   {/* 信心度 */}
                   <td style={{ ...S.td, textAlign: 'center', fontSize: 11, color: '#888' }}>
                     <span style={{ padding: '7px 6px', display: 'block' }}>
@@ -1061,6 +1122,153 @@ export function ARAPReview({
           </tbody>
         </table>
       </div>
+
+      {/* ── Receipt image quality panel (real AQ provenance; no crop photos) ── */}
+      {selectedQualityRow && (
+        <div
+          style={{
+            margin: '0 12px 12px',
+            border: '1px solid #e5e7eb',
+            borderRadius: 8,
+            background: '#fff',
+            overflow: 'hidden',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 8,
+              padding: '8px 12px',
+              borderBottom: qualityPanelOpen ? '1px solid #f3f4f6' : 'none',
+              background: '#f8fafc',
+            }}
+          >
+            <div style={{ fontSize: 13, fontWeight: 600 }}>
+              Receipt image quality
+              <span style={{ marginLeft: 8, fontWeight: 400, color: '#6b7280' }}>
+                {selectedQualityRow.iq.uiLabel}
+                {selectedQualityRow.row.source_file
+                  ? ` · ${String(selectedQualityRow.row.source_file)}`
+                  : ''}
+              </span>
+            </div>
+            <button
+              type="button"
+              style={{ ...S.btn, fontSize: 12, padding: '4px 10px' }}
+              onClick={() => setQualityPanelOpen(v => !v)}
+            >
+              {qualityPanelOpen ? 'Collapse' : 'Expand'}
+            </button>
+          </div>
+          {qualityPanelOpen && (
+            <div style={{ padding: 12, fontSize: 12, color: '#374151' }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+                <span
+                  style={{
+                    border: `1px solid ${imageQualityChipStyle(selectedQualityRow.iq.status).border}`,
+                    background: imageQualityChipStyle(selectedQualityRow.iq.status).bg,
+                    color: imageQualityChipStyle(selectedQualityRow.iq.status).fg,
+                    borderRadius: 4,
+                    padding: '2px 8px',
+                    fontWeight: 600,
+                  }}
+                >
+                  {selectedQualityRow.iq.status || 'unknown'}
+                </span>
+                <span style={{ color: '#6b7280' }}>
+                  selection: {selectedQualityRow.iq.selection || '—'}
+                </span>
+                {selectedQualityRow.iq.scoreBefore != null && (
+                  <span style={{ color: '#6b7280' }}>
+                    score: {selectedQualityRow.iq.scoreBefore.toFixed(3)}
+                    {selectedQualityRow.iq.scoreAfter != null
+                      ? ` → ${selectedQualityRow.iq.scoreAfter.toFixed(3)}`
+                      : ''}
+                  </span>
+                )}
+              </div>
+              {selectedQualityRow.iq.reason ? (
+                <p style={{ margin: '0 0 8px', color: '#4b5563' }}>{selectedQualityRow.iq.reason}</p>
+              ) : null}
+              {selectedQualityRow.iq.issues.length > 0 ? (
+                <p style={{ margin: '0 0 8px' }}>
+                  Issues: {selectedQualityRow.iq.issues.join(', ')}
+                </p>
+              ) : null}
+              <p style={{ margin: '0 0 8px' }}>
+                Recipe:{' '}
+                {selectedQualityRow.iq.recipeOps.length
+                  ? selectedQualityRow.iq.recipeOps.join(' → ')
+                  : 'none'}
+              </p>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: 12,
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>Before</div>
+                  {(selectedQualityRow.iq.qualityBefore
+                    ? IMAGE_QUALITY_METRIC_KEYS.filter(
+                        k => selectedQualityRow.iq.qualityBefore?.[k] != null,
+                      )
+                    : []
+                  ).map(k => (
+                    <div
+                      key={k}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        borderTop: '1px solid #f3f4f6',
+                        padding: '2px 0',
+                        fontSize: 11,
+                      }}
+                    >
+                      <span>{k}</span>
+                      <span>{Number(selectedQualityRow.iq.qualityBefore?.[k]).toFixed(4)}</span>
+                    </div>
+                  ))}
+                  {!selectedQualityRow.iq.qualityBefore && (
+                    <div style={{ color: '#9ca3af', fontSize: 11 }}>No metrics</div>
+                  )}
+                </div>
+                <div>
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>After</div>
+                  {selectedQualityRow.iq.qualityAfter ? (
+                    IMAGE_QUALITY_METRIC_KEYS.filter(
+                      k => selectedQualityRow.iq.qualityAfter?.[k] != null,
+                    ).map(k => (
+                      <div
+                        key={k}
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          borderTop: '1px solid #f3f4f6',
+                          padding: '2px 0',
+                          fontSize: 11,
+                        }}
+                      >
+                        <span>{k}</span>
+                        <span>{Number(selectedQualityRow.iq.qualityAfter?.[k]).toFixed(4)}</span>
+                      </div>
+                    ))
+                  ) : (
+                    <div style={{ color: '#9ca3af', fontSize: 11 }}>No enhancement applied</div>
+                  )}
+                </div>
+              </div>
+              <p style={{ margin: '10px 0 0', fontSize: 11, color: '#9ca3af' }}>
+                Metrics from local OpenCV AQ audit on the crop used for OCR. Crop photos are not shown
+                here.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Status bar ── */}
       <div style={S.statusBar}>
