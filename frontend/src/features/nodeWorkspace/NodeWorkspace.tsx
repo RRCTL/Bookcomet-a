@@ -1395,8 +1395,13 @@ export default function NodeWorkspace() {
       ) {
         const nextGraph = applyWorkflowSettingsToGraph(activeRun.graph_json, templates, workflow)
         runForReVlm = await workflowApi.patchRun(companyId, runId, nextGraph)
-        setFullRunFromServer(runForReVlm)
-        syncNodes(runForReVlm, undefined, true)
+        const stillRunning = applyRunReVlmLocally(runForReVlm, taskFileIds, {
+          rescanReasons,
+          rescanNote: rescanNote || undefined,
+          expectedReceiptCount: expectedReceiptCount ?? null,
+        })
+        setFullRunFromServer(stillRunning)
+        syncNodes(stillRunning, undefined, true)
       }
       const r = await workflowApi.reVlm(companyId, runId, taskFileIds, {
         rescan_reasons: rescanReasons,

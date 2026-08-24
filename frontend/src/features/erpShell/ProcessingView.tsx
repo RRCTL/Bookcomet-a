@@ -343,6 +343,7 @@ export function ProcessingView() {
   const [showModePicker, setShowModePicker] = useState(false)
   const [creating, setCreating] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [approving, setApproving] = useState(false)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [railWidth, setRailWidth] = useState(() => readStoredWidth(PROC_RAIL_WIDTH_KEY, 220))
   const [rightWidth, setRightWidth] = useState(() => readStoredWidth(PROC_RIGHT_WIDTH_KEY, 312))
@@ -839,14 +840,13 @@ export function ProcessingView() {
       setReVlmInitialFileIds([])
       setBusy(true)
       setError(null)
-      applyRunFromServer(
-        applyRunReVlmLocally(activeRun, taskFileIds, {
-          rescanReasons,
-          rescanNote: rescanNote || undefined,
-          expectedReceiptCount: expectedReceiptCount ?? null,
-        }),
-        true,
-      )
+      const revlmLocalOpts = {
+        rescanReasons,
+        rescanNote: rescanNote || undefined,
+        expectedReceiptCount: expectedReceiptCount ?? null,
+      }
+      // Optimistic: show processing spinners on files + VLM nodes immediately.
+      applyRunFromServer(applyRunReVlmLocally(activeRun, taskFileIds, revlmLocalOpts), true)
       try {
         let runForReVlm = activeRun
         if (
@@ -860,7 +860,8 @@ export function ProcessingView() {
         ) {
           const nextGraph = applyWorkflowSettingsToGraph(activeRun.graph_json, templates, workflow)
           runForReVlm = await workflowApi.patchRun(companyId, activeRun.id, nextGraph)
-          applyRunFromServer(runForReVlm, true)
+          // Re-apply Re-VLM running state so patchRun does not flash Finished again.
+          applyRunFromServer(applyRunReVlmLocally(runForReVlm, taskFileIds, revlmLocalOpts), true)
         }
         const updated = await workflowApi.reVlm(companyId, runForReVlm.id, taskFileIds, {
           rescan_reasons: rescanReasons,
@@ -942,6 +943,7 @@ export function ProcessingView() {
 
   const approve = useCallback(async () => {
     if (!activeRun) return
+    setApproving(true)
     setBusy(true)
     setError(null)
     try {
@@ -961,6 +963,7 @@ export function ProcessingView() {
       setError(err instanceof Error ? err.message : 'Could not approve and resume.')
     } finally {
       setBusy(false)
+      setApproving(false)
     }
   }, [activeRun, combined, isBank, editedRows, bankRows, arapRows, companyId, reloadRuns])
 
@@ -991,6 +994,9 @@ export function ProcessingView() {
   const awaitingReview = runStatus === 'awaiting_review'
   // VLM extraction phase: show only the per-file status list, not a partial table.
   const extracting = runStatus === 'executing' || runStatus === 'queued' || runStatus === 'running'
+  const anyFileRunning = Boolean(activeRun?.files.some(f => f.file_status === 'running'))
+  // Live output banner + right-panel spinners stay on while Re-VLM / VLM is in flight.
+  const tableProcessing = extracting || anyNodeRunning || anyFileRunning
   // Once approved (CoA posting / completed) the output table is view-only.
   const outputReadOnly = runStatus === 'coa_running' || runStatus === 'completed'
   const canApproveTable =
@@ -999,6 +1005,10 @@ export function ProcessingView() {
     !isRunning &&
     !anyNodeRunning &&
     (awaitingReview || (outputRowCount > 0 && hasOcrDataOnRun(activeRun)))
+  const completedFileCount = (activeRun?.files ?? []).filter(f =>
+    ['ok', 'warning'].includes(f.file_status ?? ''),
+  ).length
+  const totalFileCount = activeRun?.files.length ?? 0
 
   const renderNodeCard = (node: GraphNode) => {
     const state = nodeStateOf(activeRun, node.id)
@@ -1370,7 +1380,7 @@ export function ProcessingView() {
                   onDataChange={outputReadOnly ? undefined : rows => setEditedRows(rows)}
                   onApprove={() => void approve()}
                   canApprove={canApproveTable}
-                  approveBusy={busy}
+                  approveBusy={approving}
                 />
               ) : (
                 <ARAPReview
@@ -1380,7 +1390,10 @@ export function ProcessingView() {
                   onDataChange={outputReadOnly ? undefined : rows => setEditedRows(rows)}
                   onApprove={() => void approve()}
                   canApprove={canApproveTable}
-                  approveBusy={busy}
+                  approveBusy={approving}
+                  isProcessing={tableProcessing}
+                  completedFiles={completedFileCount}
+                  totalFiles={totalFileCount}
                 />
               )}
             </div>
