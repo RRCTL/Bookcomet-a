@@ -8,7 +8,11 @@ import { WorkspaceErrorBoundary } from './components/WorkspaceErrorBoundary.tsx'
 
 const LoginPage = lazy(() => import('./pages/LoginPage.tsx'))
 const RegisterPage = lazy(() => import('./pages/RegisterPage.tsx'))
-/** AQ-01/AQ-02 quality preview — synthetic assets; DEV builds only. */
+/** TF-01/TF-02 UX preview — synthetic geometry only; registered in DEV builds only. */
+const TableFirstPreviewPage = import.meta.env.DEV
+  ? lazy(() => import('./features/mvduPreview/TableFirstPreviewPage.tsx'))
+  : null
+/** AQ-01/AQ-02 quality preview — SVG + metric fixtures; DEV builds only. */
 const AqQualityPreviewPage = import.meta.env.DEV
   ? lazy(() => import('./features/mvduPreview/AqQualityPreviewPage.tsx'))
   : null
@@ -38,6 +42,9 @@ createRoot(document.getElementById('root')!).render(
             <Route path="/" element={<Navigate to="/login" replace />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
+            {import.meta.env.DEV && TableFirstPreviewPage ? (
+              <Route path="/mvdu-table-first-preview" element={<TableFirstPreviewPage />} />
+            ) : null}
             {import.meta.env.DEV && AqQualityPreviewPage ? (
               <Route path="/mvdu-aq-quality-preview" element={<AqQualityPreviewPage />} />
             ) : null}
