@@ -145,13 +145,13 @@ describe('buildTablePayloadFromOcrByFile AP source page', () => {
           id: 'rf-1',
           task_file_id: 'file-a',
           file_status: 'ok',
-          original_filename: '2024支出 (5).pdf',
+          original_filename: 'SAMPLE-2403.pdf',
           result_summary_json: {
             document_type: 'multi_page_pdf',
             pages: [
-              { page: 1, ai_enhanced: { tsv_rows: [{ amount: '100', payee: 'A', date: '27/03/2024' }] } },
-              { page: 2, ai_enhanced: { tsv_rows: [{ amount: '200', payee: 'B', date: '28/02/2024' }] } },
-              { page: 3, ai_enhanced: { tsv_rows: [{ amount: '300', payee: 'C', date: '01/03/2024' }] } },
+              { page: 1, ai_enhanced: { tsv_rows: [{ amount: '100', payee: 'Acme Supplies Ltd', date: '2026-01-10' }] } },
+              { page: 2, ai_enhanced: { tsv_rows: [{ amount: '200', payee: 'Sample Office Ltd', date: '2026-01-15' }] } },
+              { page: 3, ai_enhanced: { tsv_rows: [{ amount: '300', payee: 'Example Customer Ltd', date: '2026-01-22' }] } },
             ],
           },
         },
@@ -162,9 +162,9 @@ describe('buildTablePayloadFromOcrByFile AP source page', () => {
     const payload = buildTablePayloadFromOcrByFile(run)
     const arap = (payload.arapTransactions as { source_file?: string }[]) ?? []
     expect(arap.map(t => t.source_file)).toEqual([
-      '2024支出 (5).pdf P1',
-      '2024支出 (5).pdf P2',
-      '2024支出 (5).pdf P3',
+      'SAMPLE-2403.pdf P1',
+      'SAMPLE-2403.pdf P2',
+      'SAMPLE-2403.pdf P3',
     ])
   })
 })

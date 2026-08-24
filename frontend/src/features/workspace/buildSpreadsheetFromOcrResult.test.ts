@@ -5,23 +5,23 @@ describe('buildSpreadsheetRowsFromOcrResult source page', () => {
   it('uses each tsv row _page when pages[] is flattened into one blob', () => {
     const { spreadsheetData } = buildSpreadsheetRowsFromOcrResult({
       fileId: 'file-a',
-      fileName: '2024支出 (5).pdf',
+      fileName: 'SAMPLE-2403.pdf',
       processingMode: 'AP',
       rowIndexStart: 1,
       result: {
         ai_enhanced: {
           tsv_rows: [
-            { amount: '100', payee: 'Taxi A', _page: 1 },
-            { amount: '200', payee: 'Taxi B', _page: 2 },
-            { amount: '300', payee: 'Taxi C', _page: 3 },
+            { amount: '100', payee: 'Acme Supplies Ltd', _page: 1 },
+            { amount: '200', payee: 'Sample Office Ltd', _page: 2 },
+            { amount: '300', payee: 'Example Customer Ltd', _page: 3 },
           ],
         },
       },
     })
     expect(spreadsheetData.map(r => r.file_position)).toEqual([
-      '2024支出 (5).pdf P1',
-      '2024支出 (5).pdf P2',
-      '2024支出 (5).pdf P3',
+      'SAMPLE-2403.pdf P1',
+      'SAMPLE-2403.pdf P2',
+      'SAMPLE-2403.pdf P3',
     ])
   })
 
