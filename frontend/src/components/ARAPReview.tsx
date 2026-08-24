@@ -17,6 +17,7 @@ import {
   imageQualityChipStyle,
   readImageQuality,
 } from '../utils/imageQualityUi'
+import { formatBankSourceFile } from '../utils/bankSourceFile'
 
 const EMPTY_LOCK_KEYS: ReadonlySet<string> = new Set()
 
@@ -141,7 +142,13 @@ function normalizeARAPRow(t: ARAPTransaction, filename?: string): ARAPTransactio
     vendor_tax_id:    t.vendor_tax_id    || pickVal(raw, ['vendor_tax_id', 'tax_id', '統一編號']) || '',
     tax_amount:       taxNum,
     payment_status:   t.payment_status   || pickVal(raw, ['payment_status', '付款狀態']) || '',
-    source_file:      t.source_file      || raw['file_position'] || (pageNum != null ? `${fileLabel} P${pageNum}` : fileLabel) || '',
+    source_file:      formatBankSourceFile(
+      fileLabel,
+      pageNum,
+      pageNum != null && Number(pageNum) >= 1
+        ? String(t.source_file || raw['file_position'] || '').replace(/ P\d+\b/, '')
+        : (t.source_file || raw['file_position'] || ''),
+    ) || fileLabel,
     transaction_type: txType,
     amount:           sides.amount,
     debit:            sides.debit,

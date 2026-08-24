@@ -129,6 +129,46 @@ describe('rowsFromOcrPayload', () => {
   })
 })
 
+describe('buildTablePayloadFromOcrByFile AP source page', () => {
+  it('includes PDF page in arapTransactions source_file after VLM flatten', () => {
+    const run: WorkflowRun = {
+      id: 'run-ap',
+      task_id: 'task-ap',
+      company_id: 'co-1',
+      processing_mode: 'AP',
+      title: 'AP',
+      run_status: 'awaiting_review',
+      graph_json: { nodes: [], edges: [] },
+      node_states_json: {},
+      files: [
+        {
+          id: 'rf-1',
+          task_file_id: 'file-a',
+          file_status: 'ok',
+          original_filename: '2024支出 (5).pdf',
+          result_summary_json: {
+            document_type: 'multi_page_pdf',
+            pages: [
+              { page: 1, ai_enhanced: { tsv_rows: [{ amount: '100', payee: 'A', date: '27/03/2024' }] } },
+              { page: 2, ai_enhanced: { tsv_rows: [{ amount: '200', payee: 'B', date: '28/02/2024' }] } },
+              { page: 3, ai_enhanced: { tsv_rows: [{ amount: '300', payee: 'C', date: '01/03/2024' }] } },
+            ],
+          },
+        },
+      ],
+      created_at: '',
+      updated_at: '',
+    }
+    const payload = buildTablePayloadFromOcrByFile(run)
+    const arap = (payload.arapTransactions as { source_file?: string }[]) ?? []
+    expect(arap.map(t => t.source_file)).toEqual([
+      '2024支出 (5).pdf P1',
+      '2024支出 (5).pdf P2',
+      '2024支出 (5).pdf P3',
+    ])
+  })
+})
+
 describe('buildTablePayloadFromOcrByFile BANK source page', () => {
   it('includes PDF page in bankTransactions source_file', () => {
     const run: WorkflowRun = {

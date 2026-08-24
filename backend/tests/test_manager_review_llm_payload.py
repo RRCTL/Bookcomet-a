@@ -11,6 +11,20 @@ from app.graph.nodes.handlers import (
 )
 
 
+def test_trim_manager_llm_row_keeps_page():
+    row = {
+        "amount": "100",
+        "payee": "Vendor",
+        "_page": 3,
+        "source_file": "receipts.pdf P1",
+        "raw_ocr_text": "noise",
+    }
+    slim = _trim_manager_llm_row(row)
+    assert slim["_page"] == 3
+    assert slim["source_file"] == "receipts.pdf P1"
+    assert "raw_ocr_text" not in slim
+
+
 def test_trim_manager_llm_row_drops_heavy_fields():
     row = {
         "amount": "100",

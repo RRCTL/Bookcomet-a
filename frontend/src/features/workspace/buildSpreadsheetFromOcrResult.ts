@@ -1,5 +1,22 @@
 import type { SpreadsheetRow } from '../../components/EditableSpreadsheet'
 import type { ARAPTransaction } from '../../components/ARAPReview'
+import { formatBankSourceFile } from '../../utils/bankSourceFile'
+
+/** Prefer each VLM row's `_page` over a batch fallback like `file.pdf P1`. */
+function resolveSpreadsheetFilePosition(
+  row: Record<string, unknown> | undefined,
+  fileName: string,
+  fallbackPosition?: string,
+): string {
+  const rec = row && typeof row === 'object' ? row : {}
+  const page = rec._page ?? rec.page
+  const existing = String(rec.file_position ?? rec.source_file ?? '').trim()
+  if (page != null && Number.isFinite(Number(page)) && Number(page) >= 1) {
+    const stem = existing.replace(/ P\d+\b/, '')
+    return formatBankSourceFile(fileName, page, stem)
+  }
+  return formatBankSourceFile(fileName, page, existing || fallbackPosition)
+}
 
 function getFieldValue(fields: Record<string, any>, keys: string[]): string {
   for (const key of keys) {
@@ -163,7 +180,7 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
           category: getFieldValue(row, ['category', 'categorise', '分類', 'account_category', 'account_code']),
           memo,
           confidence: formatConfidenceDisplay(getFieldValue(row, ['confidence', '信心度']) || pageConfidence),
-          file_position: filePosition,
+          file_position: resolveSpreadsheetFilePosition(row, fileName, filePosition),
           ...apTableSpreadsheetExtras(row),
         })
         rowIndex++
@@ -234,7 +251,7 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
           confidence: formatConfidenceDisplay(
             getFieldValue(receipt, ['confidence']) || getFieldValue(fields, ['confidence']) || pageConfidence,
           ),
-          file_position: filePosition,
+          file_position: resolveSpreadsheetFilePosition(receipt, fileName, filePosition),
           ...apTableSpreadsheetExtras(receipt, fields),
         })
         rowIndex++
@@ -305,7 +322,7 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
           confidence: formatConfidenceDisplay(
             getFieldValue(receipt, ['confidence']) || getFieldValue(fields, ['confidence']) || pageConfidence,
           ),
-          file_position: filePosition,
+          file_position: resolveSpreadsheetFilePosition(receipt, fileName, filePosition),
           ...apTableSpreadsheetExtras(receipt, fields),
         })
         rowIndex++
@@ -364,7 +381,7 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
       category: getFieldValue(fields, ['account_category', 'categorise', 'category', '科目', 'account_code']),
       memo: memoWithCheque,
       confidence: formatConfidenceDisplay(getFieldValue(fields, ['confidence']) || pageConfidence),
-      file_position: filePosition,
+      file_position: resolveSpreadsheetFilePosition(fields, fileName, filePosition),
       ...apTableSpreadsheetExtras(fields),
     })
     rowIndex++
@@ -424,7 +441,7 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
   } else {
     const pageData = result
     const fields = pageData?.ai_enhanced || pageData?.extracted_fields || {}
-    appendRowsFromFields(fields, fileId, pageData?.field_confidence || fields?.confidence, `${fileName} P1`)
+    appendRowsFromFields(fields, fileId, pageData?.field_confidence || fields?.confidence, fileName)
   }
 
   return { spreadsheetData, nextRowIndex: rowIndex }

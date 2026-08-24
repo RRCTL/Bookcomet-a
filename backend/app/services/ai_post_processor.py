@@ -231,14 +231,19 @@ class AiPostProcessor:
                 bank_rows = extracted_data.get("tsv_rows")
                 if isinstance(bank_rows, list) and bank_rows:
                     extracted_data["tsv_rows"] = coalesce_bank_account_type_rows(bank_rows)
+            if isinstance(extracted_data, dict):
                 page_num = (metadata or {}).get("page_num")
-                if page_num is not None and isinstance(extracted_data.get("tsv_rows"), list):
-                    for row in extracted_data["tsv_rows"]:
-                        if isinstance(row, dict) and row.get("_page") is None:
-                            try:
-                                row["_page"] = int(page_num)
-                            except (TypeError, ValueError):
-                                pass
+                if page_num is not None:
+                    for key in ("tsv_rows", "transactions", "receipts", "rows"):
+                        rows = extracted_data.get(key)
+                        if not isinstance(rows, list):
+                            continue
+                        for row in rows:
+                            if isinstance(row, dict) and row.get("_page") is None:
+                                try:
+                                    row["_page"] = int(page_num)
+                                except (TypeError, ValueError):
+                                    pass
             
             logger.info(f"[AI] Parsed response into {type(extracted_data).__name__}")
             
