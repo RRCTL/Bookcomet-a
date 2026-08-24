@@ -83,6 +83,24 @@ function stampPageOnRows(rows: Record<string, unknown>[], pageNum: unknown): Rec
   return rows
 }
 
+/** If page payload has image_quality but row lacks extraction_provenance.image_quality, attach it. */
+function stampImageQualityOnRows(
+  rows: Record<string, unknown>[],
+  pageObj: Record<string, unknown>,
+): Record<string, unknown>[] {
+  const pageIq = pageObj.image_quality
+  if (!pageIq || typeof pageIq !== 'object' || Array.isArray(pageIq)) return rows
+  for (const row of rows) {
+    const prov =
+      row.extraction_provenance && typeof row.extraction_provenance === 'object'
+        ? (row.extraction_provenance as Record<string, unknown>)
+        : null
+    if (prov?.image_quality && typeof prov.image_quality === 'object') continue
+    row.extraction_provenance = { ...(prov ?? {}), image_quality: pageIq }
+  }
+  return rows
+}
+
 export function rowsFromOcrPayload(payload: Record<string, unknown>): Record<string, unknown>[] {
   const rows: Record<string, unknown>[] = []
   rows.push(...dictRows(payload.tsv_rows))
@@ -96,6 +114,7 @@ export function rowsFromOcrPayload(payload: Record<string, unknown>): Record<str
       const pageRows: Record<string, unknown>[] = []
       pageRows.push(...dictRows(pageObj.rows))
       pageRows.push(...rowsFromEnhanced(pageObj.ai_enhanced))
+      stampImageQualityOnRows(pageRows, pageObj)
       rows.push(...stampPageOnRows(pageRows, pageObj.page))
     }
   }

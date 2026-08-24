@@ -53,6 +53,24 @@ function apTableSpreadsheetExtras(
   }
 }
 
+/**
+ * Keep AQ / validation audit fields on SpreadsheetRow → ARAP Live output.
+ * Without this, Image quality column stays empty (—) even when OCR attached provenance.
+ */
+export function provenanceSpreadsheetExtras(source: Record<string, any>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  const prov = source?.extraction_provenance
+  if (prov && typeof prov === 'object' && !Array.isArray(prov)) {
+    out.extraction_provenance = prov
+  } else if (source?.image_quality && typeof source.image_quality === 'object') {
+    // Page-level or row-level AQ audit without nested provenance wrapper.
+    out.extraction_provenance = { image_quality: source.image_quality }
+  }
+  if (typeof source?.needs_review === 'boolean') out.needs_review = source.needs_review
+  if (Array.isArray(source?.validation_flags)) out.validation_flags = source.validation_flags
+  return out
+}
+
 /** 0–1 fraction or 0–100 integer from API → display percent (one place for chat + table). */
 export function formatConfidenceDisplay(raw: unknown): string {
   const parsed = Number(raw)
@@ -182,6 +200,7 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
           confidence: formatConfidenceDisplay(getFieldValue(row, ['confidence', '信心度']) || pageConfidence),
           file_position: resolveSpreadsheetFilePosition(row, fileName, filePosition),
           ...apTableSpreadsheetExtras(row),
+          ...provenanceSpreadsheetExtras(row),
         })
         rowIndex++
       })
@@ -253,6 +272,7 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
           ),
           file_position: resolveSpreadsheetFilePosition(receipt, fileName, filePosition),
           ...apTableSpreadsheetExtras(receipt, fields),
+          ...provenanceSpreadsheetExtras(receipt),
         })
         rowIndex++
       })
@@ -324,6 +344,7 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
           ),
           file_position: resolveSpreadsheetFilePosition(receipt, fileName, filePosition),
           ...apTableSpreadsheetExtras(receipt, fields),
+          ...provenanceSpreadsheetExtras(receipt),
         })
         rowIndex++
       })
@@ -383,6 +404,7 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
       confidence: formatConfidenceDisplay(getFieldValue(fields, ['confidence']) || pageConfidence),
       file_position: resolveSpreadsheetFilePosition(fields, fileName, filePosition),
       ...apTableSpreadsheetExtras(fields),
+      ...provenanceSpreadsheetExtras(fields),
     })
     rowIndex++
   }
@@ -489,6 +511,9 @@ export function spreadsheetRowsToArapTransactions(rows: SpreadsheetRow[], taskPr
       vendor_tax_id: String(r.vendor_tax_id ?? ''),
       tax_amount: taxNum,
       payment_status: String(r.payment_status ?? ''),
+      ...(r.extraction_provenance && typeof r.extraction_provenance === 'object'
+        ? { extraction_provenance: r.extraction_provenance as Record<string, unknown> }
+        : {}),
     } as ARAPTransaction
   })
 }

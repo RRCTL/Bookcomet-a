@@ -59,9 +59,10 @@ function asNumberRecord(v: unknown): Record<string, number> | null {
 /** Read compact image_quality block from extraction_provenance (backend AQ audit). */
 export function readImageQuality(row: {
   extraction_provenance?: Record<string, unknown> | null
+  image_quality?: Record<string, unknown> | null
 }): ImageQualityInfo {
   const prov = asRecord(row.extraction_provenance)
-  const iq = asRecord(prov?.image_quality)
+  const iq = asRecord(prov?.image_quality) ?? asRecord(row.image_quality)
   if (!iq || iq.enabled === false) return EMPTY
 
   const recipe = Array.isArray(iq.recipe) ? iq.recipe : []

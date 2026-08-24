@@ -127,6 +127,22 @@ describe('rowsFromOcrPayload', () => {
     expect(rows[0]?._page).toBe(2)
     expect(rows[1]?._page).toBe(5)
   })
+
+  it('stamps page image_quality onto rows missing provenance', () => {
+    const iq = { enabled: true, status: 'recoverable', ui_label: 'Auto-enhanced' }
+    const rows = rowsFromOcrPayload({
+      pages: [
+        {
+          page: 1,
+          image_quality: iq,
+          ai_enhanced: { tsv_rows: [{ amount: '10', payee: 'Synthetic' }] },
+        },
+      ],
+    })
+    expect(rows).toHaveLength(1)
+    const prov = rows[0]?.extraction_provenance as { image_quality?: { status?: string } }
+    expect(prov?.image_quality?.status).toBe('recoverable')
+  })
 })
 
 describe('buildTablePayloadFromOcrByFile AP source page', () => {

@@ -207,6 +207,75 @@ function bankSourcePageCount(payload: Record<string, unknown> | undefined): numb
   return bank.filter(t => hasBankSourcePageSuffix(t.source_file)).length
 }
 
+/** True when row already carries AQ image_quality for Table Review chips. */
+function rowHasImageQuality(row: ARAPTransaction | Record<string, unknown>): boolean {
+  const raw = row as Record<string, unknown>
+  const prov =
+    raw.extraction_provenance && typeof raw.extraction_provenance === 'object'
+      ? (raw.extraction_provenance as Record<string, unknown>)
+      : null
+  if (prov?.image_quality && typeof prov.image_quality === 'object') return true
+  return Boolean(raw.image_quality && typeof raw.image_quality === 'object')
+}
+
+function arapIdentityKeys(row: ARAPTransaction): string[] {
+  const keys = new Set<string>()
+  const idn = String(row.id_number ?? '').trim()
+  if (idn) keys.add(idn)
+  const voucher = String((row as Record<string, unknown>).voucher_no ?? '').trim()
+  if (voucher) keys.add(voucher)
+  if (idn.startsWith('AR-') || idn.startsWith('AP-')) keys.add(idn.slice(3))
+  const memo = String(row.memo ?? '').trim()
+  const amount = String(row.amount ?? row.debit ?? row.credit ?? '').trim()
+  const date = String(row.date ?? '').trim()
+  if (memo || amount || date) keys.add(`${date}|${amount}|${memo}`)
+  return [...keys]
+}
+
+/**
+ * Copy extraction_provenance (AQ) from OCR rebuild onto persisted snapshot rows
+ * that were saved before provenance was passed through the spreadsheet mapper.
+ */
+export function enrichArapImageQualityFromRebuild(
+  current: Record<string, unknown> | undefined,
+  rebuilt: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!current || !rebuilt) return current
+  const curArap = (current.arapTransactions as ARAPTransaction[] | undefined) ?? []
+  const rebArap = (rebuilt.arapTransactions as ARAPTransaction[] | undefined) ?? []
+  if (!curArap.length || !rebArap.length) return current
+  if (!curArap.some(r => !rowHasImageQuality(r))) return current
+  if (!rebArap.some(r => rowHasImageQuality(r))) return current
+
+  const rebByKey = new Map<string, ARAPTransaction>()
+  for (const row of rebArap) {
+    for (const key of arapIdentityKeys(row)) {
+      if (key && !rebByKey.has(key)) rebByKey.set(key, row)
+    }
+  }
+
+  let changed = false
+  const next = curArap.map(row => {
+    if (rowHasImageQuality(row)) return row
+    let match: ARAPTransaction | undefined
+    for (const key of arapIdentityKeys(row)) {
+      match = match ?? (key ? rebByKey.get(key) : undefined)
+    }
+    if (!match || !rowHasImageQuality(match)) return row
+    changed = true
+    const out: ARAPTransaction = { ...row }
+    if (match.extraction_provenance) out.extraction_provenance = match.extraction_provenance
+    const m = match as Record<string, unknown>
+    if (typeof m.needs_review === 'boolean') (out as Record<string, unknown>).needs_review = m.needs_review
+    if (Array.isArray(m.validation_flags)) {
+      ;(out as Record<string, unknown>).validation_flags = m.validation_flags
+    }
+    return out
+  })
+  if (!changed) return current
+  return { ...current, arapTransactions: next }
+}
+
 export function reconcileBatchPayloadsWithRun(
   run: WorkflowRun,
   loaded: Record<string, Record<string, unknown>>,
@@ -218,7 +287,12 @@ export function reconcileBatchPayloadsWithRun(
   const isBank = (run.processing_mode || '').toUpperCase() === 'BANK'
   const out: Record<string, Record<string, unknown>> = { ...loaded }
   for (const [batchId, rebuiltPayload] of Object.entries(rebuilt)) {
-    if (isModuleAuthoritativeSnapshot(loaded[batchId])) continue
+    if (isModuleAuthoritativeSnapshot(loaded[batchId])) {
+      // Still allow AQ provenance fill-in; do not replace edited cells.
+      const enriched = enrichArapImageQualityFromRebuild(out[batchId], rebuiltPayload)
+      if (enriched) out[batchId] = enriched
+      continue
+    }
     const currentCount = batchPayloadRowCount(loaded[batchId], run.processing_mode)
     const rebuiltCount = batchPayloadRowCount(rebuiltPayload, run.processing_mode)
     if (isBank) {
@@ -229,7 +303,12 @@ export function reconcileBatchPayloadsWithRun(
         continue
       }
     }
-    if (rebuiltCount > currentCount) out[batchId] = rebuiltPayload
+    if (rebuiltCount > currentCount) {
+      out[batchId] = rebuiltPayload
+      continue
+    }
+    const enriched = enrichArapImageQualityFromRebuild(out[batchId], rebuiltPayload)
+    if (enriched) out[batchId] = enriched
   }
   return out
 }
