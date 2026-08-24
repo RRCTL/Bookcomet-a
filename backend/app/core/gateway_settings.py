@@ -157,9 +157,7 @@ def _sync_settings_from_env() -> None:
         os.getenv("VLM_API_KEY") or os.getenv("LLM_API_KEY") or ""
     )
     settings.vlm_api_base = (
-        os.getenv("VLM_BASE_URL")
-        or os.getenv("LLM_BASE_URL")
-        or "https://www.dmxapi.cn"
+        os.getenv("VLM_BASE_URL") or os.getenv("LLM_BASE_URL") or ""
     )
     settings.vlm_model = (
         (os.getenv("VLM_MODEL") or "").strip() or _DEFAULT_VLM_MODEL

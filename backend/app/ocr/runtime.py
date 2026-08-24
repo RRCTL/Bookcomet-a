@@ -16,12 +16,9 @@ from app.services.ocr_service import OcrService
 logger = logging.getLogger(__name__)
 
 
-def _ensure_ocr_base_url() -> None:
-    if not os.getenv("VLM_BASE_URL"):
-        os.environ["VLM_BASE_URL"] = settings.vlm_api_base
-
-
-_ensure_ocr_base_url()
+# Do not inject a vendor default into VLM_BASE_URL. An empty env must stay empty
+# so Settings → API → VLM shows a blank API URL until the user configures one.
+# OCR providers already fall back to LLM_BASE_URL (and their own callers) when unset.
 
 # Single bank-statement VLM model for all banks (HSBC, BOC, BEA, SCB, ...).
 # Per-bank behaviour differs by prompt in app/bank_prompts/, not by model id.

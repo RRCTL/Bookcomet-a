@@ -125,10 +125,11 @@ class Settings:
     ai_enhance_use_reasoner: bool = (
         os.getenv("AI_ENHANCE_USE_REASONER") or "false"
     ).lower() in ("true", "1", "yes")
-    # Primary VLM/OCR gateway (OpenAI-compatible).
+    # Primary VLM/OCR gateway (OpenAI-compatible). No vendor URL default —
+    # leave blank until configured (Settings → API → VLM).
     vlm_api_key: str = os.getenv("VLM_API_KEY") or os.getenv("LLM_API_KEY") or ""
     vlm_api_base: str = (
-        os.getenv("VLM_BASE_URL") or os.getenv("LLM_BASE_URL") or "https://www.dmxapi.cn"
+        os.getenv("VLM_BASE_URL") or os.getenv("LLM_BASE_URL") or ""
     )
 
     # JWT / Auth (SEC-CODE-001: no weak default — set JWT_SECRET_KEY in .env)
