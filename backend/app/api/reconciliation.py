@@ -91,7 +91,17 @@ class TxnCategoryBulkItem(BaseModel):
 
 class TxnCategoryBulkRequest(BaseModel):
     updates: List[TxnCategoryBulkItem]
-    rebuild_draft_journals: bool = False  # legacy RECON group GL only; OCR uses /ocr-journals
+    # When true: rebuild RECON group primary DRAFTs and unlocked module_approve DRAFTs.
+    rebuild_draft_journals: bool = False
+
+
+class PostedGlLockCheckItem(BaseModel):
+    source: str  # bank | ledger
+    txn_id: str
+
+
+class PostedGlLockCheckRequest(BaseModel):
+    items: List[PostedGlLockCheckItem] = []
 
 
 class LedgerDocTypeBulkItem(BaseModel):
@@ -948,6 +958,36 @@ async def dissolve_group(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.post("/transactions/posted-gl-lock-check")
+async def posted_gl_lock_check(
+    payload: PostedGlLockCheckRequest,
+    company_id: str = Depends(get_current_company_id),
+    db: Session = Depends(get_db),
+):
+    """Return which bank/ledger txn ids are locked by a POSTED primary GL voucher."""
+    from app.services import gl_journal_service as glsvc
+
+    bank_ids: set[str] = set()
+    ledger_ids: set[str] = set()
+    for item in payload.items or []:
+        src = (item.source or "").strip().lower()
+        tid = (item.txn_id or "").strip()
+        if not tid:
+            continue
+        if src == "bank":
+            bank_ids.add(tid)
+        elif src == "ledger":
+            ledger_ids.add(tid)
+    locked_bank, locked_ledger = glsvc.posted_gl_locked_txn_ids(
+        db, company_id, bank_ids, ledger_ids
+    )
+    return {
+        "locked_bank_ids": sorted(locked_bank),
+        "locked_ledger_ids": sorted(locked_ledger),
+        "locked_count": len(locked_bank) + len(locked_ledger),
+    }
+
+
 @router.post("/transactions/account-category-bulk")
 async def bulk_transaction_account_category(
     payload: TxnCategoryBulkRequest,
@@ -968,7 +1008,11 @@ async def bulk_transaction_account_category(
         tuples.append((src, tid, u.account_category or ""))
 
     if not tuples:
-        return {"updated_count": 0, "rebuilt_group_ids": []}
+        return {
+            "updated_count": 0,
+            "rebuilt_group_ids": [],
+            "rebuilt_module_journal_ids": [],
+        }
 
     try:
         glsvc.assert_account_category_updates_not_blocked_by_posted_gl(db, company_id, tuples)
@@ -977,6 +1021,7 @@ async def bulk_transaction_account_category(
 
     n, bank_ids, ledger_ids = glsvc.bulk_set_transaction_account_categories(db, company_id, tuples)
     rebuilt: list[str] = []
+    rebuilt_module: list[str] = []
     if payload.rebuild_draft_journals and (bank_ids or ledger_ids):
         gids = glsvc.draft_group_ids_with_primary_draft(db, company_id, bank_ids, ledger_ids)
         for gid in gids:
@@ -985,7 +1030,14 @@ async def bulk_transaction_account_category(
                 rebuilt.append(gid)
             except ValueError:
                 continue
-    return {"updated_count": n, "rebuilt_group_ids": rebuilt}
+        rebuilt_module = glsvc.rebuild_module_approve_drafts_for_txns(
+            db, company_id, bank_ids, ledger_ids
+        )
+    return {
+        "updated_count": n,
+        "rebuilt_group_ids": rebuilt,
+        "rebuilt_module_journal_ids": rebuilt_module,
+    }
 
 
 @router.post("/transactions/ledger-doc-type-bulk")
@@ -1025,6 +1077,7 @@ async def bulk_ledger_doc_type(
 
     n, ledger_ids = glsvc.bulk_set_ledger_doc_types(db, company_id, doc_updates)
     rebuilt: list[str] = []
+    rebuilt_module: list[str] = []
     if payload.rebuild_draft_journals and ledger_ids:
         gids = glsvc.draft_group_ids_with_primary_draft(db, company_id, set(), ledger_ids)
         for gid in gids:
@@ -1033,7 +1086,14 @@ async def bulk_ledger_doc_type(
                 rebuilt.append(gid)
             except ValueError:
                 continue
-    return {"updated_count": n, "rebuilt_group_ids": rebuilt}
+        rebuilt_module = glsvc.rebuild_module_approve_drafts_for_txns(
+            db, company_id, set(), ledger_ids
+        )
+    return {
+        "updated_count": n,
+        "rebuilt_group_ids": rebuilt,
+        "rebuilt_module_journal_ids": rebuilt_module,
+    }
 
 
 from app.api.reconciliation_match_gl import router as match_gl_router

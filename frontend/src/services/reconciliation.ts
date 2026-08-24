@@ -651,7 +651,11 @@ export const reconciliationApi = {
   async bulkTxnAccountCategory(body: {
     updates: Array<{ source: 'bank' | 'ledger'; txn_id: string; account_category: string }>
     rebuild_draft_journals?: boolean
-  }): Promise<{ updated_count: number; rebuilt_group_ids: string[] }> {
+  }): Promise<{
+    updated_count: number
+    rebuilt_group_ids: string[]
+    rebuilt_module_journal_ids?: string[]
+  }> {
     const response = await apiFetch('/reconciliation/transactions/account-category-bulk', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -667,10 +671,33 @@ export const reconciliationApi = {
     return response.json()
   },
 
+  async checkPostedGlLocks(body: {
+    items: Array<{ source: 'bank' | 'ledger'; txn_id: string }>
+  }): Promise<{
+    locked_bank_ids: string[]
+    locked_ledger_ids: string[]
+    locked_count: number
+  }> {
+    const response = await apiFetch('/reconciliation/transactions/posted-gl-lock-check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: body.items }),
+    })
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ detail: response.statusText }))
+      throw new Error((err as any).detail || response.statusText)
+    }
+    return response.json()
+  },
+
   async bulkLedgerDocType(body: {
     updates: Array<{ txn_id: string; doc_type: string }>
     rebuild_draft_journals?: boolean
-  }): Promise<{ updated_count: number; rebuilt_group_ids: string[] }> {
+  }): Promise<{
+    updated_count: number
+    rebuilt_group_ids: string[]
+    rebuilt_module_journal_ids?: string[]
+  }> {
     const response = await apiFetch('/reconciliation/transactions/ledger-doc-type-bulk', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

@@ -1340,6 +1340,27 @@ export default function WorkspaceApp() {
         }))
     if (txns.length === 0) return
 
+    const postedLockedCount = isBank
+      ? (msg.bankTransactions ?? []).filter(t => isBankRowGlPosted(t, glPostedBankLockKeys)).length
+      : (msg.arapTransactions ?? []).filter(t => isLedgerRowGlPosted(t, glPostedLedgerLockKeys)).length
+    if (postedLockedCount > 0) {
+      const unlocked = txns.length - postedLockedCount
+      if (unlocked <= 0) {
+        window.alert(
+          `${postedLockedCount} row(s) are posted to the GL and cannot receive Deploy Codes.\n\n` +
+            'Unpost the journal in RECON (back to draft), then Deploy Codes again.',
+        )
+        return
+      }
+      const proceed = window.confirm(
+        `${postedLockedCount} row(s) are posted to the GL and will be skipped.\n` +
+          `Deploy Codes will continue for ${unlocked} unlocked row(s).\n\n` +
+          'To update locked rows: unpost the journal in RECON (back to draft), then Deploy Codes again.\n\n' +
+          'Continue with unlocked rows?',
+      )
+      if (!proceed) return
+    }
+
     const deployMsgId = `deploy-${Date.now()}`
     const deployTaskId = activeTaskId
     if (!deployTaskId) return
@@ -1404,7 +1425,7 @@ export default function WorkspaceApp() {
         try {
           const bulkRes = await reconciliationApi.bulkTxnAccountCategory({
             updates: persistFiltered,
-            rebuild_draft_journals: false,
+            rebuild_draft_journals: true,
           })
           const b: Record<string, string> = {}
           const l: Record<string, string> = {}
@@ -1524,6 +1545,9 @@ export default function WorkspaceApp() {
       const unassigned = results.filter(r => !r.suggested_code)
       let content = `Deploy Codes complete\n`
       content += `Mode: ${displayMode} | Transactions: ${results.length} | Assigned: ${assigned.length} | Unassigned: ${unassigned.length}\n`
+      if (postedLockedCount > 0) {
+        content += `\nSkipped ${postedLockedCount} posted/locked row(s). Unpost in RECON (back to draft) to deploy codes for those rows.\n`
+      }
       if (assigned.length > 0) {
         content += `\nAssigned account codes:\n`
         assigned.forEach(r => {

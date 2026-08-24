@@ -7,6 +7,7 @@ import {
   type GlJournalPayload,
 } from '../../services/reconciliation'
 import type { ChartOfAccountItem } from '../../types/reconciliation'
+import { ERP_COA_DEPLOY_COMPLETE } from './erpBackgroundJobs'
 
 type DisplayMode = 'preview' | 'manage'
 
@@ -331,6 +332,17 @@ export function JournalPage() {
   useEffect(() => {
     void reload()
   }, [reload])
+
+  useEffect(() => {
+    const onComplete = (event: Event) => {
+      const detail = (event as CustomEvent<{ companyId?: string; failed?: string }>).detail
+      if (detail?.failed) return
+      if (detail?.companyId && detail.companyId !== (activeCompany?.id ?? 'default')) return
+      void reload()
+    }
+    window.addEventListener(ERP_COA_DEPLOY_COMPLETE, onComplete)
+    return () => window.removeEventListener(ERP_COA_DEPLOY_COMPLETE, onComplete)
+  }, [activeCompany?.id, reload])
 
   const coaOptionLabel = useCallback((a: ChartOfAccountItem) => {
     return `${a.code} — ${a.name_en || a.name_zh || ''}`

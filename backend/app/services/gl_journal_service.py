@@ -990,6 +990,186 @@ def rebuild_primary_draft_for_group(db: Session, company_id: str, group_id: str)
     return j
 
 
+def rebuild_module_approve_draft_for_txn(
+    db: Session,
+    company_id: str,
+    *,
+    bank_txn_id: str | None = None,
+    ledger_txn_id: str | None = None,
+) -> GlJournal | None:
+    """Rebuild DRAFT source=module_approve lines from current txn account_category.
+
+    Returns the rebuilt journal, or None when no eligible draft exists.
+    Posted module journals are left untouched.
+    """
+    bid = (bank_txn_id or "").strip() or None
+    lid = (ledger_txn_id or "").strip() or None
+    if bool(bid) == bool(lid):
+        raise ValueError("Provide exactly one of bank_txn_id or ledger_txn_id")
+
+    _ensure_suspense_row(db, company_id)
+
+    bank_txns: list[BankTransaction] = []
+    ledger_txns: list[LedgerTransaction] = []
+    if bid:
+        bt = (
+            db.query(BankTransaction)
+            .filter(BankTransaction.id == bid, BankTransaction.company_id == company_id)
+            .first()
+        )
+        if not bt:
+            raise ValueError("Bank transaction not found")
+        bank_txns = [bt]
+    else:
+        lt = (
+            db.query(LedgerTransaction)
+            .filter(LedgerTransaction.id == lid, LedgerTransaction.company_id == company_id)
+            .first()
+        )
+        if not lt:
+            raise ValueError("Ledger transaction not found")
+        ledger_txns = [lt]
+
+    existing = _module_journals_for_txn_ids(
+        db,
+        company_id,
+        {bid} if bid else set(),
+        {lid} if lid else set(),
+    )
+    drafts = [
+        j
+        for j in existing
+        if j.status == GlJournalStatus.DRAFT and not j.reconciliation_group_id
+    ]
+    if not drafts:
+        return None
+    drafts.sort(key=lambda j: (j.created_at or datetime.min, j.id), reverse=True)
+    j = drafts[0]
+
+    class _Synth:
+        id = "module-txn"
+        match_cardinality = None
+        total_bank_amount = 0
+
+    line_data = _build_lines_for_group(db, company_id, _Synth(), bank_txns, ledger_txns)
+    db.query(GlJournalLine).filter(GlJournalLine.journal_id == j.id).delete(synchronize_session=False)
+    db.flush()
+    _populate_journal_lines_from_line_data(db, j, line_data)
+    j.journal_date = _group_journal_date(bank_txns, ledger_txns)
+    db.commit()
+    db.refresh(j)
+    return j
+
+
+def rebuild_module_approve_drafts_for_txns(
+    db: Session,
+    company_id: str,
+    bank_txn_ids: set[str],
+    ledger_txn_ids: set[str],
+) -> list[str]:
+    """Rebuild unlocked module_approve DRAFT journals for the given txn ids. Returns journal ids."""
+    rebuilt: list[str] = []
+    for bid in sorted(bank_txn_ids or ()):
+        try:
+            j = rebuild_module_approve_draft_for_txn(
+                db, company_id, bank_txn_id=bid
+            )
+        except ValueError:
+            continue
+        if j:
+            rebuilt.append(j.id)
+    for lid in sorted(ledger_txn_ids or ()):
+        try:
+            j = rebuild_module_approve_draft_for_txn(
+                db, company_id, ledger_txn_id=lid
+            )
+        except ValueError:
+            continue
+        if j:
+            rebuilt.append(j.id)
+    return rebuilt
+
+
+def posted_gl_locked_txn_ids(
+    db: Session,
+    company_id: str,
+    bank_txn_ids: set[str] | None = None,
+    ledger_txn_ids: set[str] | None = None,
+) -> tuple[set[str], set[str]]:
+    """Return (locked_bank_ids, locked_ledger_ids) whose match group has a POSTED primary voucher."""
+    bank_req = {t for t in (bank_txn_ids or set()) if t}
+    led_req = {t for t in (ledger_txn_ids or set()) if t}
+    if not bank_req and not led_req:
+        return set(), set()
+
+    conds = []
+    if bank_req:
+        conds.append(ReconciliationMatch.bank_txn_id.in_(bank_req))
+    if led_req:
+        conds.append(ReconciliationMatch.ledger_txn_id.in_(led_req))
+    match_filter = conds[0] if len(conds) == 1 else or_(*conds)
+
+    matches = (
+        db.query(ReconciliationMatch)
+        .filter(ReconciliationMatch.company_id == company_id, match_filter)
+        .all()
+    )
+    group_ids = {m.group_id for m in matches if m.group_id}
+    if not group_ids:
+        return set(), set()
+
+    posted_rows = (
+        db.query(GlJournal.reconciliation_group_id)
+        .filter(
+            GlJournal.company_id == company_id,
+            GlJournal.reconciliation_group_id.in_(group_ids),
+            GlJournal.status == GlJournalStatus.POSTED,
+            GlJournal.reversal_of_journal_id.is_(None),
+        )
+        .distinct()
+        .all()
+    )
+    posted_groups = {r[0] for r in posted_rows if r[0]}
+    if not posted_groups:
+        return set(), set()
+
+    locked_bank: set[str] = set()
+    locked_ledger: set[str] = set()
+    for m in matches:
+        if m.group_id not in posted_groups:
+            continue
+        if m.bank_txn_id and m.bank_txn_id in bank_req:
+            locked_bank.add(m.bank_txn_id)
+        if m.ledger_txn_id and m.ledger_txn_id in led_req:
+            locked_ledger.add(m.ledger_txn_id)
+    return locked_bank, locked_ledger
+
+
+def partition_account_category_updates_by_posted_gl(
+    db: Session,
+    company_id: str,
+    tuples: list[tuple[str, str, str]],
+) -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str]]]:
+    """Split updates into (allowed, blocked_by_posted_gl)."""
+    if not tuples:
+        return [], []
+    bank_ids = {t[1] for t in tuples if t[0] == "bank" and t[1]}
+    led_ids = {t[1] for t in tuples if t[0] == "ledger" and t[1]}
+    locked_bank, locked_ledger = posted_gl_locked_txn_ids(
+        db, company_id, bank_ids, led_ids
+    )
+    allowed: list[tuple[str, str, str]] = []
+    blocked: list[tuple[str, str, str]] = []
+    for src, tid, cat in tuples:
+        if src == "bank" and tid in locked_bank:
+            blocked.append((src, tid, cat))
+        elif src == "ledger" and tid in locked_ledger:
+            blocked.append((src, tid, cat))
+        else:
+            allowed.append((src, tid, cat))
+    return allowed, blocked
+
+
 def assert_account_category_updates_not_blocked_by_posted_gl(
     db: Session,
     company_id: str,
