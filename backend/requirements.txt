@@ -25,7 +25,7 @@ pydantic[email]>=2.13.4
 # Note: We use requests library directly for AI enhancement API (see ai_enhance_client.py)
 # OpenAI SDK is no longer used to avoid httpx compatibility issues with that SDK
 # openai>=1.0.0  # Optional: Keep if needed for other features
-requests>=2.31.0  # Required for DeepSeek API calls
+requests>=2.34.2  # Required for DeepSeek API calls
 httpx>=0.28.1  # Required by Starlette/FastAPI TestClient (pytest)
 
 
