@@ -28,6 +28,7 @@ import {
   resolveBatchTablePayloadAfterVlm,
 } from './batchTableSnapshots'
 import { getOcrByFileFromRun } from './ocrTableBuilder'
+import { safeRandomUUID } from '../../utils/safeRandomUUID'
 import { hasOcrDataOnRun, tablePayloadHasRows } from './tablePayloadMerge'
 import { committedTimelineBatches, composerStagingFiles, workflowQueueFiles } from './runFileBatches'
 import { enrichNodesFromRun, type WorkflowNodeData } from './nodes/workflowNodeTypes'
@@ -1453,7 +1454,7 @@ export default function NodeWorkspace() {
 
   const uploadFiles = async (fileList: File[]) => {
     if (!fileList.length || !activeRun || !companyId) return
-    const uploadBatchId = crypto.randomUUID()
+    const uploadBatchId = safeRandomUUID()
     const uploadedAt = new Date().toISOString()
     const beforeIds = new Set(activeRun.files.map(f => f.task_file_id))
     try {

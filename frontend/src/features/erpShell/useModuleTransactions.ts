@@ -19,6 +19,7 @@ import {
 } from './arapDebitCredit'
 import { isModuleTxnLocked } from '../recon/moduleReconKeys'
 import { syncModulesToRecon } from '../recon/syncModulesToRecon'
+import { safeRandomUUID } from '../../utils/safeRandomUUID'
 
 type Tx = Record<string, any>
 
@@ -330,7 +331,7 @@ export function useModuleTransactions(mode: string, companyId: string) {
         // Keep Processing clean — Books owns this container until VLM batches exist.
         remove_from_processing: true,
       })
-      const batchId = `manual-${crypto.randomUUID()}`
+      const batchId = `manual-${safeRandomUUID()}`
       const key = `${run.id}::${batchId}`
       runsRef.current.set(run.id, run)
       batchInfoRef.current.set(key, { runId: run.id, batchId })

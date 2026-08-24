@@ -7,10 +7,12 @@ function fmt(n: number) {
   return (Math.round(n * 100) / 100).toLocaleString('en-HK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
+import { safeRandomUUID } from '../utils/safeRandomUUID'
+
 const NEW_PREFIX = 'new:'
 
 function newLineId(): string {
-  return `${NEW_PREFIX}${crypto.randomUUID()}`
+  return `${NEW_PREFIX}${safeRandomUUID()}`
 }
 
 type ModalLineState = {

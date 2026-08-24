@@ -28,6 +28,7 @@ import {
   mapCombinedPayloadToBatches,
 } from '../nodeWorkspace/batchTableSnapshots'
 import { hasOcrDataOnRun } from '../nodeWorkspace/tablePayloadMerge'
+import { safeRandomUUID } from '../../utils/safeRandomUUID'
 import { coalesceBankAccountTypeRows } from '../../utils/bankAccountTypeCoalesce'
 
 function resolveBatchPayloads(
@@ -796,7 +797,7 @@ export function ProcessingView() {
       setBusy(true)
       setError(null)
       try {
-        const uploadBatchId = crypto.randomUUID()
+        const uploadBatchId = safeRandomUUID()
         const uploadedAt = new Date().toISOString()
         for (const file of Array.from(files)) {
           await workflowApi.uploadFile(companyId, activeRun.id, file, { uploadBatchId, uploadedAt })
