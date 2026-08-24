@@ -16,6 +16,10 @@ const TableFirstPreviewPage = import.meta.env.DEV
 const AqQualityPreviewPage = import.meta.env.DEV
   ? lazy(() => import('./features/mvduPreview/AqQualityPreviewPage.tsx'))
   : null
+/** Real ARAPReview AQ column/panel demo — synthetic provenance; DEV only. */
+const AqTableReviewDemoPage = import.meta.env.DEV
+  ? lazy(() => import('./features/mvduPreview/AqTableReviewDemoPage.tsx'))
+  : null
 /** Lazy so public routes do not load the workspace graph; workspace is its own chunk. */
 const WorkspaceApp = lazy(() => import('./features/workspace/WorkspaceApp'))
 const NodeWorkspace = lazy(() => import('./features/nodeWorkspace/NodeWorkspace'))
@@ -47,6 +51,9 @@ createRoot(document.getElementById('root')!).render(
             ) : null}
             {import.meta.env.DEV && AqQualityPreviewPage ? (
               <Route path="/mvdu-aq-quality-preview" element={<AqQualityPreviewPage />} />
+            ) : null}
+            {import.meta.env.DEV && AqTableReviewDemoPage ? (
+              <Route path="/mvdu-aq-table-review-demo" element={<AqTableReviewDemoPage />} />
             ) : null}
             <Route
               path="/*"
