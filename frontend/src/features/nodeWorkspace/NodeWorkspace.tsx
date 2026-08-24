@@ -53,6 +53,7 @@ import {
 } from './shell'
 import {
   applyWorkflowSettingsToGraph,
+  providerOptionsFromCatalog,
   workflowSettingsChanged,
 } from './shell/processingWorkflowHeader'
 import { TemplatesManagerModal } from './shell/TemplatesManagerModal'
@@ -572,15 +573,7 @@ export default function NodeWorkspace() {
     [reportApiError],
   )
 
-  const workflowProviderOptions = useMemo(() => {
-    for (const entry of nodeCatalog) {
-      const raw = entry.params?.provider?.options
-      if (Array.isArray(raw) && raw.length > 0) {
-        return raw.map(String)
-      }
-    }
-    return ['Qwen']
-  }, [nodeCatalog])
+  const workflowProviderOptions = useMemo(() => providerOptionsFromCatalog(nodeCatalog), [nodeCatalog])
 
   const loadWorkflowSkills = useCallback(
     (scopeId: string, mode?: string) => {
@@ -2215,6 +2208,7 @@ export default function NodeWorkspace() {
             graph: activeRun.graph_json,
             templates,
             processingMode: activeRun.processing_mode,
+            providerOptions: workflowProviderOptions,
           }}
           onConfirm={payload => void handleReVlm(payload)}
           onCancel={() => {

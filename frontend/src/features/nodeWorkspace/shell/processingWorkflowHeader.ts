@@ -1,5 +1,5 @@
 import { layoutGraphVertical } from '../defaultGraphs'
-import type { WorkflowGraph, WorkflowTemplate } from '../workflowApi'
+import type { WorkflowGraph, WorkflowNodeCatalogEntry, WorkflowTemplate } from '../workflowApi'
 import type { ApVlmReceiptSignal, ApVlmTablePreset } from '../../workspace/apComposerOptions'
 import { receiptSettingsFromGraph } from './graphReceiptSettings'
 import { resolvePaletteTemplateSelection } from '../workflowTemplates'
@@ -12,6 +12,29 @@ const VLM_PROVIDER_NODE_TYPES = new Set([
   'ManagerReview',
   'VLMDoubleCheck',
 ])
+
+/** Fallback when node-catalog has not loaded / has no provider options. */
+export const DEFAULT_WORKFLOW_PROVIDER_OPTIONS = ['Qwen'] as const
+
+/** Provider labels from `/api/workflows/node-catalog` (WORKFLOW_PROVIDERS on API). */
+export function providerOptionsFromCatalog(
+  catalog: Array<Pick<WorkflowNodeCatalogEntry, 'params'>>,
+): string[] {
+  for (const entry of catalog) {
+    const raw = entry.params?.provider?.options
+    if (Array.isArray(raw) && raw.length > 0) {
+      return raw.map(String)
+    }
+  }
+  return [...DEFAULT_WORKFLOW_PROVIDER_OPTIONS]
+}
+
+/** Keep select value valid when legacy graph labels (e.g. DeepSeek) are not in API options. */
+export function resolveProviderSelection(current: string | null | undefined, options: string[]): string {
+  const label = (current ?? '').trim()
+  if (label && options.includes(label)) return label
+  return options[0] ?? DEFAULT_WORKFLOW_PROVIDER_OPTIONS[0]
+}
 
 export function providerFromGraph(graph: WorkflowGraph): string {
   const vlm = graph.nodes.find(n => n.type === 'VLM_API')
