@@ -68,6 +68,9 @@ export type ReVlmWorkflowContext = {
 
   processingMode: string
 
+  /** From API node-catalog provider.options (WORKFLOW_PROVIDERS). */
+  providerOptions?: string[]
+
 }
 
 
@@ -143,6 +146,16 @@ export function ReVlmModal({
     (workflowContext.processingMode === 'AP' || workflowContext.processingMode === 'AR') &&
 
     workflowContext.graph.nodes.some(n => n.type === 'ReceiptStyle')
+
+  const providerOptions =
+
+    workflowContext?.providerOptions?.length ? workflowContext.providerOptions : ['Qwen']
+
+  const providerSelectValue = providerOptions.includes(workflowDraft?.provider ?? '')
+
+    ? (workflowDraft?.provider as string)
+
+    : providerOptions[0] ?? 'Qwen'
 
   const tablePresetOptions =
 
@@ -298,7 +311,7 @@ export function ReVlmModal({
 
                   className="ow-input w-full text-xs"
 
-                  value={workflowDraft.provider}
+                  value={providerSelectValue}
 
                   disabled={busy}
 
@@ -306,9 +319,15 @@ export function ReVlmModal({
 
                 >
 
-                  <option value="Qwen">Qwen</option>
+                  {providerOptions.map(p => (
 
-                  <option value="DeepSeek">DeepSeek</option>
+                    <option key={p} value={p}>
+
+                      {p}
+
+                    </option>
+
+                  ))}
 
                 </select>
 

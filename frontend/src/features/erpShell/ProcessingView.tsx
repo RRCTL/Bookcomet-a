@@ -12,6 +12,7 @@ import {
   type WorkflowRun,
   type WorkflowGraph,
   type WorkflowTemplate,
+  type WorkflowNodeCatalogEntry,
 } from '../nodeWorkspace/workflowApi'
 import {
   NODE_IO,
@@ -61,6 +62,8 @@ import {
   hasVlmProviderControl,
   patchProviderInGraph,
   providerFromGraph,
+  providerOptionsFromCatalog,
+  resolveProviderSelection,
   workflowSettingsChanged,
 } from '../nodeWorkspace/shell/processingWorkflowHeader'
 import {
@@ -313,7 +316,7 @@ function kvForNode(node: GraphNode, run: WorkflowRun, rowCount: number): { k: st
       ]
     case 'VLMDoubleCheck':
       return [
-        { k: 'Provider', v: String(d.provider ?? 'DeepSeek') },
+        { k: 'Provider', v: String(d.provider ?? 'Qwen') },
         { k: 'Merge', v: String(d.mergePolicy ?? 'cross_vlm') },
       ]
     case 'TableReview':
@@ -335,6 +338,7 @@ export function ProcessingView() {
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
   const [activeRun, setActiveRun] = useState<WorkflowRun | null>(null)
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([])
+  const [nodeCatalog, setNodeCatalog] = useState<WorkflowNodeCatalogEntry[]>([])
   const [error, setError] = useState<string | null>(null)
   const [showModePicker, setShowModePicker] = useState(false)
   const [creating, setCreating] = useState(false)
@@ -422,6 +426,10 @@ export function ProcessingView() {
     workflowApi
       .listTemplates(companyId)
       .then(t => !cancelled && setTemplates(t))
+      .catch(() => {})
+    workflowApi
+      .nodeCatalog(companyId)
+      .then(c => !cancelled && setNodeCatalog(c))
       .catch(() => {})
     return () => {
       cancelled = true
@@ -960,6 +968,8 @@ export function ProcessingView() {
   const receiptStyleNode = activeRun?.graph_json.nodes.find(n => n.type === 'ReceiptStyle') ?? null
   const headerProvider = activeRun ? providerFromGraph(activeRun.graph_json) : 'Qwen'
   const headerProviderEnabled = activeRun ? hasVlmProviderControl(activeRun.graph_json) : false
+  const workflowProviderOptions = useMemo(() => providerOptionsFromCatalog(nodeCatalog), [nodeCatalog])
+  const headerProviderValue = resolveProviderSelection(headerProvider, workflowProviderOptions)
   const processingModeUpper = (activeRun?.processing_mode ?? '').toUpperCase()
   const showReceiptOptions =
     (processingModeUpper === 'AP' || processingModeUpper === 'AR') && receiptStyleNode != null
@@ -1047,7 +1057,7 @@ export function ProcessingView() {
         <div className="field">
           Provider
           <select
-            value={headerProvider}
+            value={headerProviderValue}
             disabled={!headerProviderEnabled || busy || isRunning}
             onChange={e => {
               const next = e.target.value
@@ -1060,8 +1070,11 @@ export function ProcessingView() {
               )
             }}
           >
-            <option value="Qwen">Qwen</option>
-            <option value="DeepSeek">DeepSeek</option>
+            {workflowProviderOptions.map(p => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
           </select>
         </div>
         <div className="field">
@@ -1414,6 +1427,7 @@ export function ProcessingView() {
               node={selectedNode}
               nodeState={selectedNode ? nodeStateOf(activeRun, selectedNode.id) : undefined}
               processingMode={activeRun?.processing_mode ?? ''}
+              providerOptions={workflowProviderOptions}
               onPatch={patchNodeData}
               onToggleCross={toggleCrossVlm}
               crossOn={Boolean(activeRun?.graph_json.nodes.some(n => n.type === 'VLMDoubleCheck'))}
@@ -1480,6 +1494,7 @@ export function ProcessingView() {
             graph: activeRun.graph_json,
             templates,
             processingMode: activeRun.processing_mode,
+            providerOptions: workflowProviderOptions,
           }}
           onConfirm={payload => void handleReVlmConfirm(payload)}
           onCancel={() => {
@@ -1505,6 +1520,7 @@ function NodeSettings({
   node,
   nodeState,
   processingMode,
+  providerOptions,
   onPatch,
   onToggleCross,
   crossOn,
@@ -1513,6 +1529,7 @@ function NodeSettings({
   node: WorkflowGraph['nodes'][number] | null
   nodeState?: NodeState
   processingMode: string
+  providerOptions: string[]
   onPatch: (nodeId: string, patch: Record<string, unknown>) => void
   onToggleCross: (on: boolean) => void
   crossOn: boolean
@@ -1527,6 +1544,11 @@ function NodeSettings({
     ? AP_TABLE_OPTIONS_ORDER.filter(o => o === 'default')
     : AP_TABLE_OPTIONS_ORDER
   const detailLines = nodeDetailLines(nodeState)
+  const defaultProvider = providerOptions[0] ?? 'Qwen'
+  const providerValue = resolveProviderSelection(
+    d.provider != null ? String(d.provider) : null,
+    providerOptions,
+  )
 
   return (
     <>
@@ -1580,9 +1602,16 @@ function NodeSettings({
         <>
           <div className="erp-set-row">
             <label>Provider</label>
-            <select value={String(d.provider ?? 'Qwen')} disabled={busy} onChange={e => onPatch(node.id, { provider: e.target.value })}>
-              <option value="Qwen">Qwen</option>
-              <option value="DeepSeek">DeepSeek</option>
+            <select
+              value={providerValue}
+              disabled={busy}
+              onChange={e => onPatch(node.id, { provider: e.target.value })}
+            >
+              {providerOptions.map(p => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
             </select>
           </div>
           <div className="erp-set-row">
@@ -1609,9 +1638,16 @@ function NodeSettings({
         <>
           <div className="erp-set-row">
             <label>Provider</label>
-            <select value={String(d.provider ?? 'DeepSeek')} disabled={busy} onChange={e => onPatch(node.id, { provider: e.target.value })}>
-              <option value="DeepSeek">DeepSeek</option>
-              <option value="Qwen">Qwen</option>
+            <select
+              value={providerValue}
+              disabled={busy}
+              onChange={e => onPatch(node.id, { provider: e.target.value })}
+            >
+              {providerOptions.map(p => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
             </select>
           </div>
           <div className="erp-set-row">
@@ -1628,12 +1664,18 @@ function NodeSettings({
         <div className="erp-set-row">
           <label>Provider</label>
           <select
-            value={String(d.provider ?? (node.type === 'VLMProposer' ? 'Qwen' : 'DeepSeek'))}
+            value={resolveProviderSelection(
+              d.provider != null ? String(d.provider) : defaultProvider,
+              providerOptions,
+            )}
             disabled={busy}
             onChange={e => onPatch(node.id, { provider: e.target.value })}
           >
-            <option value="Qwen">Qwen</option>
-            <option value="DeepSeek">DeepSeek</option>
+            {providerOptions.map(p => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
           </select>
         </div>
       )}
