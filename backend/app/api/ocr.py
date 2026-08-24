@@ -2561,6 +2561,66 @@ async def _ap_vlm_layout_try_receipt_regions(
                 pass
 
 
+async def _run_ap_multi_with_guess_autoconfirm(
+    image_path: str,
+    *,
+    trace_id: str,
+    filename: str,
+    ocr_provider_name: str,
+    ocr_model_override: str,
+    ocr_prompt_override: str | None,
+    processing_mode: str,
+    multi_receipt_confirmed: bool,
+    ap_receipt_signal: str,
+    pdf_page_num: int = 1,
+    background_job_id: str | None = None,
+    multi_receipt_kwargs: dict | None = None,
+) -> tuple[dict | None, bool]:
+    """
+    Run multi-receipt OCR. Returns (result, ask_confirmation).
+
+    Guess mode never asks the user: if the first pass cannot separate regions,
+    automatically retry once with confirmed=True (force-split). Explicit
+    multi_per_page is already confirmed by callers; single_* should not reach here.
+    """
+    kwargs = dict(multi_receipt_kwargs or {})
+    result = await _run_ap_multi_receipt_ocr_from_image(
+        image_path,
+        trace_id=trace_id,
+        filename=filename,
+        ocr_provider_name=ocr_provider_name,
+        ocr_model_override=ocr_model_override,
+        ocr_prompt_override=ocr_prompt_override,
+        processing_mode=processing_mode,
+        confirmed=multi_receipt_confirmed,
+        pdf_page_num=pdf_page_num,
+        background_job_id=background_job_id,
+        **kwargs,
+    )
+    if result is not None or multi_receipt_confirmed:
+        return result, False
+    if (ap_receipt_signal or "guess").strip().lower() != "guess":
+        return None, True
+    logger.info(
+        "[ROUTER] Guess auto-confirm: classifier suspected multi-receipt but OpenCV "
+        "could not separate regions — retrying with force-split (no user prompt).",
+    )
+    result = await _run_ap_multi_receipt_ocr_from_image(
+        image_path,
+        trace_id=trace_id,
+        filename=filename,
+        ocr_provider_name=ocr_provider_name,
+        ocr_model_override=ocr_model_override,
+        ocr_prompt_override=ocr_prompt_override,
+        processing_mode=processing_mode,
+        confirmed=True,
+        pdf_page_num=pdf_page_num,
+        background_job_id=background_job_id,
+        **kwargs,
+    )
+    return result, False
+
+
 async def _run_ap_multi_receipt_ocr_from_image(
     image_path: str,
     *,
@@ -5995,7 +6055,7 @@ async def ocr_test_core(
                         if single_page_class == "receipts":
                             # Scenario B: composite receipt scan — run OpenCV segmentation.
                             logger.info("[ROUTER] Scenario B: running OpenCV segmentation on single page.")
-                            multi_receipt_result = await _run_ap_multi_receipt_ocr_from_image(
+                            multi_receipt_result, ask_confirm = await _run_ap_multi_with_guess_autoconfirm(
                                 image_paths[0],
                                 trace_id=trace_id,
                                 filename=file.filename or "",
@@ -6003,16 +6063,16 @@ async def ocr_test_core(
                                 ocr_model_override=ocr_model_override,
                                 ocr_prompt_override=ocr_prompt_override,
                                 processing_mode=processing_mode,
-                                confirmed=multi_receipt_confirmed,
+                                multi_receipt_confirmed=multi_receipt_confirmed,
+                                ap_receipt_signal=_ap_rs,
                                 pdf_page_num=1,
                                 background_job_id=background_job_id,
-                                **_multi_receipt_kwargs,
+                                multi_receipt_kwargs=_multi_receipt_kwargs,
                             )
                             if multi_receipt_result is not None:
                                 return multi_receipt_result
-                            # Classifier said "receipts" but OpenCV still found ≤1 region.
-                            # Prompt the user to confirm so force-split can be triggered.
-                            if not multi_receipt_confirmed:
+                            # Non-guess only: ask user to confirm force-split.
+                            if ask_confirm:
                                 return {
                                     "trace_id": trace_id,
                                     "filename": file.filename,
@@ -6072,7 +6132,7 @@ async def ocr_test_core(
                 if image_layout_class == "receipts":
                     # Scenario B: composite receipt scan — run OpenCV segmentation.
                     logger.info("[ROUTER] Scenario B: running OpenCV segmentation on image.")
-                    multi_receipt_result = await _run_ap_multi_receipt_ocr_from_image(
+                    multi_receipt_result, ask_confirm = await _run_ap_multi_with_guess_autoconfirm(
                         tmp_path,
                         trace_id=trace_id,
                         filename=file.filename or "",
@@ -6080,16 +6140,16 @@ async def ocr_test_core(
                         ocr_model_override=ocr_model_override,
                         ocr_prompt_override=ocr_prompt_override,
                         processing_mode=processing_mode,
-                        confirmed=multi_receipt_confirmed,
+                        multi_receipt_confirmed=multi_receipt_confirmed,
+                        ap_receipt_signal=_ap_rs,
                         pdf_page_num=1,
                         background_job_id=background_job_id,
-                        **_multi_receipt_kwargs,
+                        multi_receipt_kwargs=_multi_receipt_kwargs,
                     )
                     if multi_receipt_result is not None:
                         return multi_receipt_result
-                    # Classifier said "receipts" but OpenCV still found ≤1 region.
-                    # Prompt the user to confirm so force-split can be triggered.
-                    if not multi_receipt_confirmed:
+                    # Non-guess only: ask user to confirm force-split.
+                    if ask_confirm:
                         return {
                             "trace_id": trace_id,
                             "filename": file.filename,
