@@ -1172,6 +1172,47 @@ export const taskApi = {
     return blob;
   },
 
+  /**
+   * On-demand JPEG crop for AQ / Table Review preview (auth'd; not a persisted crop asset).
+   * Prefer normalized region (0–1). Omitting region returns a downscaled full page.
+   */
+  async downloadReceiptCrop(
+    taskId: string,
+    fileId: string,
+    opts: {
+      page?: number
+      regionNorm?: { x: number; y: number; w: number; h: number } | null
+      regionBbox?: { x: number; y: number; w: number; h: number } | null
+      companyId?: string | null
+    } = {},
+  ): Promise<Blob> {
+    const q = new URLSearchParams()
+    if (opts.page != null && opts.page >= 1) q.set('page', String(opts.page))
+    const n = opts.regionNorm
+    if (n && n.w > 0 && n.h > 0) {
+      q.set('x', String(n.x))
+      q.set('y', String(n.y))
+      q.set('w', String(n.w))
+      q.set('h', String(n.h))
+    } else if (opts.regionBbox && opts.regionBbox.w > 0 && opts.regionBbox.h > 0) {
+      q.set('bx', String(opts.regionBbox.x))
+      q.set('by', String(opts.regionBbox.y))
+      q.set('bw', String(opts.regionBbox.w))
+      q.set('bh', String(opts.regionBbox.h))
+    }
+    const qs = q.toString()
+    const res = await apiFetch(
+      `/api/tasks/${encodeURIComponent(taskId)}/files/${encodeURIComponent(fileId)}/receipt-crop${qs ? `?${qs}` : ''}`,
+      { companyId: opts.companyId },
+    )
+    if (!res.ok) throw new Error(`Receipt crop preview failed: ${res.statusText}`)
+    const blob = await res.blob()
+    if (!blob.type || blob.type === 'application/octet-stream') {
+      return new Blob([blob], { type: 'image/jpeg' })
+    }
+    return blob
+  },
+
   async upsertOcrSnapshot(taskId: string, msg: {
     role: string;
     content_text: string;

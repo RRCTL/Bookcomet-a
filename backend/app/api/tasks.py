@@ -15,8 +15,8 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -874,6 +874,81 @@ def download_file(
         path=str(storage_path),
         filename=task_file.original_filename or file_id,
         media_type=task_file.mime_type or "application/octet-stream",
+    )
+
+
+@router.get("/{task_id}/files/{file_id}/receipt-crop")
+def receipt_crop_preview(
+    task_id: str,
+    file_id: str,
+    request: Request,
+    user: User = Depends(get_current_user),
+    company_id: str = Depends(get_current_company_id),
+    db: Session = Depends(get_db),
+    page: int = Query(1, ge=1, le=500),
+    x: float | None = Query(None, ge=0.0, le=1.0),
+    y: float | None = Query(None, ge=0.0, le=1.0),
+    w: float | None = Query(None, ge=0.0, le=1.0),
+    h: float | None = Query(None, ge=0.0, le=1.0),
+    bx: int | None = Query(None, description="Pixel bbox x"),
+    by: int | None = Query(None, description="Pixel bbox y"),
+    bw: int | None = Query(None, description="Pixel bbox w"),
+    bh: int | None = Query(None, description="Pixel bbox h"),
+):
+    """
+    On-demand JPEG crop for AQ / Table Review preview.
+
+    Crops from the stored upload using normalized region (preferred) or pixel bbox.
+    Does not persist a separate crop file.
+    """
+    from app.services.receipt_crop_preview import render_receipt_crop_jpeg
+
+    task = _get_task_or_404(task_id, company_id, db)
+    _check_read_access(task, user)
+
+    task_file = (
+        db.query(TaskFile)
+        .filter(
+            TaskFile.id == file_id,
+            TaskFile.task_id == task_id,
+            TaskFile.deleted_at.is_(None),
+        )
+        .first()
+    )
+    if not task_file:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    storage_path = Path(task_file.storage_path)
+    if not storage_path.exists():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    region_norm = None
+    region_bbox = None
+    if x is not None and y is not None and w is not None and h is not None and w > 0 and h > 0:
+        region_norm = {"x": x, "y": y, "w": w, "h": h}
+    elif bx is not None and by is not None and bw is not None and bh is not None and bw > 0 and bh > 0:
+        region_bbox = {"x": bx, "y": by, "w": bw, "h": bh}
+
+    try:
+        jpeg = render_receipt_crop_jpeg(
+            storage_path=str(storage_path),
+            page=page,
+            region_norm=region_norm,
+            region_bbox=region_bbox,
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="File not found on disk") from None
+    except Exception as exc:
+        logger.warning("[TaskFiles] receipt-crop failed task=%s file=%s: %s", task_id, file_id, exc)
+        raise HTTPException(status_code=422, detail="Could not render receipt crop") from exc
+
+    _write_audit(task_id, user.id, "receipt_crop_previewed", db, request)
+    db.commit()
+
+    return Response(
+        content=jpeg,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "private, max-age=60"},
     )
 
 
