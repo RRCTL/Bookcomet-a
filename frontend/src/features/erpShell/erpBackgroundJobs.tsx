@@ -101,6 +101,13 @@ export function ErpBackgroundJobsProvider({ children }: { children: ReactNode })
               'Unpost the journal in RECON (back to draft), then Deploy Codes again for those rows.',
           )
         }
+        const unresolved = Number(result.unresolved_count || 0)
+        if (unresolved > 0) {
+          window.alert(
+            `${unresolved} row(s) got account codes in Books but could not be matched to Recon/GL.\n\n` +
+              'Save the module (or sync to Recon), then Deploy Codes again so GL drafts update.',
+          )
+        }
       }
       window.dispatchEvent(
         new CustomEvent(ERP_COA_DEPLOY_COMPLETE, {

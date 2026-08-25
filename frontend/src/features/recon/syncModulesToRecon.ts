@@ -162,15 +162,21 @@ async function writeMatchedIdToModules(
   bankDb: BankTransaction[],
   ledgerDb: LedgerTransaction[],
 ): Promise<void> {
+  const bankIdByKey = new Map<string, string>()
   const bankStatusByKey = new Map<string, string>()
   for (const t of bankDb) {
+    const key = bankDbKey(t)
+    bankIdByKey.set(key, t.id)
     const st = String(t.status ?? '').toLowerCase()
-    if (st === 'matched' || st === 'partial') bankStatusByKey.set(bankDbKey(t), t.id)
+    if (st === 'matched' || st === 'partial') bankStatusByKey.set(key, t.id)
   }
+  const ledgerIdByKey = new Map<string, string>()
   const ledgerStatusByKey = new Map<string, string>()
   for (const t of ledgerDb) {
+    const key = ledgerDbKey(t)
+    ledgerIdByKey.set(key, t.id)
     const st = String(t.status ?? '').toLowerCase()
-    if (st === 'matched' || st === 'partial') ledgerStatusByKey.set(ledgerDbKey(t), t.id)
+    if (st === 'matched' || st === 'partial') ledgerStatusByKey.set(key, t.id)
   }
 
   type BatchRef = { run: WorkflowRun; batchId: string; mode: 'BANK' | 'AP' | 'AR' }
@@ -199,9 +205,19 @@ async function writeMatchedIdToModules(
         if (!date || amount == null) return tx
         const key = bankReconDedupKey(date, amount, account)
         const nextMatched = bankStatusByKey.get(key) ?? ''
-        if (String(tx.matched_id ?? '') === nextMatched) return tx
+        const nextDbId = bankIdByKey.get(key) ?? ''
+        const matchedSame = String(tx.matched_id ?? '') === nextMatched
+        const dbSame =
+          !nextDbId ||
+          (String(tx.db_id ?? '') === nextDbId && String(tx.bank_txn_id ?? '') === nextDbId)
+        if (matchedSame && dbSame) return tx
         changed = true
-        return { ...tx, matched_id: nextMatched }
+        const next: Record<string, unknown> = { ...tx, matched_id: nextMatched }
+        if (nextDbId) {
+          next.db_id = nextDbId
+          next.bank_txn_id = nextDbId
+        }
+        return next
       })
       payload.bankTransactions = txs
     } else {
@@ -212,11 +228,20 @@ async function writeMatchedIdToModules(
         if (!voucher || !date || amount == null) return tx
         const key = ledgerReconDedupKey(edit.mode, voucher, date, amount)
         const nextMatched = ledgerStatusByKey.get(key) ?? ''
-        if (String(tx.matched_id ?? '') === nextMatched) return tx
+        const nextDbId = ledgerIdByKey.get(key) ?? ''
+        const matchedSame = String(tx.matched_id ?? '') === nextMatched
+        const dbSame =
+          !nextDbId ||
+          (String(tx.db_id ?? '') === nextDbId && String(tx.ledger_txn_id ?? '') === nextDbId)
+        if (matchedSame && dbSame) return tx
         changed = true
-        const next = { ...tx, matched_id: nextMatched }
+        const next: Record<string, unknown> = { ...tx, matched_id: nextMatched }
         if (nextMatched) next.payment_status = 'Reconciled'
         else if (String(tx.payment_status ?? '') === 'Reconciled') next.payment_status = ''
+        if (nextDbId) {
+          next.db_id = nextDbId
+          next.ledger_txn_id = nextDbId
+        }
         return next
       })
       payload.arapTransactions = txs
