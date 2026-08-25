@@ -443,6 +443,221 @@ def _apply_codes_to_rows(
         row["category"] = name_by_code.get(code) or row.get("category") or ""
 
 
+def _parse_module_date(value: object) -> datetime | None:
+    """Parse Books/OCR date strings into a midnight datetime."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    # Prefer a clean 10-char date prefix when present (ISO / slash YMD).
+    head = text[:10]
+    for candidate in (head, text):
+        for fmt in ("%Y/%m/%d", "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+            try:
+                return datetime.strptime(candidate, fmt)
+            except ValueError:
+                continue
+    return None
+
+
+def _module_ledger_amount(txn: dict[str, Any]) -> float | None:
+    """Magnitude used for Books→recon ledger matching (debit/credit/amount)."""
+    for key in ("debit", "credit", "amount"):
+        raw = txn.get(key)
+        if raw in (None, ""):
+            continue
+        try:
+            n = float(str(raw).replace(",", ""))
+        except (TypeError, ValueError):
+            continue
+        if abs(n) > 1e-12:
+            return abs(n)
+    return None
+
+
+def _module_bank_amount(txn: dict[str, Any]) -> float | None:
+    try:
+        dep = float(txn.get("deposit") or 0)
+        wd = float(txn.get("withdrawal") or 0)
+    except (TypeError, ValueError):
+        dep, wd = 0.0, 0.0
+    if abs(dep) > 1e-12 or abs(wd) > 1e-12:
+        return dep - wd
+    try:
+        debit = float(txn.get("debit") or 0)
+        credit = float(txn.get("credit") or 0)
+    except (TypeError, ValueError):
+        debit, credit = 0.0, 0.0
+    if abs(debit) > 1e-12 or abs(credit) > 1e-12:
+        return debit - credit
+    raw = txn.get("amount")
+    if raw in (None, ""):
+        return None
+    try:
+        return float(str(raw).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+
+
+def _stamp_recon_txn_id(txn: dict[str, Any], *, is_bank: bool, txn_id: str) -> None:
+    tid = (txn_id or "").strip()
+    if not tid:
+        return
+    txn["db_id"] = tid
+    if is_bank:
+        txn["bank_txn_id"] = tid
+    else:
+        txn["ledger_txn_id"] = tid
+
+
+def _explicit_recon_txn_id(txn: dict[str, Any], *, is_bank: bool) -> str:
+    if is_bank:
+        return str(txn.get("db_id") or txn.get("bank_txn_id") or "").strip()
+    return str(txn.get("db_id") or txn.get("ledger_txn_id") or "").strip()
+
+
+def resolve_recon_txn_id_for_module_row(
+    db: Session,
+    company_id: str,
+    txn: dict[str, Any],
+    *,
+    mode: str,
+    is_bank: bool,
+) -> str | None:
+    """Map a Books module row to bank_transactions / ledger_transactions.id.
+
+    Prefer explicit db_id / bank_txn_id / ledger_txn_id. When missing (common for
+    Books module grids after sync), fall back to the same natural key used by
+    Books→recon import so Deploy Codes can still update GL drafts.
+    """
+    from app.models.transaction import BankTransaction, LedgerTransaction
+
+    explicit = _explicit_recon_txn_id(txn, is_bank=is_bank)
+    if explicit:
+        if is_bank:
+            row = (
+                db.query(BankTransaction)
+                .filter(BankTransaction.id == explicit, BankTransaction.company_id == company_id)
+                .first()
+            )
+        else:
+            row = (
+                db.query(LedgerTransaction)
+                .filter(LedgerTransaction.id == explicit, LedgerTransaction.company_id == company_id)
+                .first()
+            )
+        if row:
+            return row.id
+
+    day = _parse_module_date(txn.get("date") or txn.get("transaction_date") or txn.get("bank_date"))
+    if day is None:
+        return None
+    day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day_start.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+    if is_bank:
+        amount = _module_bank_amount(txn)
+        if amount is None:
+            return None
+        account = str(txn.get("account_type") or txn.get("bank") or "").strip() or "UNKNOWN"
+        candidates = (
+            db.query(BankTransaction)
+            .filter(
+                BankTransaction.company_id == company_id,
+                BankTransaction.account_id == account,
+                BankTransaction.bank_date >= day_start,
+                BankTransaction.bank_date <= day_end,
+            )
+            .all()
+        )
+        matched = [r for r in candidates if abs(float(r.amount or 0) - float(amount)) < 0.005]
+        if not matched:
+            return None
+        # Prefer unreconciled, then stable id order.
+        matched.sort(
+            key=lambda r: (
+                0 if str(getattr(r.status, "value", r.status) or "").lower() == "unreconciled" else 1,
+                r.id,
+            )
+        )
+        return matched[0].id
+
+    amount = _module_ledger_amount(txn)
+    if amount is None:
+        return None
+    voucher = str(
+        txn.get("voucher_no") or txn.get("id_number") or txn.get("invoice_number") or ""
+    ).strip()
+    if not voucher:
+        return None
+    module = str(txn.get("transaction_type") or mode or "").strip().upper()
+    if module not in ("AP", "AR"):
+        module = "AP" if str(mode).upper() == "AP" else "AR"
+
+    candidates = (
+        db.query(LedgerTransaction)
+        .filter(
+            LedgerTransaction.company_id == company_id,
+            LedgerTransaction.module == module,
+            LedgerTransaction.doc_id == voucher,
+            LedgerTransaction.book_date >= day_start,
+            LedgerTransaction.book_date <= day_end,
+        )
+        .all()
+    )
+    matched = [r for r in candidates if abs(float(r.amount or 0) - float(amount)) < 0.005]
+    if not matched:
+        # Some imports store voucher only on reference.
+        candidates = (
+            db.query(LedgerTransaction)
+            .filter(
+                LedgerTransaction.company_id == company_id,
+                LedgerTransaction.module == module,
+                LedgerTransaction.reference == voucher,
+                LedgerTransaction.book_date >= day_start,
+                LedgerTransaction.book_date <= day_end,
+            )
+            .all()
+        )
+        matched = [r for r in candidates if abs(float(r.amount or 0) - float(amount)) < 0.005]
+    if not matched:
+        return None
+    matched.sort(
+        key=lambda r: (
+            0 if str(getattr(r.status, "value", r.status) or "").lower() == "unreconciled" else 1,
+            r.id,
+        )
+    )
+    return matched[0].id
+
+
+def _build_coa_deploy_category_tuples(
+    db: Session,
+    company_id: str,
+    txns: list[dict[str, Any]],
+    code_map: dict[str, str],
+    *,
+    mode: str,
+    is_bank: bool,
+) -> list[tuple[str, str, str]]:
+    """Build (source, txn_id, account_code) updates; stamp resolved ids onto module rows."""
+    out: list[tuple[str, str, str]] = []
+    for t in txns:
+        idn = str(t.get("id_number") or "")
+        code = str(code_map.get(idn) or "").strip()
+        if not code:
+            continue
+        tid = resolve_recon_txn_id_for_module_row(
+            db, company_id, t, mode=mode, is_bank=is_bank
+        )
+        if not tid:
+            continue
+        _stamp_recon_txn_id(t, is_bank=is_bank, txn_id=tid)
+        out.append(("bank" if is_bank else "ledger", tid, code))
+    return out
+
+
 async def _deploy_codes_for_txns(
     txns: list[dict[str, Any]],
     *,
@@ -586,24 +801,24 @@ async def run_coa_deploy_background_job(job_id: str) -> None:
                         db=work_db,
                     )
 
-                    # Skip posted-locked rows: keep prior codes on snapshot; warn via job result.
+                    # Resolve recon txn ids (explicit db_id or Books natural key), skip posted locks,
+                    # then persist codes + rebuild draft GL lines.
                     from app.services import gl_journal_service as glsvc
 
-                    candidate_tuples: list[tuple[str, str, str]] = []
-                    for t in txns:
-                        tid = str(
-                            t.get("db_id")
-                            or t.get("ledger_txn_id")
-                            or t.get("bank_txn_id")
-                            or ""
-                        ).strip()
-                        idn = str(t.get("id_number") or "")
-                        code = str(code_map.get(idn) or "").strip()
-                        if not tid or not code:
-                            continue
-                        candidate_tuples.append(
-                            ("bank" if is_bank else "ledger", tid, code)
-                        )
+                    candidate_tuples = _build_coa_deploy_category_tuples(
+                        work_db,
+                        company_id,
+                        txns,
+                        code_map,
+                        mode=mode,
+                        is_bank=is_bank,
+                    )
+                    coded_rows = sum(
+                        1
+                        for t in txns
+                        if str(code_map.get(str(t.get("id_number") or "")) or "").strip()
+                    )
+                    unresolved_count = max(0, coded_rows - len(candidate_tuples))
                     allowed_tuples, blocked_tuples = (
                         glsvc.partition_account_category_updates_by_posted_gl(
                             work_db, company_id, candidate_tuples
@@ -613,12 +828,7 @@ async def run_coa_deploy_background_job(job_id: str) -> None:
                     unlocked_code_map = dict(code_map)
                     if blocked_ids:
                         for t in txns:
-                            tid = str(
-                                t.get("db_id")
-                                or t.get("ledger_txn_id")
-                                or t.get("bank_txn_id")
-                                or ""
-                            ).strip()
+                            tid = _explicit_recon_txn_id(t, is_bank=is_bank)
                             if tid and tid in blocked_ids:
                                 unlocked_code_map.pop(str(t.get("id_number") or ""), None)
 
@@ -677,6 +887,7 @@ async def run_coa_deploy_background_job(job_id: str) -> None:
                             "batch_id": batch_id,
                             "task_id": task_id,
                             "updated_count": len(allowed_tuples),
+                            "unresolved_count": unresolved_count,
                             "blocked_posted_count": len(blocked_tuples),
                             "blocked_posted_ids": sorted(blocked_ids),
                             "rebuilt_group_ids": rebuilt_groups,
@@ -698,6 +909,7 @@ async def run_coa_deploy_background_job(job_id: str) -> None:
                     "batches": saved_batches,
                     "batch_count": len(saved_batches),
                     "updated_count": sum(int(b.get("updated_count") or 0) for b in saved_batches),
+                    "unresolved_count": sum(int(b.get("unresolved_count") or 0) for b in saved_batches),
                     "blocked_posted_count": sum(
                         int(b.get("blocked_posted_count") or 0) for b in saved_batches
                     ),
