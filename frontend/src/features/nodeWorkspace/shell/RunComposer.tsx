@@ -34,6 +34,8 @@ type Props = {
   onRemoveFile: (taskFileId: string) => void
   onPreviewFile?: (taskFileId: string) => void
   reVlmFileCount: number
+  /** When true, Re-VLM is blocked (approved table locked into modules). */
+  reVlmLocked?: boolean
 }
 
 const RECEIPT_LABELS: Record<ApVlmReceiptSignal, string> = {
@@ -68,6 +70,7 @@ export function RunComposer({
   onRemoveFile,
   onPreviewFile,
   reVlmFileCount,
+  reVlmLocked = false,
 }: Props) {
   const [dragging, setDragging] = useState(false)
   const upperMode = mode.toUpperCase()
@@ -77,6 +80,8 @@ export function RunComposer({
     upperMode === 'AR'
       ? AP_TABLE_OPTIONS_ORDER.filter(opt => opt === 'default')
       : AP_TABLE_OPTIONS_ORDER
+  const reVlmLockedTitle =
+    'Approved and loaded into modules — Re-VLM is disabled to avoid conflicting updates.'
 
   return (
     <div
@@ -189,7 +194,8 @@ export function RunComposer({
           type="button"
           className="btn-ghost rounded-full px-3"
           onClick={onReVlm}
-          disabled={busy || vlmActive || reVlmFileCount === 0}
+          disabled={busy || vlmActive || reVlmFileCount === 0 || reVlmLocked}
+          title={reVlmLocked ? reVlmLockedTitle : undefined}
         >
           Re-VLM
         </button>

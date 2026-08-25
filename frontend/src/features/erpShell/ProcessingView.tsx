@@ -27,6 +27,7 @@ import {
   mergeBatchTablePayloads,
   combineBatchTablePayloads,
   mapCombinedPayloadToBatches,
+  runHasLockedApprovedTable,
 } from '../nodeWorkspace/batchTableSnapshots'
 import { hasOcrDataOnRun } from '../nodeWorkspace/tablePayloadMerge'
 import { safeRandomUUID } from '../../utils/safeRandomUUID'
@@ -823,9 +824,10 @@ export function ProcessingView() {
   )
 
   const openReVlmModal = useCallback((taskFileIds: string[] = []) => {
+    if (activeRun && runHasLockedApprovedTable(activeRun)) return
     setReVlmInitialFileIds(taskFileIds)
     setShowReVlm(true)
-  }, [])
+  }, [activeRun])
 
   const handleReVlmConfirm = useCallback(
     async ({
@@ -836,6 +838,14 @@ export function ProcessingView() {
       workflow,
     }: ReVlmConfirmPayload) => {
       if (!activeRun || taskFileIds.length === 0 || busy) return
+      if (runHasLockedApprovedTable(activeRun)) {
+        setError(
+          'Approved and loaded into modules — Re-VLM is disabled to avoid conflicting updates.',
+        )
+        setShowReVlm(false)
+        setReVlmInitialFileIds([])
+        return
+      }
       setShowReVlm(false)
       setReVlmInitialFileIds([])
       setBusy(true)
@@ -999,6 +1009,9 @@ export function ProcessingView() {
   const tableProcessing = extracting || anyNodeRunning || anyFileRunning
   // Once approved (CoA posting / completed) the output table is view-only.
   const outputReadOnly = runStatus === 'coa_running' || runStatus === 'completed'
+  const reVlmLocked = Boolean(activeRun && runHasLockedApprovedTable(activeRun))
+  const reVlmLockedTitle =
+    'Approved and loaded into modules — Re-VLM is disabled to avoid conflicting updates.'
   const canApproveTable =
     Boolean(activeRun) &&
     !outputReadOnly &&
@@ -1181,9 +1194,13 @@ export function ProcessingView() {
         <div className="erp-proc-toolbar-actions">
           <button
             className="erp-btn"
-            disabled={!activeRun || isRunning || busy || !hasProcessedFiles}
+            disabled={!activeRun || isRunning || busy || !hasProcessedFiles || reVlmLocked}
             onClick={() => openReVlmModal()}
-            title="Re-run VLM on selected files (choose files and correction hints)"
+            title={
+              reVlmLocked
+                ? reVlmLockedTitle
+                : 'Re-run VLM on selected files (choose files and correction hints)'
+            }
           >
             Re-VLM
           </button>
@@ -1350,8 +1367,8 @@ export function ProcessingView() {
                             <button
                               type="button"
                               className="erp-btn"
-                              disabled={isRunning || busy}
-                              title="Re-run VLM for this file"
+                              disabled={isRunning || busy || reVlmLocked}
+                              title={reVlmLocked ? reVlmLockedTitle : 'Re-run VLM for this file'}
                               onClick={() => openReVlmModal([f.task_file_id])}
                             >
                               Retry
@@ -1510,7 +1527,7 @@ export function ProcessingView() {
         onDownload={filePreview.downloadActive}
       />
 
-      {showReVlm && activeRun ? (
+      {showReVlm && activeRun && !reVlmLocked ? (
         <ReVlmModal
           files={activeRun.files}
           initialSelectedFileIds={reVlmInitialFileIds}
