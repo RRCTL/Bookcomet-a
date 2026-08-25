@@ -721,4 +721,15 @@ describe('reconcileBatchPayloadsWithRun', () => {
     const out = reconcileBatchPayloadsWithRun(run, loaded)
     expect((out['batch-a']?.bankTransactions as unknown[])?.length).toBe(1)
   })
+
+  it('does not lock Re-VLM while awaiting_review (pre-approve fictional rows)', () => {
+    const run = baseRun()
+    run.run_status = 'awaiting_review'
+    run.node_states_json = {
+      approved_payload: {
+        arapTransactions: [{ id_number: 'AP-FICTION-001', payee: 'Fictional Supplier' }],
+      },
+    }
+    expect(runHasLockedApprovedTable(run)).toBe(false)
+  })
 })

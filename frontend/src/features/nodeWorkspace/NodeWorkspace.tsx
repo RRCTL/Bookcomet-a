@@ -26,6 +26,7 @@ import {
   persistBatchTableSnapshot,
   reconcileBatchPayloadsWithRun,
   resolveBatchTablePayloadAfterVlm,
+  runHasLockedApprovedTable,
 } from './batchTableSnapshots'
 import { getOcrByFileFromRun } from './ocrTableBuilder'
 import { safeRandomUUID } from '../../utils/safeRandomUUID'
@@ -1361,6 +1362,16 @@ export default function NodeWorkspace() {
     workflow,
   }: ReVlmConfirmPayload) => {
     if (!activeRun || !companyId || taskFileIds.length === 0 || busyRunId === activeRun.id) return
+    if (runHasLockedApprovedTable(activeRun)) {
+      reportApiError(
+        new Error(
+          'Approved and loaded into modules — Re-VLM is disabled to avoid conflicting updates.',
+        ),
+      )
+      setShowReVlm(false)
+      setReVlmInitialFileIds([])
+      return
+    }
     setShowReVlm(false)
     setReVlmInitialFileIds([])
     const nextRetry = new Set(reVlmTaskFileIdsRef.current)
@@ -1611,6 +1622,7 @@ export default function NodeWorkspace() {
       (activeRun.run_status === 'awaiting_review' ||
         (activeRun.run_status === 'draft' && hasOcrDataOnRun(activeRun))),
   )
+  const reVlmLocked = Boolean(activeRun && runHasLockedApprovedTable(activeRun))
   const paletteNodes = useMemo(
     () => nodeCatalog,
     [nodeCatalog],
@@ -1963,12 +1975,13 @@ export default function NodeWorkspace() {
               void handleResume(activeRun, combinedTablePayload(activeRun), true)
             }}
             onRetryFile={taskFileId => {
+              if (reVlmLocked) return
               setReVlmInitialFileIds([taskFileId])
               setShowReVlm(true)
             }}
             onPreviewFile={taskFileId => void filePreview.openPreview(taskFileId)}
             onForceProcess={taskFileId => {
-              if (!companyId || !activeRun) return
+              if (!companyId || !activeRun || reVlmLocked) return
               void workflowApi
                 .forceProcess(companyId, activeRun.id, taskFileId)
                 .then(r => {
@@ -1979,6 +1992,7 @@ export default function NodeWorkspace() {
             }}
             coaBusy={coaBusy}
             canApprove={canApprove}
+            reVlmLocked={reVlmLocked}
           />
         }
         composer={
@@ -1988,6 +2002,7 @@ export default function NodeWorkspace() {
               files={composerFiles}
               workflowLabel={activeWorkflowLabel}
               reVlmFileCount={activeRun.files.length}
+              reVlmLocked={reVlmLocked}
               receiptSignal={receiptSettings.receiptSignal}
               tablePreset={receiptSettings.tablePreset}
               showReceiptOptions={showReceiptOptions}
@@ -2003,6 +2018,7 @@ export default function NodeWorkspace() {
               onRemoveFile={taskFileId => void handleRemoveFile(taskFileId)}
               onPreviewFile={taskFileId => void filePreview.openPreview(taskFileId)}
               onReVlm={() => {
+                if (reVlmLocked) return
                 setReVlmInitialFileIds([])
                 setShowReVlm(true)
               }}
@@ -2204,7 +2220,7 @@ export default function NodeWorkspace() {
         onRollback={handleRollbackWorkflowSkill}
       />
 
-      {showReVlm && activeRun ? (
+      {showReVlm && activeRun && !reVlmLocked ? (
         <ReVlmModal
           files={activeRun.files}
           initialSelectedFileIds={reVlmInitialFileIds}

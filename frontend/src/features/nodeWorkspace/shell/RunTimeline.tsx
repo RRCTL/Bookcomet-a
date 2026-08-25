@@ -40,6 +40,8 @@ type Props = {
   coaBusy: boolean
   canApprove: boolean
   onNewRun?: () => void
+  /** When true, Retry / Force (Re-VLM paths) are disabled. */
+  reVlmLocked?: boolean
 }
 
 function batchFilesSummary(files: WorkflowRunFile[]): string {
@@ -67,6 +69,7 @@ export function RunTimeline({
   coaBusy,
   canApprove,
   onNewRun,
+  reVlmLocked = false,
 }: Props) {
   const [batchExpandedById, setBatchExpandedById] = useState<Record<string, boolean>>({})
   const [tableExpandedById, setTableExpandedById] = useState<Record<string, boolean>>({})
@@ -167,6 +170,7 @@ export function RunTimeline({
                       onRetry={() => onRetryFile(f.task_file_id)}
                       onPreview={() => onPreviewFile?.(f.task_file_id)}
                       onForce={() => onForceProcess(f.task_file_id)}
+                      reVlmLocked={reVlmLocked}
                     />
                   ))}
                 </ul>
@@ -255,6 +259,7 @@ function FileCard({
   onRetry,
   onPreview,
   onForce,
+  reVlmLocked = false,
 }: {
   file: WorkflowRunFile
   moveTargets: { id: string; label: string }[]
@@ -262,6 +267,7 @@ function FileCard({
   onRetry: () => void
   onPreview?: () => void
   onForce: () => void
+  reVlmLocked?: boolean
 }) {
   const [moveTarget, setMoveTarget] = useState('')
   const tone =
@@ -279,6 +285,8 @@ function FileCard({
     file.file_status === 'running'
   const showForce = file.file_status === 'failed' || file.file_status === 'warning'
   const showMove = moveTargets.length > 0 && file.file_status === 'ok'
+  const reVlmLockedTitle =
+    'Approved and loaded into modules — Re-VLM is disabled to avoid conflicting updates.'
 
   return (
     <li className="flex flex-wrap items-start justify-between gap-2 rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 dark:border-gray-800 dark:bg-gray-900">
@@ -330,12 +338,24 @@ function FileCard({
           </>
         ) : null}
         {showRetry ? (
-          <button type="button" className="btn-secondary px-2 py-1 text-xs" onClick={onRetry}>
+          <button
+            type="button"
+            className="btn-secondary px-2 py-1 text-xs"
+            onClick={onRetry}
+            disabled={reVlmLocked}
+            title={reVlmLocked ? reVlmLockedTitle : undefined}
+          >
             Retry
           </button>
         ) : null}
         {showForce ? (
-          <button type="button" className="btn-secondary px-2 py-1 text-xs" onClick={onForce}>
+          <button
+            type="button"
+            className="btn-secondary px-2 py-1 text-xs"
+            onClick={onForce}
+            disabled={reVlmLocked}
+            title={reVlmLocked ? reVlmLockedTitle : undefined}
+          >
             Force
           </button>
         ) : null}

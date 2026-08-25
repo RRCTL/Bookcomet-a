@@ -312,6 +312,38 @@ def _resolve_table_node_id(graph_json: dict[str, Any] | None) -> str:
     return "table"
 
 
+# After Approve, rows are transferred into Books modules. Re-VLM must not rewrite
+# extraction on these runs (avoids conflicting updates with module data).
+_POST_APPROVE_RUN_STATUSES = frozenset({"coa_running", "completed", "done", "saved"})
+
+RE_VLM_LOCKED_DETAIL = (
+    "Approved and loaded into modules — Re-VLM is disabled to avoid conflicting updates."
+)
+
+
+def _approved_payload_has_rows(payload: dict[str, Any], processing_mode: str | None) -> bool:
+    mode = (processing_mode or "").upper()
+    if mode == "BANK":
+        rows = payload.get("bankTransactions")
+        return isinstance(rows, list) and len(rows) > 0
+    arap = payload.get("arapTransactions")
+    sheet = payload.get("spreadsheetData")
+    return (isinstance(arap, list) and len(arap) > 0) or (
+        isinstance(sheet, list) and len(sheet) > 0
+    )
+
+
+def _run_has_locked_approved_table(run: WorkflowRun) -> bool:
+    status = (run.run_status or "").lower()
+    if status not in _POST_APPROVE_RUN_STATUSES:
+        return False
+    states = run.node_states_json if isinstance(run.node_states_json, dict) else {}
+    approved = states.get("approved_payload")
+    if not isinstance(approved, dict):
+        return False
+    return _approved_payload_has_rows(approved, run.processing_mode)
+
+
 def _prepare_re_vlm_node_states(
     run: WorkflowRun,
     *,
@@ -1730,6 +1762,8 @@ class WorkflowService:
         rescan_note: str | None = None,
         expected_receipt_count: int | None = None,
     ) -> WorkflowRun:
+        if _run_has_locked_approved_table(run):
+            raise HTTPException(status_code=409, detail=RE_VLM_LOCKED_DETAIL)
         validated_reasons = validate_rescan_reasons(rescan_reasons)
         safe_note = sanitize_rescan_note(rescan_note)
         expected_count = normalize_expected_receipt_count(expected_receipt_count)
