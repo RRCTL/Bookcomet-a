@@ -723,7 +723,7 @@ describe('reconcileBatchPayloadsWithRun', () => {
   })
 
   it('does not lock Re-VLM while awaiting_review (pre-approve fictional rows)', () => {
-    const run = baseRun()
+    const run = mockRun([])
     run.run_status = 'awaiting_review'
     run.node_states_json = {
       approved_payload: {
