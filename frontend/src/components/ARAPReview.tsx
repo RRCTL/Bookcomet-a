@@ -17,6 +17,8 @@ import {
   imageQualityChipStyle,
   readImageQuality,
 } from '../utils/imageQualityUi'
+import { buildReceiptCropRequest, type CropPreviewFile } from '../utils/imageQualityCrop'
+import { taskApi } from '../services/api'
 import { formatBankSourceFile } from '../utils/bankSourceFile'
 
 const EMPTY_LOCK_KEYS: ReadonlySet<string> = new Set()
@@ -87,6 +89,12 @@ interface Props {
   onApprove?: () => void
   canApprove?: boolean
   approveBusy?: boolean
+  /** Process Live output: on-demand crop preview inside Image quality expand box. */
+  cropPreview?: {
+    taskId: string
+    companyId?: string | null
+    files: CropPreviewFile[]
+  } | null
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -229,12 +237,17 @@ export function ARAPReview({
   onApprove,
   canApprove = false,
   approveBusy = false,
+  cropPreview = null,
 }: Props) {
   const [rows, setRows] = useState<Row[]>(() =>
     transactions.map((t, i) => ({ ...normalizeARAPRow(t, filename), _id: i }))
   )
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [qualityPanelOpen, setQualityPanelOpen] = useState(true)
+  const [cropPreviewUrl, setCropPreviewUrl] = useState<string | null>(null)
+  const [cropPreviewLoading, setCropPreviewLoading] = useState(false)
+  const [cropPreviewError, setCropPreviewError] = useState<string | null>(null)
+  const [cropPreviewMeta, setCropPreviewMeta] = useState<string>('')
 
   // Re-sync rows when the parent updates the transactions prop.
   // Match by list index so each row keeps a unique _id (duplicate id_number must not share _id).
@@ -494,6 +507,79 @@ export function ARAPReview({
     const iq = readImageQuality(row)
     return iq.present ? { row, iq } : null
   }, [rows, selected])
+
+  useEffect(() => {
+    let cancelled = false
+    let objectUrl: string | null = null
+
+    const clearPreview = () => {
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl)
+        objectUrl = null
+      }
+      if (!cancelled) {
+        setCropPreviewUrl(null)
+        setCropPreviewError(null)
+        setCropPreviewLoading(false)
+        setCropPreviewMeta('')
+      }
+    }
+
+    if (!selectedQualityRow || !qualityPanelOpen || !cropPreview?.taskId) {
+      clearPreview()
+      return () => {
+        cancelled = true
+        if (objectUrl) URL.revokeObjectURL(objectUrl)
+      }
+    }
+
+    const req = buildReceiptCropRequest(
+      selectedQualityRow.row as Record<string, unknown>,
+      cropPreview.files ?? [],
+    )
+    if (!req) {
+      setCropPreviewUrl(null)
+      setCropPreviewError('No source file linked for crop preview.')
+      setCropPreviewLoading(false)
+      setCropPreviewMeta('')
+      return () => {
+        cancelled = true
+      }
+    }
+
+    setCropPreviewLoading(true)
+    setCropPreviewError(null)
+    setCropPreviewMeta(
+      req.regionNorm || req.regionBbox
+        ? `Crop · page ${req.page}`
+        : `Full page · page ${req.page}`,
+    )
+
+    void taskApi
+      .downloadReceiptCrop(cropPreview.taskId, req.taskFileId, {
+        page: req.page,
+        regionNorm: req.regionNorm,
+        regionBbox: req.regionBbox,
+        companyId: cropPreview.companyId,
+      })
+      .then(blob => {
+        if (cancelled) return
+        objectUrl = URL.createObjectURL(blob)
+        setCropPreviewUrl(objectUrl)
+        setCropPreviewLoading(false)
+      })
+      .catch(err => {
+        if (cancelled) return
+        setCropPreviewUrl(null)
+        setCropPreviewLoading(false)
+        setCropPreviewError(err instanceof Error ? err.message : 'Could not load crop preview.')
+      })
+
+    return () => {
+      cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [selectedQualityRow, qualityPanelOpen, cropPreview])
 
   const { isMobile } = useViewport()
   const S = useMemo(() => resolveARAPStyles(isMobile), [isMobile])
@@ -1171,6 +1257,49 @@ export function ARAPReview({
           </div>
           {qualityPanelOpen && (
             <div style={{ padding: 12, fontSize: 12, color: '#374151' }}>
+              {cropPreview?.taskId ? (
+                <div
+                  style={{
+                    border: '1px solid #e5e7eb',
+                    borderRadius: 8,
+                    background: '#f8fafc',
+                    overflow: 'hidden',
+                    marginBottom: 12,
+                    maxWidth: 320,
+                  }}
+                >
+                  {cropPreviewLoading ? (
+                    <div style={{ padding: 16, color: '#6b7280', fontSize: 12 }}>Loading crop…</div>
+                  ) : cropPreviewError ? (
+                    <div style={{ padding: 16, color: '#b91c1c', fontSize: 12 }}>{cropPreviewError}</div>
+                  ) : cropPreviewUrl ? (
+                    <img
+                      src={cropPreviewUrl}
+                      alt="Receipt crop preview"
+                      style={{
+                        display: 'block',
+                        width: '100%',
+                        height: 'auto',
+                        maxHeight: 360,
+                        objectFit: 'contain',
+                        background: '#fff',
+                      }}
+                    />
+                  ) : (
+                    <div style={{ padding: 16, color: '#9ca3af', fontSize: 12 }}>No preview</div>
+                  )}
+                  <div
+                    style={{
+                      padding: '6px 10px',
+                      fontSize: 11,
+                      color: '#6b7280',
+                      borderTop: '1px solid #f3f4f6',
+                    }}
+                  >
+                    {cropPreviewMeta || 'On-demand crop from uploaded file'}
+                  </div>
+                </div>
+              ) : null}
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
                 <span
                   style={{
@@ -1269,8 +1398,8 @@ export function ARAPReview({
                 </div>
               </div>
               <p style={{ margin: '10px 0 0', fontSize: 11, color: '#9ca3af' }}>
-                Metrics from local OpenCV AQ audit on the crop used for OCR. Crop photos are not shown
-                here.
+                Metrics from local OpenCV AQ audit. Crop preview is rendered on demand from the
+                uploaded file and region provenance (not a separately stored crop asset).
               </p>
             </div>
           )}

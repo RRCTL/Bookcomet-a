@@ -1394,6 +1394,18 @@ export function ProcessingView() {
                   isProcessing={tableProcessing}
                   completedFiles={completedFileCount}
                   totalFiles={totalFileCount}
+                  cropPreview={
+                    activeRun.task_id
+                      ? {
+                          taskId: activeRun.task_id,
+                          companyId,
+                          files: (activeRun.files ?? []).map(f => ({
+                            taskFileId: f.task_file_id,
+                            originalFilename: f.original_filename,
+                          })),
+                        }
+                      : null
+                  }
                 />
               )}
             </div>
