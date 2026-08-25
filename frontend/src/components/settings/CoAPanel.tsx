@@ -1,3 +1,4 @@
+import { Fragment } from 'react'
 import { useSettings } from './SettingsProvider'
 
 export function CoAPanel() {
@@ -67,8 +68,8 @@ export function CoAPanel() {
                   const isFinPos = /^[123]/.test(item.code)
                   const fmtCurrency = (n: number) => n.toLocaleString('en-HK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
                   return (
-                    <>
-                      <tr key={item.code} style={{ borderBottom: '1px solid #f0f0f0' }}>
+                    <Fragment key={item.code}>
+                      <tr style={{ borderBottom: '1px solid #f0f0f0' }}>
                         <td style={{ padding: '6px 10px', fontFamily: 'monospace', fontWeight: 600, color: '#2563eb' }}>
                           <button
                             type="button"
@@ -241,7 +242,7 @@ export function CoAPanel() {
                           </td>
                         </tr>
                       )}
-                    </>
+                    </Fragment>
                   )
                 })}
 

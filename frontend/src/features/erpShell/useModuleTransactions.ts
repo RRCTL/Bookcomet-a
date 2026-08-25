@@ -20,6 +20,7 @@ import {
 import { isModuleTxnLocked } from '../recon/moduleReconKeys'
 import { syncModulesToRecon } from '../recon/syncModulesToRecon'
 import { safeRandomUUID } from '../../utils/safeRandomUUID'
+import { reconciliationApi } from '../../services/reconciliation'
 
 type Tx = Record<string, any>
 
@@ -548,6 +549,43 @@ export function useModuleTransactions(mode: string, companyId: string) {
       setError(null)
       try {
         const target = keys && keys.size > 0 ? rows.filter(r => keys.has(r.key)) : rows
+        if (target.length === 0) return
+
+        const lockItems = target
+          .map(r => {
+            const tid = String(
+              r.tx?.db_id || r.tx?.ledger_txn_id || r.tx?.bank_txn_id || '',
+            ).trim()
+            if (!tid) return null
+            return {
+              source: (isBank ? 'bank' : 'ledger') as 'bank' | 'ledger',
+              txn_id: tid,
+            }
+          })
+          .filter((x): x is { source: 'bank' | 'ledger'; txn_id: string } => Boolean(x))
+
+        if (lockItems.length > 0) {
+          const lockRes = await reconciliationApi.checkPostedGlLocks({ items: lockItems })
+          const locked = lockRes.locked_count || 0
+          if (locked > 0) {
+            const unlocked = Math.max(0, lockItems.length - locked)
+            if (unlocked <= 0) {
+              window.alert(
+                `${locked} row(s) are posted to the GL and cannot receive Deploy Codes.\n\n` +
+                  'Unpost the journal in RECON (back to draft), then Deploy Codes again.',
+              )
+              return
+            }
+            const proceed = window.confirm(
+              `${locked} row(s) are posted to the GL and will be skipped.\n` +
+                `Deploy Codes will continue for unlocked rows.\n\n` +
+                'To update locked rows: unpost the journal in RECON (back to draft), then Deploy Codes again.\n\n' +
+                'Continue with unlocked rows?',
+            )
+            if (!proceed) return
+          }
+        }
+
         const groups = new Map<string, FlatRow[]>()
         for (const r of target) {
           const k = `${r.runId}::${r.batchId}`
@@ -581,7 +619,7 @@ export function useModuleTransactions(mode: string, companyId: string) {
         setError(err instanceof Error ? err.message : 'Deploy Codes failed.')
       }
     },
-    [rows, upper, companyId, startCoaDeploy],
+    [rows, upper, companyId, startCoaDeploy, isBank],
   )
 
   const saveAll = useCallback(async () => {

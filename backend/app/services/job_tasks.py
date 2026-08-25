@@ -585,7 +585,49 @@ async def run_coa_deploy_background_job(job_id: str) -> None:
                         company_id=company_id,
                         db=work_db,
                     )
-                    _apply_codes_to_rows(txns, code_map, is_bank=is_bank, name_by_code=name_by_code)
+
+                    # Skip posted-locked rows: keep prior codes on snapshot; warn via job result.
+                    from app.services import gl_journal_service as glsvc
+
+                    candidate_tuples: list[tuple[str, str, str]] = []
+                    for t in txns:
+                        tid = str(
+                            t.get("db_id")
+                            or t.get("ledger_txn_id")
+                            or t.get("bank_txn_id")
+                            or ""
+                        ).strip()
+                        idn = str(t.get("id_number") or "")
+                        code = str(code_map.get(idn) or "").strip()
+                        if not tid or not code:
+                            continue
+                        candidate_tuples.append(
+                            ("bank" if is_bank else "ledger", tid, code)
+                        )
+                    allowed_tuples, blocked_tuples = (
+                        glsvc.partition_account_category_updates_by_posted_gl(
+                            work_db, company_id, candidate_tuples
+                        )
+                    )
+                    blocked_ids = {tid for _src, tid, _cat in blocked_tuples}
+                    unlocked_code_map = dict(code_map)
+                    if blocked_ids:
+                        for t in txns:
+                            tid = str(
+                                t.get("db_id")
+                                or t.get("ledger_txn_id")
+                                or t.get("bank_txn_id")
+                                or ""
+                            ).strip()
+                            if tid and tid in blocked_ids:
+                                unlocked_code_map.pop(str(t.get("id_number") or ""), None)
+
+                    _apply_codes_to_rows(
+                        txns,
+                        unlocked_code_map,
+                        is_bank=is_bank,
+                        name_by_code=name_by_code,
+                    )
 
                     base_payload = batch.get("base_payload")
                     base = dict(base_payload) if isinstance(base_payload, dict) else {}
@@ -598,6 +640,27 @@ async def run_coa_deploy_background_job(job_id: str) -> None:
                     task.updated_at = datetime.now(timezone.utc)
                     work_db.commit()
 
+                    rebuilt_groups: list[str] = []
+                    rebuilt_modules: list[str] = []
+                    if allowed_tuples:
+                        _n, bank_ids, ledger_ids = glsvc.bulk_set_transaction_account_categories(
+                            work_db, company_id, allowed_tuples
+                        )
+                        gids = glsvc.draft_group_ids_with_primary_draft(
+                            work_db, company_id, bank_ids, ledger_ids
+                        )
+                        for gid in gids:
+                            try:
+                                glsvc.rebuild_primary_draft_for_group(
+                                    work_db, company_id, gid
+                                )
+                                rebuilt_groups.append(gid)
+                            except ValueError:
+                                continue
+                        rebuilt_modules = glsvc.rebuild_module_approve_drafts_for_txns(
+                            work_db, company_id, bank_ids, ledger_ids
+                        )
+
                     pct = int(((idx + 1) / max(total, 1)) * 88) + 8
                     prog_db = SessionLocal()
                     try:
@@ -608,7 +671,18 @@ async def run_coa_deploy_background_job(job_id: str) -> None:
                     finally:
                         prog_db.close()
 
-                    saved_batches.append({"run_id": run_id, "batch_id": batch_id, "task_id": task_id})
+                    saved_batches.append(
+                        {
+                            "run_id": run_id,
+                            "batch_id": batch_id,
+                            "task_id": task_id,
+                            "updated_count": len(allowed_tuples),
+                            "blocked_posted_count": len(blocked_tuples),
+                            "blocked_posted_ids": sorted(blocked_ids),
+                            "rebuilt_group_ids": rebuilt_groups,
+                            "rebuilt_module_journal_ids": rebuilt_modules,
+                        }
+                    )
             finally:
                 work_db.close()
 
@@ -623,6 +697,20 @@ async def run_coa_deploy_background_job(job_id: str) -> None:
                     "mode": mode,
                     "batches": saved_batches,
                     "batch_count": len(saved_batches),
+                    "updated_count": sum(int(b.get("updated_count") or 0) for b in saved_batches),
+                    "blocked_posted_count": sum(
+                        int(b.get("blocked_posted_count") or 0) for b in saved_batches
+                    ),
+                    "rebuilt_group_ids": [
+                        gid
+                        for b in saved_batches
+                        for gid in (b.get("rebuilt_group_ids") or [])
+                    ],
+                    "rebuilt_module_journal_ids": [
+                        jid
+                        for b in saved_batches
+                        for jid in (b.get("rebuilt_module_journal_ids") or [])
+                    ],
                 }
                 job.status = "completed"
                 job.error_text = None

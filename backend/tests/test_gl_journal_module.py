@@ -411,6 +411,72 @@ class GlJournalModuleTests(unittest.TestCase):
         self.assertEqual(bt.account_category, "1010")
         self.assertAlmostEqual(float(bt.amount), before_amt)
 
+    def test_rebuild_module_approve_draft_picks_up_new_account_category(self):
+        lt = self._ledger(amount=142.0, doc_type="ap", module="AP")
+        lt.account_category = None
+        self.db.commit()
+        j = glsvc.ensure_draft_for_txn(self.db, self.company_id, ledger_txn_id=lt.id)
+        lines_before = (
+            self.db.query(GlJournalLine)
+            .filter(GlJournalLine.journal_id == j.id)
+            .all()
+        )
+        codes_before = {ln.account_code for ln in lines_before}
+        self.assertIn("2100", codes_before)
+
+        lt.account_category = "5000"
+        self.db.commit()
+        rebuilt = glsvc.rebuild_module_approve_draft_for_txn(
+            self.db, self.company_id, ledger_txn_id=lt.id
+        )
+        self.assertIsNotNone(rebuilt)
+        self.assertEqual(rebuilt.id, j.id)
+        lines_after = (
+            self.db.query(GlJournalLine)
+            .filter(GlJournalLine.journal_id == j.id)
+            .all()
+        )
+        codes_after = {ln.account_code for ln in lines_after}
+        self.assertIn("5000", codes_after)
+        self.assertNotIn("2100", codes_after)
+
+    def test_partition_skips_posted_group_txn(self):
+        lt = self._ledger(amount=100.0, doc_type="receipt", module="AR")
+        lt.account_category = "1100"
+        self.db.commit()
+        bt = self._bank(amount=100.0)
+        engine = ReconciliationEngine()
+        result = asyncio.run(
+            engine.multi_manual_match(
+                [bt.id],
+                [lt.id],
+                self.company_id,
+                self.user_id,
+                "trace-lock",
+                self.db,
+            )
+        )
+        group_id = result["group_id"]
+        group_j = (
+            self.db.query(GlJournal)
+            .filter(
+                GlJournal.company_id == self.company_id,
+                GlJournal.reconciliation_group_id == group_id,
+                GlJournal.status == GlJournalStatus.DRAFT,
+            )
+            .first()
+        )
+        self.assertIsNotNone(group_j)
+        glsvc.post_journal(self.db, self.company_id, group_j.id, self.user_id)
+
+        allowed, blocked = glsvc.partition_account_category_updates_by_posted_gl(
+            self.db,
+            self.company_id,
+            [("ledger", lt.id, "5000"), ("bank", bt.id, "1010")],
+        )
+        self.assertEqual(allowed, [])
+        self.assertEqual({t[1] for t in blocked}, {lt.id, bt.id})
+
 
 if __name__ == "__main__":
     unittest.main()

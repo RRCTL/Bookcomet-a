@@ -83,14 +83,28 @@ export function ErpBackgroundJobsProvider({ children }: { children: ReactNode })
   }, [])
 
   const finishCoaDeploy = useCallback(
-    (jobId: string, meta: CoaDeployStorageMeta, failed?: string) => {
+    (
+      jobId: string,
+      meta: CoaDeployStorageMeta,
+      failed?: string,
+      result?: Record<string, unknown> | null,
+    ) => {
       localStorage.removeItem(BG_JOB_STORAGE_PREFIX + jobId)
       pollingRef.current.delete(jobId)
       unmarkDeploying(meta.mode)
       void refreshActiveJobs()
+      if (!failed && result) {
+        const blocked = Number(result.blocked_posted_count || 0)
+        if (blocked > 0) {
+          window.alert(
+            `${blocked} row(s) are posted to the GL and were skipped during Deploy Codes.\n\n` +
+              'Unpost the journal in RECON (back to draft), then Deploy Codes again for those rows.',
+          )
+        }
+      }
       window.dispatchEvent(
         new CustomEvent(ERP_COA_DEPLOY_COMPLETE, {
-          detail: { ...meta, failed },
+          detail: { ...meta, failed, result },
         }),
       )
     },
@@ -102,13 +116,13 @@ export function ErpBackgroundJobsProvider({ children }: { children: ReactNode })
       if (pollingRef.current.has(jobId)) return
       pollingRef.current.add(jobId)
       try {
-        await api.waitForBackgroundJob(jobId, {
+        const result = await api.waitForBackgroundJob(jobId, {
           companyId: meta.companyId,
           onProgress: () => {
             void refreshActiveJobs()
           },
         })
-        finishCoaDeploy(jobId, meta)
+        finishCoaDeploy(jobId, meta, undefined, result as Record<string, unknown>)
       } catch (e) {
         const msg = e instanceof Error ? e.message : 'Deploy failed'
         finishCoaDeploy(jobId, meta, msg)
@@ -173,7 +187,7 @@ export function ErpBackgroundJobsProvider({ children }: { children: ReactNode })
           .then(st => {
             if (cancelled) return
             if (st.status === 'completed') {
-              finishCoaDeploy(jobId, meta)
+              finishCoaDeploy(jobId, meta, undefined, st.result_json ?? null)
               return
             }
             if (st.status === 'failed' || st.status === 'cancelled') {
