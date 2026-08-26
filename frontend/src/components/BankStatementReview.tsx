@@ -16,6 +16,15 @@ export type BankTransaction = {
   needs_review?: boolean
   validation_flags?: string[]
   extraction_provenance?: Record<string, unknown>
+  /** Contract D provenance (HSBC geometry-first pipeline) */
+  source_page?: number | string
+  section_id?: string
+  row_anchor_id?: string
+  column_provenance?: Record<string, unknown>
+  numeric_token_ids?: string[]
+  _contracts_ok?: boolean
+  _hsbc_row_id?: string
+  _hsbc_section_id?: string
   id_number?: string        // reference / 憑證號 (e.g. "BR-2505-001")
   matched_id?: string       // set by RECON mode (update C); empty until matched
   transaction_date?: string
@@ -121,7 +130,28 @@ function normalizeRow(t: BankTransaction, filename?: string): BankTransaction {
     currency:       t.currency    || rawCurr || 'HKD',
     account_code:   t.account_code || pickVal(raw, ['account_code', '科目代碼']) || '',
     category:       t.category || pickVal(raw, ['category', '分類']) || '',
+    source_page:    t.source_page ?? pageNum,
+    section_id:     t.section_id || t._hsbc_section_id || raw['section_id'] || '',
+    row_anchor_id:  t.row_anchor_id || t._hsbc_row_id || raw['row_anchor_id'] || '',
+    column_provenance: t.column_provenance || raw['column_provenance'],
+    numeric_token_ids: t.numeric_token_ids || raw['numeric_token_ids'],
+    validation_flags: t.validation_flags || raw['validation_flags'],
+    needs_review:   t.needs_review === true || raw['needs_review'] === true,
+    _contracts_ok:  t._contracts_ok,
   }
+}
+
+/** Blocking contract failures must not be silently exported (Slice 5). */
+function rowBlocksExport(r: BankTransaction): boolean {
+  if (r._contracts_ok === false) return true
+  const flags = new Set((r.validation_flags || []).map(String))
+  return (
+    flags.has('coverage_failed') ||
+    flags.has('amount_conflict') ||
+    flags.has('column_band_violation') ||
+    flags.has('section_boundary_violation') ||
+    flags.has('export_role_violation')
+  )
 }
 
 function getDate(r: BankTransaction): string {
@@ -377,7 +407,21 @@ export function BankStatementReview({
   }
 
   function exportCSV() {
-    const headers = ['id_number', 'matched_id', 'source_file', 'date', 'account_type', 'account_number', 'deposit', 'withdrawal', 'balance', 'account_code', 'category', 'particulars']
+    const blocked = rows.filter(rowBlocksExport)
+    if (blocked.length > 0) {
+      const ok = window.confirm(
+        `${blocked.length} row(s) failed parser contracts (needs_review / amount conflict / coverage). ` +
+          'Exporting may include unresolved rows. Continue only if you explicitly acknowledge review?',
+      )
+      if (!ok) return
+    }
+    // Bank statement export preserves printed deposit/withdrawal/balance roles.
+    // Do not recalcBalances here — cash-table recompute is isCashTable-only.
+    const headers = [
+      'id_number', 'matched_id', 'source_file', 'date', 'account_type', 'account_number',
+      'deposit', 'withdrawal', 'balance', 'account_code', 'category', 'particulars',
+      'source_page', 'section_id', 'row_anchor_id', 'needs_review', 'validation_flags', 'column_provenance',
+    ]
     const headerLine = headers.join(',')
 
     function csvCell(v: any): string {
@@ -408,7 +452,10 @@ export function BankStatementReview({
         if (h === 'date') v = getDate(r)
         else if (h === 'particulars') v = getParticulars(r)
         else if (h === 'source_file') v = r.source_file ?? ''
-        else v = r[h] ?? ''
+        else if (h === 'validation_flags') v = (r.validation_flags || []).join('|')
+        else if (h === 'column_provenance') v = r.column_provenance ? JSON.stringify(r.column_provenance) : ''
+        else if (h === 'needs_review') v = r.needs_review ? 'true' : 'false'
+        else v = (r as Record<string, unknown>)[h] ?? ''
         return csvCell(v)
       }).join(','))
     })
@@ -527,7 +574,20 @@ export function BankStatementReview({
               const exclusionReasons: string[] = Array.isArray((row as Record<string, unknown>).exclusion_reasons)
                 ? (row as Record<string, unknown>).exclusion_reasons as string[]
                 : []
-              const reviewBankTitle = [...exclusionReasons, ...extractionFlags].filter(Boolean).join(' | ')
+              const reviewBankTitle = [
+                ...exclusionReasons,
+                ...extractionFlags,
+                row.source_page != null ? `page=${row.source_page}` : '',
+                row.section_id || row._hsbc_section_id
+                  ? `section=${row.section_id || row._hsbc_section_id}`
+                  : '',
+                row.row_anchor_id || row._hsbc_row_id
+                  ? `anchor=${row.row_anchor_id || row._hsbc_row_id}`
+                  : '',
+                row.column_provenance
+                  ? `cols=${JSON.stringify(row.column_provenance)}`
+                  : '',
+              ].filter(Boolean).join(' | ')
               const rowBg = isSelected ? '#e8f0fe' : needsReview ? '#fff5f5' : dup ? '#fafafa' : glPosted ? '#fffbeb' : locked ? '#f0fdf4' : undefined
               const dupRowStyle = dup ? { opacity: 0.35, textDecoration: 'line-through' as const, pointerEvents: 'none' as const } : {}
               const prev = i > 0 ? rows[i - 1] : null
@@ -759,7 +819,16 @@ export function BankStatementReview({
                       if (st === 'needs_review') {
                         return (
                           <span
-                            title={'\u8acb\u4eba\u5de5\u6838\u5c0d\uff08\u8207\u6b21\u8981\u6a21\u578b\u5217\u6578\u4e0d\u4e00\u81f4\uff09'}
+                            title={[
+                              '\u8acb\u4eba\u5de5\u6838\u5c0d\uff08\u8207\u6b21\u8981\u6a21\u578b\u5217\u6578\u4e0d\u4e00\u81f4\uff09',
+                              `page=${row.source_page ?? ''}`,
+                              `section=${row.section_id || row._hsbc_section_id || ''}`,
+                              `anchor=${row.row_anchor_id || row._hsbc_row_id || ''}`,
+                              `flags=${(row.validation_flags || []).join(',')}`,
+                              row.column_provenance
+                                ? `cols=${JSON.stringify(row.column_provenance)}`
+                                : '',
+                            ].filter(Boolean).join(' | ')}
                             style={{
                               display: 'inline-block',
                               fontSize: 16,

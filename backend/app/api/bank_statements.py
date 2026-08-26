@@ -331,7 +331,6 @@ async def _run_upload_job(job_id: str, tmp_path: str, suffix: str, company_id: s
         db.close()
 
     try:
-        parser = BankStatementParser()
         file_type = suffix[1:] if suffix.startswith(".") else suffix
 
         def on_progress(payload: dict[str, Any]) -> None:
@@ -359,9 +358,17 @@ async def _run_upload_job(job_id: str, tmp_path: str, suffix: str, company_id: s
                 state["updated_at_ts"] = time.time()
 
         on_progress({"percent": 5, "label": "後端開始處理", "page_current": 0, "page_total": 1})
-        result = await parser.parse_statement(
+        from app.core.config import require_bank_vlm_settings
+        from app.services.bank_document_dispatcher import dispatch_bank_pdf
+
+        try:
+            require_bank_vlm_settings()
+        except ValueError as cfg_err:
+            raise RuntimeError(str(cfg_err)) from cfg_err
+
+        result = await dispatch_bank_pdf(
             tmp_path,
-            file_type,
+            file_type=file_type,
             company_identity=company_identity,
             progress_callback=on_progress,
         )

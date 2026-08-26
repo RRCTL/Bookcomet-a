@@ -2313,6 +2313,18 @@ class BankStatementParser:
             )
 
             _anchor = _anchor_by_y.get(float(y_pdf))
+            _row_id = (_anchor or {}).get("row_id")
+            _sec_id = (_anchor or {}).get("section_id")
+            _col_prov = {
+                "deposit": "prescan_cr" if col == "Cr" else None,
+                "withdrawal": "prescan_dr" if col == "Dr" else None,
+                "balance": "prescan_balance_band" if balance is not None else None,
+            }
+            _token_ids = [
+                f"{_row_id}:{col}:{amount}",
+            ]
+            if balance is not None:
+                _token_ids.append(f"{_row_id}:Bal:{balance}")
             txn: Dict[str, Any] = {
                 "transaction_date": txn_date or None,
                 "value_date":       None,
@@ -2325,16 +2337,60 @@ class BankStatementParser:
                 "account_number":   None,
                 "categorise":       "",
                 "confidence_score": 0.85,
-                "_hsbc_row_id":     (_anchor or {}).get("row_id"),
-                "_hsbc_section_id": (_anchor or {}).get("section_id"),
+                "_hsbc_row_id":     _row_id,
+                "_hsbc_section_id": _sec_id,
                 "_hsbc_classification": ps.get("classification"),
+                "source_page":      page_num + 1,
+                "section_id":       _sec_id,
+                "row_anchor_id":    _row_id,
+                "numeric_token_ids": _token_ids,
+                "column_provenance": _col_prov,
             }
             if window_id:
                 txn["_hsbc_window_id"] = window_id
             if window_id and window_id in failed_windows:
                 txn["needs_review"] = True
                 txn["_hsbc_window_failed"] = True
+            from app.services.hsbc_contracts import apply_contracts_to_row
+
+            txn = apply_contracts_to_row(
+                txn,
+                tokens=[
+                    {
+                        "column": col,
+                        "band": "deposit" if col == "Cr" else "withdrawal",
+                        "amount": amount,
+                    }
+                ],
+            )
             out_txns.append(txn)
+
+        # Contract A: activity page with anchors must emit rows
+        from app.services.hsbc_contracts import validate_contract_a_coverage
+
+        _cov = validate_contract_a_coverage(
+            has_txn_header=not bool(ps.get("no_table")),
+            amount_anchor_count=len(amounts),
+            emitted_row_count=sum(
+                1
+                for t in out_txns
+                if t.get("deposit") is not None or t.get("withdrawal") is not None
+            ),
+        )
+        if not _cov.ok:
+            logger.warning(
+                "[HSBC-V2][P%d] Contract A coverage_failed: %s",
+                page_num + 1,
+                _cov.flags,
+            )
+            for t in out_txns:
+                flags = list(t.get("validation_flags") or [])
+                for f in _cov.flags:
+                    if f not in flags:
+                        flags.append(f)
+                t["validation_flags"] = flags
+                t["needs_review"] = True
+                t["_contracts_ok"] = False
 
         # ── Emit empty 無交易 rows for sections with no amounts ──────────────
         sections_with_amounts: set[str] = set()
@@ -6285,14 +6341,14 @@ class BankStatementParser:
             "true",
             "yes",
         )
-        cross_model = os.getenv("BANK_CROSS_VLM_MODEL", "").strip()
         if not cross_on:
             return page_txns
-        if not cross_model:
-            raise RuntimeError(
-                "BANK_CROSS_VLM_MODEL must be set in the environment when "
-                "BANK_CROSS_VLM_VERIFY is enabled."
-            )
+        from app.core.config import require_bank_cross_vlm_settings
+
+        cross_cfg = require_bank_cross_vlm_settings()
+        if cross_cfg is None:
+            return page_txns
+        cross_model = cross_cfg["model"]
 
         if not page_txns:
             return page_txns
