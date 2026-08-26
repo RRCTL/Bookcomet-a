@@ -2239,11 +2239,25 @@ class BankStatementParser:
             return chosen
 
         def _balance_for_y(y_pdf: float) -> float | None:
-            """Return the nearest balance at or after y_pdf (day-end balance)."""
+            """Attach a printed Balance amount only when co-located with this row.
+
+            HSBC prints balances on day-end (and B/F) lines only. Do not forward-fill
+            a later day-end balance onto earlier same-day amount rows.
+            """
+            best_amt = None
+            best_dy: float | None = None
+            # Same-row y-band in PDF points (geometry tolerance, not a page/row index).
+            row_band = 8.0
             for b in balances:
-                if b["y"] >= y_pdf - 5.0:
-                    return b["amount"]
-            return None
+                try:
+                    by = float(b["y"])
+                    dy = abs(by - float(y_pdf))
+                except (TypeError, ValueError, KeyError):
+                    continue
+                if dy <= row_band and (best_dy is None or dy < best_dy):
+                    best_amt = b["amount"]
+                    best_dy = dy
+            return best_amt
 
         def _label_to_date(label: str) -> str:
             """Row label '7 Nov' → ISO using statement header (Y,M) when available."""
@@ -2364,12 +2378,16 @@ class BankStatementParser:
                 "_hsbc_row_id":     _row_id,
                 "_hsbc_section_id": _sec_id,
                 "_hsbc_classification": ps.get("classification"),
+                "parser_adapter":   "hsbc_adapter_v2",
                 "source_page":      page_num + 1,
                 "section_id":       _sec_id,
                 "row_anchor_id":    _row_id,
                 "numeric_token_ids": _token_ids,
                 "column_provenance": _col_prov,
             }
+            if balance is None:
+                # Expected HSBC layout: Balance column blank on non-day-end rows.
+                txn["balance_missing_expected"] = True
             if window_id:
                 txn["_hsbc_window_id"] = window_id
             if window_id and window_id in failed_windows:

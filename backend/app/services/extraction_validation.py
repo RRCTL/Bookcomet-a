@@ -202,8 +202,36 @@ def validate_deposit_advice_row(
     return ValidationResult(needs_review=bool(flags), validation_flags=tuple(flags))
 
 
+# Informational only — must never alone force needs_review.
+BANK_INFO_ONLY_VALIDATION_FLAGS = frozenset({"bank_balance_missing_expected"})
+
+
+def _is_hsbc_day_end_balance_layout(txn: Mapping[str, Any]) -> bool:
+    """HSBC prints Balance on day-end / B/F lines only; blank mid-day is expected.
+
+    Detect via adapter provenance markers already present on HSBC rows — never via
+    page index, row ordinal, amount, or filename.
+    """
+    if txn.get("balance_missing_expected") is True:
+        return True
+    if txn.get("_hsbc_row_id") is not None or txn.get("_hsbc_section_id") is not None:
+        return True
+    if txn.get("_hsbc_classification") is not None:
+        return True
+    adapter = str(txn.get("parser_adapter") or txn.get("bank_adapter") or "").strip().lower()
+    if adapter.startswith("hsbc_adapter"):
+        return True
+    prov = txn.get("column_provenance")
+    if isinstance(prov, dict):
+        roles = {str(v).strip().lower() for v in prov.values() if v}
+        if roles & {"prescan_cr", "prescan_dr", "prescan_balance_band"}:
+            return True
+    return False
+
+
 def validate_bank_transaction(txn: Mapping[str, Any]) -> ValidationResult:
     flags: list[str] = []
+    info_flags: list[str] = []
 
     desc0 = str(txn.get("備註") or txn.get("description") or "").strip()
     if desc0 == "無交易":
@@ -233,7 +261,12 @@ def validate_bank_transaction(txn: Mapping[str, Any]) -> ValidationResult:
         bal_raw = txn.get("原幣結餘")
     bal_n = _parse_float_loose(bal_raw)
     if bal_n is None:
-        flags.append("bank_balance_missing")
+        # HSBC day-end-only balances: blank on non-day-end rows is expected metadata,
+        # not a review failure. Do not invent deposit/withdrawal from balance deltas.
+        if _is_hsbc_day_end_balance_layout(txn):
+            info_flags.append("bank_balance_missing_expected")
+        else:
+            flags.append("bank_balance_missing")
 
     tx_date = str(
         txn.get("transaction_date")
@@ -244,7 +277,8 @@ def validate_bank_transaction(txn: Mapping[str, Any]) -> ValidationResult:
     if not tx_date:
         flags.append("bank_transaction_date_missing")
 
-    return ValidationResult(needs_review=bool(flags), validation_flags=tuple(flags))
+    all_flags = tuple(flags + [f for f in info_flags if f not in flags])
+    return ValidationResult(needs_review=bool(flags), validation_flags=all_flags)
 
 
 def finalize_bank_transactions(
@@ -258,6 +292,9 @@ def finalize_bank_transactions(
         txn: MutableMapping[str, Any] = dict(t)
         vr = validate_bank_transaction(txn)
         merge_validation_into_row(txn, vr)
+        # Surface expected-missing balance explicitly without forcing needs_review.
+        if "bank_balance_missing_expected" in (txn.get("validation_flags") or []):
+            txn["balance_missing_expected"] = True
         out.append(txn)
     apply_batch_duplicate_flags_bank(out)
     return out

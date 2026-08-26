@@ -261,7 +261,13 @@ def apply_contracts_to_row(
         if f not in flags:
             flags.append(f)
     out["validation_flags"] = flags
-    if flags:
+    # Informational flags (e.g. expected blank HSBC balance) must not force review.
+    from app.services.extraction_validation import BANK_INFO_ONLY_VALIDATION_FLAGS
+
+    review_driving = [
+        f for f in flags if f not in BANK_INFO_ONLY_VALIDATION_FLAGS
+    ]
+    if review_driving or b.issues or d.issues:
         out["needs_review"] = True
     out["_contract_issues"] = [i.to_dict() for i in b.issues + d.issues]
     out["_contracts_ok"] = b.ok and d.ok
