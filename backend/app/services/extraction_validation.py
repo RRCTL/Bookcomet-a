@@ -206,29 +206,6 @@ def validate_deposit_advice_row(
 BANK_INFO_ONLY_VALIDATION_FLAGS = frozenset({"bank_balance_missing_expected"})
 
 
-def _is_hsbc_day_end_balance_layout(txn: Mapping[str, Any]) -> bool:
-    """HSBC prints Balance on day-end / B/F lines only; blank mid-day is expected.
-
-    Detect via adapter provenance markers already present on HSBC rows — never via
-    page index, row ordinal, amount, or filename.
-    """
-    if txn.get("balance_missing_expected") is True:
-        return True
-    if txn.get("_hsbc_row_id") is not None or txn.get("_hsbc_section_id") is not None:
-        return True
-    if txn.get("_hsbc_classification") is not None:
-        return True
-    adapter = str(txn.get("parser_adapter") or txn.get("bank_adapter") or "").strip().lower()
-    if adapter.startswith("hsbc_adapter"):
-        return True
-    prov = txn.get("column_provenance")
-    if isinstance(prov, dict):
-        roles = {str(v).strip().lower() for v in prov.values() if v}
-        if roles & {"prescan_cr", "prescan_dr", "prescan_balance_band"}:
-            return True
-    return False
-
-
 def validate_bank_transaction(txn: Mapping[str, Any]) -> ValidationResult:
     flags: list[str] = []
     info_flags: list[str] = []
@@ -261,11 +238,16 @@ def validate_bank_transaction(txn: Mapping[str, Any]) -> ValidationResult:
         bal_raw = txn.get("原幣結餘")
     bal_n = _parse_float_loose(bal_raw)
     if bal_n is None:
-        # HSBC day-end-only balances: blank on non-day-end rows is expected metadata,
-        # not a review failure. Do not invent deposit/withdrawal from balance deltas.
-        if _is_hsbc_day_end_balance_layout(txn):
+        from app.services.hsbc_balance_policy import classify_balance_absence
+
+        absence = classify_balance_absence(txn)
+        if absence == "expected":
             info_flags.append("bank_balance_missing_expected")
+        elif absence == "unresolved":
+            flags.append("date_group_unresolved")
+            flags.append("bank_balance_missing")
         else:
+            # "missing" (incl. day-end last row, B/F/snapshot, non-HSBC)
             flags.append("bank_balance_missing")
 
     tx_date = str(
@@ -275,7 +257,10 @@ def validate_bank_transaction(txn: Mapping[str, Any]) -> ValidationResult:
         or "",
     ).strip()
     if not tx_date:
-        flags.append("bank_transaction_date_missing")
+        # Avoid double-counting when date_group_unresolved already covers blank dates
+        # for HSBC day-end layout rows.
+        if "date_group_unresolved" not in flags:
+            flags.append("bank_transaction_date_missing")
 
     all_flags = tuple(flags + [f for f in info_flags if f not in flags])
     return ValidationResult(needs_review=bool(flags), validation_flags=all_flags)
@@ -285,16 +270,25 @@ def finalize_bank_transactions(
     rows: list[MutableMapping[str, Any]],
 ) -> list[MutableMapping[str, Any]]:
     """Attach validation flags and cross-row duplicate hints to bank VLM rows."""
+    from app.services.hsbc_balance_policy import annotate_date_groups
+
+    # Resolve date-group day-end / expected-missing before per-row validation.
+    working: list[MutableMapping[str, Any]] = [
+        dict(t) for t in rows if isinstance(t, dict)
+    ]
+    annotate_date_groups(working)
+
     out: list[MutableMapping[str, Any]] = []
-    for t in rows:
-        if not isinstance(t, dict):
-            continue
-        txn: MutableMapping[str, Any] = dict(t)
+    for txn in working:
         vr = validate_bank_transaction(txn)
         merge_validation_into_row(txn, vr)
-        # Surface expected-missing balance explicitly without forcing needs_review.
         if "bank_balance_missing_expected" in (txn.get("validation_flags") or []):
             txn["balance_missing_expected"] = True
+        elif txn.get("balance_missing_expected") and "bank_balance_missing" in (
+            txn.get("validation_flags") or []
+        ):
+            # Do not keep a stale expected flag when validation says missing.
+            txn.pop("balance_missing_expected", None)
         out.append(txn)
     apply_batch_duplicate_flags_bank(out)
     return out

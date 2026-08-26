@@ -941,7 +941,7 @@ class BankStatementParser:
                 elif best_kind == "Dr":
                     am.append({"y": y0, "col": "Dr", "amount": amt_val, "text": text})
                 else:
-                    bal.append({"y": y0, "amount": amt_val})
+                    bal.append({"y": y0, "x": x_mid, "amount": amt_val})
             am.sort(key=lambda r: r["y"])
             bal.sort(key=lambda r: r["y"])
             return am, bal
@@ -1153,6 +1153,11 @@ class BankStatementParser:
                 if header == "HSBC Business Direct Foreign Currency Savings"
                 else "HKD"
             )
+            from app.services.hsbc_balance_policy import (
+                ROW_KIND_BROUGHT_FORWARD,
+                hsbc_identity_metadata,
+            )
+
             bf_by_section[header] = {
                 "transaction_date": txn_date or None,
                 "value_date": None,
@@ -1165,6 +1170,8 @@ class BankStatementParser:
                 "account_number": None,
                 "categorise": "",
                 "confidence_score": 1.0,
+                "row_kind": ROW_KIND_BROUGHT_FORWARD,
+                **hsbc_identity_metadata(parser_adapter="hsbc_adapter_v2"),
             }
         return bf_by_section
 
@@ -2238,26 +2245,31 @@ class BankStatementParser:
                     break
             return chosen
 
-        def _balance_for_y(y_pdf: float) -> float | None:
-            """Attach a printed Balance amount only when co-located with this row.
+        from app.services.hsbc_balance_policy import (
+            ROW_KIND_BALANCE_SNAPSHOT,
+            ROW_KIND_TRANSACTION,
+            annotate_date_groups,
+            balance_x_band_page_coords,
+            find_balance_in_row_anchor_range,
+            hsbc_identity_metadata,
+            normalize_row_anchor_y_ranges,
+        )
 
-            HSBC prints balances on day-end (and B/F) lines only. Do not forward-fill
-            a later day-end balance onto earlier same-day amount rows.
-            """
-            best_amt = None
-            best_dy: float | None = None
-            # Same-row y-band in PDF points (geometry tolerance, not a page/row index).
-            row_band = 8.0
-            for b in balances:
-                try:
-                    by = float(b["y"])
-                    dy = abs(by - float(y_pdf))
-                except (TypeError, ValueError, KeyError):
-                    continue
-                if dy <= row_band and (best_dy is None or dy < best_dy):
-                    best_amt = b["amount"]
-                    best_dy = dy
-            return best_amt
+        _identity = hsbc_identity_metadata(parser_adapter="hsbc_adapter_v2")
+        _page_w = float(ps.get("page_width") or page.rect.width)
+        _page_h = float(ps.get("page_height") or page.rect.height)
+        _bal_x_lo, _bal_x_hi = balance_x_band_page_coords(
+            bal_hdr_x=ps.get("bal_hdr_x"),
+            page_width=_page_w,
+            table_map=ps.get("table_map") if isinstance(ps.get("table_map"), dict) else None,
+        )
+        _anchor_list = [
+            a for a in (ps.get("row_anchors") or [])
+            if isinstance(a, dict) and not a.get("excluded")
+        ]
+        _y_ranges = normalize_row_anchor_y_ranges(
+            _anchor_list, page_height=_page_h
+        )
 
         def _label_to_date(label: str) -> str:
             """Row label '7 Nov' → ISO using statement header (Y,M) when available."""
@@ -2289,13 +2301,27 @@ class BankStatementParser:
         # Build output — B/F opening row(s) then one transaction per prescan amount
         out_txns: List[Dict[str, Any]] = []
         _anchor_by_y: dict[float, dict] = {}
-        for _a in (ps.get("row_anchors") or []):
-            if _a.get("excluded"):
-                continue
+        for _a in _anchor_list:
             try:
                 _anchor_by_y[float(_a["y"])] = _a
             except (TypeError, ValueError, KeyError):
                 continue
+
+        def _nearest_anchor(y_pdf: float) -> dict | None:
+            exact = _anchor_by_y.get(float(y_pdf))
+            if exact is not None:
+                return exact
+            best = None
+            best_dy = None
+            for _a in _anchor_list:
+                try:
+                    dy = abs(float(_a["y"]) - float(y_pdf))
+                except (TypeError, ValueError, KeyError):
+                    continue
+                if best_dy is None or dy < best_dy:
+                    best_dy = dy
+                    best = _a
+            return best
 
         emitted_bf_for_section: set[str] = set()
         for i, amt_rec in enumerate(amounts):
@@ -2339,7 +2365,21 @@ class BankStatementParser:
                 acct_type = _section_for_y(y_pdf)
 
             txn_date  = _label_to_date(dt_label)
-            balance   = _balance_for_y(y_pdf)
+
+            _anchor = _nearest_anchor(float(y_pdf))
+            _row_id = (_anchor or {}).get("row_id")
+            _sec_id = (_anchor or {}).get("section_id")
+            _yr = _y_ranges.get(str(_row_id)) if _row_id else None
+            if _yr is None:
+                # Fallback half-band around amount y when anchor range missing
+                _yr = (float(y_pdf) - 10.0, float(y_pdf) + 10.0)
+            balance, has_bal_tok = find_balance_in_row_anchor_range(
+                y_lo=_yr[0],
+                y_hi=_yr[1],
+                balances=balances,
+                balance_x_lo=_bal_x_lo,
+                balance_x_hi=_bal_x_hi,
+            )
 
             # FCY sections may hold non-HKD amounts — label currency accordingly.
             # We cannot determine the exact foreign currency from the text layer alone,
@@ -2350,9 +2390,6 @@ class BankStatementParser:
                 else "HKD"
             )
 
-            _anchor = _anchor_by_y.get(float(y_pdf))
-            _row_id = (_anchor or {}).get("row_id")
-            _sec_id = (_anchor or {}).get("section_id")
             _col_prov = {
                 "deposit": "prescan_cr" if col == "Cr" else None,
                 "withdrawal": "prescan_dr" if col == "Dr" else None,
@@ -2375,19 +2412,18 @@ class BankStatementParser:
                 "account_number":   None,
                 "categorise":       "",
                 "confidence_score": 0.85,
+                "row_kind":         ROW_KIND_TRANSACTION,
                 "_hsbc_row_id":     _row_id,
                 "_hsbc_section_id": _sec_id,
                 "_hsbc_classification": ps.get("classification"),
-                "parser_adapter":   "hsbc_adapter_v2",
                 "source_page":      page_num + 1,
                 "section_id":       _sec_id,
                 "row_anchor_id":    _row_id,
                 "numeric_token_ids": _token_ids,
                 "column_provenance": _col_prov,
+                "has_balance_band_token": has_bal_tok,
+                **_identity,
             }
-            if balance is None:
-                # Expected HSBC layout: Balance column blank on non-day-end rows.
-                txn["balance_missing_expected"] = True
             if window_id:
                 txn["_hsbc_window_id"] = window_id
             if window_id and window_id in failed_windows:
@@ -2441,22 +2477,34 @@ class BankStatementParser:
 
         for sec in sections:
             if sec["header"] not in sections_with_amounts:
-                # Get balance from prescan — nearest balance below this section
-                sec_balance = _balance_for_y(sec["y"])
+                # Balance-only account snapshot (not an ordinary transaction row).
+                sec_y = float(sec["y"])
+                sec_bal, _sec_tok = find_balance_in_row_anchor_range(
+                    y_lo=sec_y - 10.0,
+                    y_hi=sec_y + 40.0,
+                    balances=balances,
+                    balance_x_lo=_bal_x_lo,
+                    balance_x_hi=_bal_x_hi,
+                )
                 empty_txn: Dict[str, Any] = {
                     "transaction_date": None,
                     "value_date":       None,
                     "description":      "無交易",
                     "deposit":          None,
                     "withdrawal":       None,
-                    "balance":          sec_balance,
+                    "balance":          sec_bal,
                     "currency":         "HKD",
                     "account_type":     sec["header"],
                     "account_number":   None,
                     "categorise":       "",
                     "confidence_score": 1.0,
+                    "row_kind":         ROW_KIND_BALANCE_SNAPSHOT,
+                    "has_balance_band_token": _sec_tok,
+                    **_identity,
                 }
                 out_txns.append(empty_txn)
+
+        annotate_date_groups(out_txns)
 
         logger.info(
             "[HSBC-V2][P%d] Merged %d transactions (%d empty-section rows)",
