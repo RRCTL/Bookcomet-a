@@ -36,13 +36,15 @@ def test_require_bank_vlm_fails_when_key_or_url_missing(monkeypatch: pytest.Monk
 
 
 def test_require_bank_vlm_ok_when_configured(monkeypatch: pytest.MonkeyPatch):
+    configured_url = "https://example.test/v1"
     monkeypatch.setenv("VLM_MODEL", "m")
     monkeypatch.setenv("VLM_API_KEY", "k")
-    monkeypatch.setenv("VLM_BASE_URL", "https://example.test/v1")
+    monkeypatch.setenv("VLM_BASE_URL", configured_url)
     monkeypatch.delenv("BANK_VLM_MODEL", raising=False)
     cfg = require_bank_vlm_settings()
     assert cfg["model"] == "m"
-    assert cfg["api_url"].startswith("https://example.test")
+    # Exact URL equality (avoid startswith substring checks that CodeQL flags).
+    assert cfg["api_url"] == configured_url
 
 
 def test_cross_vlm_disabled_returns_none(monkeypatch: pytest.MonkeyPatch):
