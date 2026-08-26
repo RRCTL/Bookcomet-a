@@ -23,7 +23,8 @@ const GATEWAY_META: Record<
 > = {
   vlm: {
     title: 'VLM',
-    description: 'Primary vision model used for document OCR and structured extraction.',
+    description:
+      'Required for BANK parsing. Primary vision model for OCR/extraction and bank statement adapters. Empty model/URL/key fails closed (no silent vendor default).',
     required: true,
   },
   llm: {
@@ -36,7 +37,8 @@ const GATEWAY_META: Record<
   },
   bank_cross_vlm: {
     title: 'Bank Cross-VLM',
-    description: 'Second-pass bank statement verification. Leave blank to use VLM settings.',
+    description:
+      'Optional second-pass bank verification. When enabled, model and credentials must be set explicitly (fail-closed; no hardcoded gateway).',
   },
   ap_cross_vlm: {
     title: 'AP Cross-VLM',

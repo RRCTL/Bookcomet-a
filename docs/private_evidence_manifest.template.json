@@ -1,0 +1,46 @@
+{
+  "manifest_version": "1",
+  "purpose": "Private QA evidence map: real incident → synthetic fixture IDs only",
+  "privacy": {
+    "never_commit": [
+      "raw_pdf",
+      "raw_csv_export",
+      "backend_logs_with_customer_text",
+      "account_numbers",
+      "company_names",
+      "payee_descriptions",
+      "real_filenames"
+    ],
+    "repo_allowed": [
+      "synthetic fixture ids",
+      "contract pass/fail booleans",
+      "dispatcher route name",
+      "anonymous issue reasons"
+    ]
+  },
+  "incidents": [
+    {
+      "incident_id": "REPLACE_WITH_PRIVATE_ID",
+      "private_artifact_location": "offline-only",
+      "symptoms": [
+        "activity_page_zero_rows",
+        "mixed_section_first_anchor_miss",
+        "balance_written_as_withdrawal"
+      ],
+      "synthetic_fixtures": [
+        "hsbc_activity_continuation_fixture",
+        "hsbc_mixed_sections_fixture",
+        "hsbc_day_end_balance_fixture"
+      ],
+      "contracts": ["A_coverage", "B_column_band", "C_section", "D_provenance"],
+      "route_expectation": "hsbc_adapter",
+      "scenario_d_forbidden": true,
+      "signoff": {
+        "qa_owner": "",
+        "date": "",
+        "contracts_passed": false,
+        "notes": "Fill only in private storage; do not commit completed signoff with real paths."
+      }
+    }
+  ]
+}

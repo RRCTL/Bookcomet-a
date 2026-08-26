@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import os
 
-from app.core.config import _DEFAULT_BANK_VLM_MODEL, settings
+from app.core.config import resolve_bank_vlm_model, settings
 from app.services.ai_post_processor import AiPostProcessor
 from app.services.field_filtering import FieldFilteringPipeline
 from app.services.ocr_service import OcrService
@@ -18,11 +18,9 @@ logger = logging.getLogger(__name__)
 
 # Do not inject a vendor default into VLM_BASE_URL. An empty env must stay empty
 # so Settings → API → VLM shows a blank API URL until the user configures one.
-# OCR providers already fall back to LLM_BASE_URL (and their own callers) when unset.
 
-# Single bank-statement VLM model for all banks (HSBC, BOC, BEA, SCB, ...).
-# Per-bank behaviour differs by prompt in app/bank_prompts/, not by model id.
-BANK_VLM_MODEL = (os.getenv("BANK_VLM_MODEL") or "").strip() or _DEFAULT_BANK_VLM_MODEL
+# BANK follows Settings → API → VLM unless BANK_VLM_MODEL is explicitly set.
+BANK_VLM_MODEL = resolve_bank_vlm_model(fail_closed=False)
 
 ocr_service = OcrService()
 filtering_pipeline = FieldFilteringPipeline()
@@ -65,9 +63,7 @@ def refresh_ai_runtime() -> None:
     """
     global BANK_VLM_MODEL
 
-    BANK_VLM_MODEL = (
-        (os.getenv("BANK_VLM_MODEL") or "").strip() or _DEFAULT_BANK_VLM_MODEL
-    )
+    BANK_VLM_MODEL = resolve_bank_vlm_model(fail_closed=False)
 
     from app.ocr.providers import OcrProviderRegistry
 

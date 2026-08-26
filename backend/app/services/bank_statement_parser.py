@@ -222,6 +222,30 @@ class BankStatementParser:
                     progress_callback=progress_callback,
                     page_verification_out=page_verification_out,
                 )
+            elif bank_name == 'HSBC':
+                transactions = await self._parse_hsbc_statement(
+                    file_path,
+                    full_text,
+                    company_identity=company_identity,
+                    progress_callback=progress_callback,
+                    page_verification_out=page_verification_out,
+                )
+            elif bank_name == 'HANG_SENG':
+                transactions = await self._parse_hang_seng_statement(
+                    file_path,
+                    full_text,
+                    company_identity=company_identity,
+                    progress_callback=progress_callback,
+                    page_verification_out=page_verification_out,
+                )
+            elif bank_name == 'BOCOM':
+                transactions = await self._parse_bocom_statement(
+                    file_path,
+                    full_text,
+                    company_identity=company_identity,
+                    progress_callback=progress_callback,
+                    page_verification_out=page_verification_out,
+                )
             else:
                 transactions = await self._parse_with_ocr_fallback(
                     file_path,
@@ -917,7 +941,7 @@ class BankStatementParser:
                 elif best_kind == "Dr":
                     am.append({"y": y0, "col": "Dr", "amount": amt_val, "text": text})
                 else:
-                    bal.append({"y": y0, "amount": amt_val})
+                    bal.append({"y": y0, "x": x_mid, "amount": amt_val})
             am.sort(key=lambda r: r["y"])
             bal.sort(key=lambda r: r["y"])
             return am, bal
@@ -1129,6 +1153,11 @@ class BankStatementParser:
                 if header == "HSBC Business Direct Foreign Currency Savings"
                 else "HKD"
             )
+            from app.services.hsbc_balance_policy import (
+                ROW_KIND_BROUGHT_FORWARD,
+                hsbc_identity_metadata,
+            )
+
             bf_by_section[header] = {
                 "transaction_date": txn_date or None,
                 "value_date": None,
@@ -1141,6 +1170,8 @@ class BankStatementParser:
                 "account_number": None,
                 "categorise": "",
                 "confidence_score": 1.0,
+                "row_kind": ROW_KIND_BROUGHT_FORWARD,
+                **hsbc_identity_metadata(parser_adapter="hsbc_adapter_v2"),
             }
         return bf_by_section
 
@@ -2214,12 +2245,31 @@ class BankStatementParser:
                     break
             return chosen
 
-        def _balance_for_y(y_pdf: float) -> float | None:
-            """Return the nearest balance at or after y_pdf (day-end balance)."""
-            for b in balances:
-                if b["y"] >= y_pdf - 5.0:
-                    return b["amount"]
-            return None
+        from app.services.hsbc_balance_policy import (
+            ROW_KIND_BALANCE_SNAPSHOT,
+            ROW_KIND_TRANSACTION,
+            annotate_date_groups,
+            balance_x_band_page_coords,
+            find_balance_in_row_anchor_range,
+            hsbc_identity_metadata,
+            normalize_row_anchor_y_ranges,
+        )
+
+        _identity = hsbc_identity_metadata(parser_adapter="hsbc_adapter_v2")
+        _page_w = float(ps.get("page_width") or page.rect.width)
+        _page_h = float(ps.get("page_height") or page.rect.height)
+        _bal_x_lo, _bal_x_hi = balance_x_band_page_coords(
+            bal_hdr_x=ps.get("bal_hdr_x"),
+            page_width=_page_w,
+            table_map=ps.get("table_map") if isinstance(ps.get("table_map"), dict) else None,
+        )
+        _anchor_list = [
+            a for a in (ps.get("row_anchors") or [])
+            if isinstance(a, dict) and not a.get("excluded")
+        ]
+        _y_ranges = normalize_row_anchor_y_ranges(
+            _anchor_list, page_height=_page_h
+        )
 
         def _label_to_date(label: str) -> str:
             """Row label '7 Nov' → ISO using statement header (Y,M) when available."""
@@ -2251,13 +2301,27 @@ class BankStatementParser:
         # Build output — B/F opening row(s) then one transaction per prescan amount
         out_txns: List[Dict[str, Any]] = []
         _anchor_by_y: dict[float, dict] = {}
-        for _a in (ps.get("row_anchors") or []):
-            if _a.get("excluded"):
-                continue
+        for _a in _anchor_list:
             try:
                 _anchor_by_y[float(_a["y"])] = _a
             except (TypeError, ValueError, KeyError):
                 continue
+
+        def _nearest_anchor(y_pdf: float) -> dict | None:
+            exact = _anchor_by_y.get(float(y_pdf))
+            if exact is not None:
+                return exact
+            best = None
+            best_dy = None
+            for _a in _anchor_list:
+                try:
+                    dy = abs(float(_a["y"]) - float(y_pdf))
+                except (TypeError, ValueError, KeyError):
+                    continue
+                if best_dy is None or dy < best_dy:
+                    best_dy = dy
+                    best = _a
+            return best
 
         emitted_bf_for_section: set[str] = set()
         for i, amt_rec in enumerate(amounts):
@@ -2301,7 +2365,21 @@ class BankStatementParser:
                 acct_type = _section_for_y(y_pdf)
 
             txn_date  = _label_to_date(dt_label)
-            balance   = _balance_for_y(y_pdf)
+
+            _anchor = _nearest_anchor(float(y_pdf))
+            _row_id = (_anchor or {}).get("row_id")
+            _sec_id = (_anchor or {}).get("section_id")
+            _yr = _y_ranges.get(str(_row_id)) if _row_id else None
+            if _yr is None:
+                # Fallback half-band around amount y when anchor range missing
+                _yr = (float(y_pdf) - 10.0, float(y_pdf) + 10.0)
+            balance, has_bal_tok = find_balance_in_row_anchor_range(
+                y_lo=_yr[0],
+                y_hi=_yr[1],
+                balances=balances,
+                balance_x_lo=_bal_x_lo,
+                balance_x_hi=_bal_x_hi,
+            )
 
             # FCY sections may hold non-HKD amounts — label currency accordingly.
             # We cannot determine the exact foreign currency from the text layer alone,
@@ -2312,7 +2390,16 @@ class BankStatementParser:
                 else "HKD"
             )
 
-            _anchor = _anchor_by_y.get(float(y_pdf))
+            _col_prov = {
+                "deposit": "prescan_cr" if col == "Cr" else None,
+                "withdrawal": "prescan_dr" if col == "Dr" else None,
+                "balance": "prescan_balance_band" if balance is not None else None,
+            }
+            _token_ids = [
+                f"{_row_id}:{col}:{amount}",
+            ]
+            if balance is not None:
+                _token_ids.append(f"{_row_id}:Bal:{balance}")
             txn: Dict[str, Any] = {
                 "transaction_date": txn_date or None,
                 "value_date":       None,
@@ -2325,16 +2412,63 @@ class BankStatementParser:
                 "account_number":   None,
                 "categorise":       "",
                 "confidence_score": 0.85,
-                "_hsbc_row_id":     (_anchor or {}).get("row_id"),
-                "_hsbc_section_id": (_anchor or {}).get("section_id"),
+                "row_kind":         ROW_KIND_TRANSACTION,
+                "_hsbc_row_id":     _row_id,
+                "_hsbc_section_id": _sec_id,
                 "_hsbc_classification": ps.get("classification"),
+                "source_page":      page_num + 1,
+                "section_id":       _sec_id,
+                "row_anchor_id":    _row_id,
+                "numeric_token_ids": _token_ids,
+                "column_provenance": _col_prov,
+                "has_balance_band_token": has_bal_tok,
+                **_identity,
             }
             if window_id:
                 txn["_hsbc_window_id"] = window_id
             if window_id and window_id in failed_windows:
                 txn["needs_review"] = True
                 txn["_hsbc_window_failed"] = True
+            from app.services.hsbc_contracts import apply_contracts_to_row
+
+            txn = apply_contracts_to_row(
+                txn,
+                tokens=[
+                    {
+                        "column": col,
+                        "band": "deposit" if col == "Cr" else "withdrawal",
+                        "amount": amount,
+                    }
+                ],
+            )
             out_txns.append(txn)
+
+        # Contract A: activity page with anchors must emit rows
+        from app.services.hsbc_contracts import validate_contract_a_coverage
+
+        _cov = validate_contract_a_coverage(
+            has_txn_header=not bool(ps.get("no_table")),
+            amount_anchor_count=len(amounts),
+            emitted_row_count=sum(
+                1
+                for t in out_txns
+                if t.get("deposit") is not None or t.get("withdrawal") is not None
+            ),
+        )
+        if not _cov.ok:
+            logger.warning(
+                "[HSBC-V2][P%d] Contract A coverage_failed: %s",
+                page_num + 1,
+                _cov.flags,
+            )
+            for t in out_txns:
+                flags = list(t.get("validation_flags") or [])
+                for f in _cov.flags:
+                    if f not in flags:
+                        flags.append(f)
+                t["validation_flags"] = flags
+                t["needs_review"] = True
+                t["_contracts_ok"] = False
 
         # ── Emit empty 無交易 rows for sections with no amounts ──────────────
         sections_with_amounts: set[str] = set()
@@ -2343,22 +2477,34 @@ class BankStatementParser:
 
         for sec in sections:
             if sec["header"] not in sections_with_amounts:
-                # Get balance from prescan — nearest balance below this section
-                sec_balance = _balance_for_y(sec["y"])
+                # Balance-only account snapshot (not an ordinary transaction row).
+                sec_y = float(sec["y"])
+                sec_bal, _sec_tok = find_balance_in_row_anchor_range(
+                    y_lo=sec_y - 10.0,
+                    y_hi=sec_y + 40.0,
+                    balances=balances,
+                    balance_x_lo=_bal_x_lo,
+                    balance_x_hi=_bal_x_hi,
+                )
                 empty_txn: Dict[str, Any] = {
                     "transaction_date": None,
                     "value_date":       None,
                     "description":      "無交易",
                     "deposit":          None,
                     "withdrawal":       None,
-                    "balance":          sec_balance,
+                    "balance":          sec_bal,
                     "currency":         "HKD",
                     "account_type":     sec["header"],
                     "account_number":   None,
                     "categorise":       "",
                     "confidence_score": 1.0,
+                    "row_kind":         ROW_KIND_BALANCE_SNAPSHOT,
+                    "has_balance_band_token": _sec_tok,
+                    **_identity,
                 }
                 out_txns.append(empty_txn)
+
+        annotate_date_groups(out_txns)
 
         logger.info(
             "[HSBC-V2][P%d] Merged %d transactions (%d empty-section rows)",
@@ -6285,14 +6431,14 @@ class BankStatementParser:
             "true",
             "yes",
         )
-        cross_model = os.getenv("BANK_CROSS_VLM_MODEL", "").strip()
         if not cross_on:
             return page_txns
-        if not cross_model:
-            raise RuntimeError(
-                "BANK_CROSS_VLM_MODEL must be set in the environment when "
-                "BANK_CROSS_VLM_VERIFY is enabled."
-            )
+        from app.core.config import require_bank_cross_vlm_settings
+
+        cross_cfg = require_bank_cross_vlm_settings()
+        if cross_cfg is None:
+            return page_txns
+        cross_model = cross_cfg["model"]
 
         if not page_txns:
             return page_txns

@@ -10,13 +10,90 @@ from dotenv import load_dotenv
 _backend_env_path = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(dotenv_path=_backend_env_path, override=False)
 
-# Default model IDs — override via backend/.env (single definition in code).
+# Default model IDs — must be overridden via Settings → API for production BANK/VLM.
+# Fail-closed helpers refuse empty runtime config instead of silently swapping gateways.
 _DEFAULT_OCR_ALIAS = "qwen-vl-ocr-latest"
 _DEFAULT_DEPLOY_MODEL = "qwen3.5-plus-2026-02-15"
-_DEFAULT_BANK_VLM_MODEL = "qwen3.5-plus-2026-02-15"
+_DEFAULT_BANK_VLM_MODEL = "qwen-vl-ocr-latest"
 _DEFAULT_VLM_MODEL = "qwen-vl-ocr-latest"
 _DEFAULT_LAYOUT_CLASSIFY_MODEL = "qwen3-vl-plus"
 _DEFAULT_AI_ENHANCE_REASONER_MODEL = "qwen3.5-plus-2026-02-15"
+
+
+def resolve_bank_vlm_model(*, fail_closed: bool = False) -> str:
+    """BANK extraction model: Settings → API VLM only (optional BANK_VLM_MODEL pin).
+
+    When ``fail_closed`` is True (Slice 3), empty VLM_MODEL / BANK_VLM_MODEL raises
+    instead of returning a hardcoded default that would silently change quality.
+    """
+    explicit = (os.getenv("BANK_VLM_MODEL") or "").strip()
+    if explicit:
+        return explicit
+    vlm = (os.getenv("VLM_MODEL") or "").strip()
+    if vlm:
+        return vlm
+    if fail_closed:
+        raise ValueError(
+            "BANK VLM is not configured. Set Settings → API → VLM model "
+            "(VLM_MODEL), or optional BANK_VLM_MODEL override."
+        )
+    return _DEFAULT_VLM_MODEL
+
+
+def require_bank_vlm_settings() -> dict[str, str]:
+    """Fail-closed gate before BANK / Cross-VLM calls.
+
+    Requires VLM_MODEL (or BANK_VLM_MODEL) and VLM_API_KEY + VLM_BASE_URL.
+    Does not inject vendor URLs or model IDs.
+    """
+    model = resolve_bank_vlm_model(fail_closed=True)
+    api_key = (os.getenv("VLM_API_KEY") or "").strip()
+    base_url = (os.getenv("VLM_BASE_URL") or "").strip()
+    if not api_key:
+        raise ValueError(
+            "BANK VLM API key is not configured. Set Settings → API → VLM API key."
+        )
+    if not base_url:
+        raise ValueError(
+            "BANK VLM API URL is not configured. Set Settings → API → VLM API URL."
+        )
+    return {"model": model, "api_key": api_key, "api_url": base_url}
+
+
+def require_bank_cross_vlm_settings() -> dict[str, str] | None:
+    """If Cross-VLM is enabled, require explicit model + credentials (no silent default).
+
+    Returns None when Cross-VLM is disabled (empty BANK_CROSS_VLM_MODEL and verify off).
+    """
+    model = (os.getenv("BANK_CROSS_VLM_MODEL") or "").strip()
+    verify = (os.getenv("BANK_CROSS_VLM_VERIFY") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not model and not verify:
+        return None
+    if not model:
+        raise ValueError(
+            "BANK Cross-VLM verify is on but BANK_CROSS_VLM_MODEL is empty. "
+            "Configure Settings → API → Bank Cross-VLM model."
+        )
+    # Explicit cross credentials, else VLM credentials — but never hardcoded vendor URL
+    api_key = (
+        (os.getenv("BANK_CROSS_VLM_API_KEY") or "").strip()
+        or (os.getenv("VLM_API_KEY") or "").strip()
+    )
+    base_url = (
+        (os.getenv("BANK_CROSS_VLM_BASE_URL") or "").strip()
+        or (os.getenv("VLM_BASE_URL") or "").strip()
+    )
+    if not api_key or not base_url:
+        raise ValueError(
+            "BANK Cross-VLM credentials incomplete. Set Bank Cross-VLM or VLM "
+            "API key and URL in Settings → API."
+        )
+    return {"model": model, "api_key": api_key, "api_url": base_url}
 
 
 def _env_float(key: str, default: float) -> float:
@@ -57,9 +134,10 @@ class Settings:
     )
     # Document gate LLM: GATE_MODEL if set, else deploy_model
     gate_model_env: str = os.getenv("GATE_MODEL", "").strip()
-    # BANK mode VLM id (bank_statement_parser, OCR registry)
+    # BANK mode VLM id — Settings → API → VLM unless BANK_VLM_MODEL override set.
     bank_vlm_model: str = (
-        (os.getenv("BANK_VLM_MODEL") or "").strip() or _DEFAULT_BANK_VLM_MODEL
+        (os.getenv("BANK_VLM_MODEL") or os.getenv("VLM_MODEL") or "").strip()
+        or _DEFAULT_VLM_MODEL
     )
     # Default OCR payload model (OpenAI-compatible VLM gateway).
     vlm_model: str = (
