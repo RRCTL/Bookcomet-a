@@ -5157,8 +5157,8 @@ async def ocr_test_core(
         logger.info(f"   Type: {'PDF' if is_pdf else 'Image'}")
         logger.info(f"   Size: {file_size:,} bytes ({file_size/1024:.1f} KB)")
         logger.info(f"   Mode: {processing_mode}")
-        # Model IDs: AR/AP from env; BANK uses BANK_VLM_MODEL; others use VLM_MODEL default.
-        # Registry key stays the legacy alias; the real VLM id is passed via set_model().
+        # Model IDs: AR/AP from env; BANK follows Settings → API VLM (VLM_MODEL)
+        # unless BANK_VLM_MODEL override is set; others use VLM_MODEL default.
         if processing_mode == "AR":
             ocr_provider_name = AR_OCR_MODEL
             ocr_model_override = AR_OCR_MODEL
@@ -5186,7 +5186,13 @@ async def ocr_test_core(
                 BANK_VLM_MODEL if processing_mode == "BANK"
                 else settings.vlm_model
             )
-            logger.info("   Model: %s (mode=%s)", ocr_model_override, processing_mode)
+            if processing_mode == "BANK":
+                logger.info(
+                    "   Model: %s (mode=BANK, source=Settings VLM / BANK_VLM_MODEL)",
+                    ocr_model_override,
+                )
+            else:
+                logger.info("   Model: %s (mode=%s)", ocr_model_override, processing_mode)
         # AR and AP both use the same plain-text document-parsing prompt.
         # AR_AP_HTML_OCR_PROMPT is no longer used; the structured JSON extraction
         # (_extract_ap_ai_fields_for_page) handles both modes directly from the image.

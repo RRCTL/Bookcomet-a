@@ -8,7 +8,7 @@ import random
 
 import requests
 
-from app.core.config import _DEFAULT_BANK_VLM_MODEL, _DEFAULT_OCR_ALIAS, settings
+from app.core.config import _DEFAULT_OCR_ALIAS, resolve_bank_vlm_model, settings
 
 
 def _normalize_ocr_base_url(base_url: str) -> str:
@@ -400,8 +400,9 @@ class OcrProviderRegistry:
         )
         if _ap_vlm not in self._providers:
             self._providers[_ap_vlm] = provider
-        # Bank-statement row extraction — one model id (matches ocr.runtime BANK_VLM_MODEL).
-        _bank_vlm = (os.getenv("BANK_VLM_MODEL") or "").strip() or _DEFAULT_BANK_VLM_MODEL
+        # Bank-statement row extraction — same id as ocr.runtime BANK_VLM_MODEL
+        # (Settings → API → VLM unless BANK_VLM_MODEL override is set).
+        _bank_vlm = resolve_bank_vlm_model()
         if _bank_vlm not in self._providers:
             self._providers[_bank_vlm] = provider
 

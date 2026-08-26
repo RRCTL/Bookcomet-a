@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -10,13 +10,31 @@ from dotenv import load_dotenv
 _backend_env_path = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(dotenv_path=_backend_env_path, override=False)
 
-# Default model IDs — override via backend/.env (single definition in code).
+# Default model IDs — override via backend/.env / Settings → API (single definition in code).
 _DEFAULT_OCR_ALIAS = "qwen-vl-ocr-latest"
 _DEFAULT_DEPLOY_MODEL = "qwen3.5-plus-2026-02-15"
-_DEFAULT_BANK_VLM_MODEL = "qwen3.5-plus-2026-02-15"
+# Legacy name kept for imports; BANK now resolves from VLM_MODEL (see resolve_bank_vlm_model).
+_DEFAULT_BANK_VLM_MODEL = "qwen-vl-ocr-latest"
 _DEFAULT_VLM_MODEL = "qwen-vl-ocr-latest"
 _DEFAULT_LAYOUT_CLASSIFY_MODEL = "qwen3-vl-plus"
 _DEFAULT_AI_ENHANCE_REASONER_MODEL = "qwen3.5-plus-2026-02-15"
+
+
+def resolve_bank_vlm_model() -> str:
+    """Model id for BANK statement extraction.
+
+    Resolution (API Settings–first):
+      1. Explicit ``BANK_VLM_MODEL`` env override (optional power-user pin)
+      2. ``VLM_MODEL`` from Settings → API → VLM
+      3. ``_DEFAULT_VLM_MODEL`` last resort
+    """
+    explicit = (os.getenv("BANK_VLM_MODEL") or "").strip()
+    if explicit:
+        return explicit
+    vlm = (os.getenv("VLM_MODEL") or "").strip()
+    if vlm:
+        return vlm
+    return _DEFAULT_VLM_MODEL
 
 
 def _env_float(key: str, default: float) -> float:
@@ -57,10 +75,9 @@ class Settings:
     )
     # Document gate LLM: GATE_MODEL if set, else deploy_model
     gate_model_env: str = os.getenv("GATE_MODEL", "").strip()
-    # BANK mode VLM id (bank_statement_parser, OCR registry)
-    bank_vlm_model: str = (
-        (os.getenv("BANK_VLM_MODEL") or "").strip() or _DEFAULT_BANK_VLM_MODEL
-    )
+    # BANK mode VLM id — follows Settings → API → VLM (VLM_MODEL) unless
+    # BANK_VLM_MODEL is explicitly set as an override.
+    bank_vlm_model: str = field(default_factory=resolve_bank_vlm_model)
     # Default OCR payload model (OpenAI-compatible VLM gateway).
     vlm_model: str = (
         (os.getenv("VLM_MODEL") or "").strip() or _DEFAULT_VLM_MODEL

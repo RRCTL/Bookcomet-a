@@ -23,7 +23,8 @@ const GATEWAY_META: Record<
 > = {
   vlm: {
     title: 'VLM',
-    description: 'Primary vision model used for document OCR and structured extraction.',
+    description:
+      'Primary vision model for document OCR, structured extraction, and BANK statement parsing.',
     required: true,
   },
   llm: {

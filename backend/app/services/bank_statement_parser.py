@@ -179,7 +179,7 @@ class BankStatementParser:
 
         # Image-based PDF fast path: minimal extractable text means PyMuPDF table parsers
         # will find nothing. Skip the old qwen-vl-ocr-latest detection step and go directly
-        # to the single-stage VLM pipeline (qwen3.5-plus-2026-02-15).
+        # to the single-stage VLM pipeline (Settings → API → VLM model).
         if len(full_text.strip()) < 100:
             logger.info(
                 "[BANK] Minimal text extracted — image-based PDF detected. "
