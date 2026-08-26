@@ -138,6 +138,38 @@ async def dispatch_bank_pdf(
 ) -> dict[str, Any]:
     """Probe then parse via BankStatementParser (HSBC → dedicated adapter path)."""
     probe = inspect_bank_pdf(file_path)
+
+    # Scanned / image PDFs often have no text layer — resolve bank via page-1 VLM
+    # identity (settings model), then recompute route. No filename/page hardcodes.
+    if probe.bank_id == "UNKNOWN" and not probe.text_rich:
+        from app.core.config import require_bank_vlm_settings
+        from app.services.bank_statement_parser import BankStatementParser
+
+        require_bank_vlm_settings()
+        parser = BankStatementParser()
+        image_bank = await parser._identify_bank_from_image(file_path)
+        if image_bank and image_bank != "UNKNOWN":
+            if image_bank == "HSBC":
+                route: RouteName = "hsbc_adapter"
+                adapter = "hsbc_adapter_v2"
+            else:
+                route = "bank_adapter"
+                adapter = f"{image_bank.lower()}_adapter"
+            probe = BankProbe(
+                bank_id=image_bank,
+                text_rich=False,
+                has_txn_header=probe.has_txn_header,
+                char_count=probe.char_count,
+                route=route,
+                adapter=adapter,
+            )
+            logger.info(
+                "[BANK-DISPATCH] image identity bank_id=%s route=%s adapter=%s",
+                probe.bank_id,
+                probe.route,
+                probe.adapter,
+            )
+
     if not route_forbids_scenario_d(probe):
         raise RuntimeError("BANK dispatcher produced a route that allows Scenario D")
 
@@ -155,7 +187,6 @@ async def dispatch_bank_pdf(
     result["bank_probe"] = probe.to_dict()
     result["dispatcher_route"] = probe.route
     result["dispatcher_adapter"] = probe.adapter
-    # Harden: if probe said HSBC, surface mismatch when parser disagrees
     parsed_bank = str(result.get("bank") or "").upper()
     if probe.bank_id == "HSBC" and parsed_bank not in {"HSBC", "UNKNOWN", ""}:
         logger.warning(

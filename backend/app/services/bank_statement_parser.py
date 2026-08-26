@@ -222,6 +222,30 @@ class BankStatementParser:
                     progress_callback=progress_callback,
                     page_verification_out=page_verification_out,
                 )
+            elif bank_name == 'HSBC':
+                transactions = await self._parse_hsbc_statement(
+                    file_path,
+                    full_text,
+                    company_identity=company_identity,
+                    progress_callback=progress_callback,
+                    page_verification_out=page_verification_out,
+                )
+            elif bank_name == 'HANG_SENG':
+                transactions = await self._parse_hang_seng_statement(
+                    file_path,
+                    full_text,
+                    company_identity=company_identity,
+                    progress_callback=progress_callback,
+                    page_verification_out=page_verification_out,
+                )
+            elif bank_name == 'BOCOM':
+                transactions = await self._parse_bocom_statement(
+                    file_path,
+                    full_text,
+                    company_identity=company_identity,
+                    progress_callback=progress_callback,
+                    page_verification_out=page_verification_out,
+                )
             else:
                 transactions = await self._parse_with_ocr_fallback(
                     file_path,
