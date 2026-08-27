@@ -141,12 +141,14 @@ async def dispatch_bank_pdf(
 
     # Scanned / image PDFs often have no text layer — resolve bank via page-1 VLM
     # identity (settings model), then recompute route. No filename/page hardcodes.
+    bank_id_attempted = False
     if probe.bank_id == "UNKNOWN" and not probe.text_rich:
         from app.core.config import require_bank_vlm_settings
         from app.services.bank_statement_parser import BankStatementParser
 
         require_bank_vlm_settings()
         parser = BankStatementParser()
+        bank_id_attempted = True
         image_bank = await parser._identify_bank_from_image(file_path)
         if image_bank and image_bank != "UNKNOWN":
             if image_bank == "HSBC":
@@ -169,6 +171,11 @@ async def dispatch_bank_pdf(
                 probe.route,
                 probe.adapter,
             )
+        else:
+            logger.warning(
+                "[BANK-DISPATCH] image identity unresolved — parser must not "
+                "repeat bank-ID or run UNKNOWN full-page VLM"
+            )
 
     if not route_forbids_scenario_d(probe):
         raise RuntimeError("BANK dispatcher produced a route that allows Scenario D")
@@ -181,6 +188,8 @@ async def dispatch_bank_pdf(
         file_type,
         company_identity=company_identity,
         progress_callback=progress_callback,
+        bank_hint=probe.bank_id,
+        bank_id_already_attempted=bank_id_attempted,
     )
     if not isinstance(result, dict):
         result = {"transactions": result or [], "bank": probe.bank_id, "count": 0}
@@ -219,11 +228,16 @@ def bank_ocr_response_from_parser_result(
         "bank_probe": probe,
         "dispatcher_route": result.get("dispatcher_route"),
         "dispatcher_adapter": result.get("dispatcher_adapter"),
+        "parse_status": result.get("parse_status"),
+        "fallback_allowed": result.get("fallback_allowed"),
+        "reason_codes": result.get("reason_codes") or [],
+        "timing_summary": result.get("timing_summary"),
         "scenario_d_used": False,
         "ocr_preview_text": result.get("ocr_preview_text", ""),
         "processing_steps": {
             "bank_dispatch": "completed",
             "scenario_d": "skipped",
             "adapter": result.get("dispatcher_adapter"),
+            "parse_status": result.get("parse_status"),
         },
     }
