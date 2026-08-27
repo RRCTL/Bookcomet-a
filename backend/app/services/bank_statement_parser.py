@@ -126,6 +126,9 @@ class BankStatementParser:
         file_type: str,
         company_identity: Dict[str, Any] | None = None,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
+        *,
+        bank_hint: str | None = None,
+        bank_id_already_attempted: bool = False,
     ) -> Dict[str, Any]:
         """Parse bank statement and detect bank"""
         logger.info(f"Parsing bank statement: {file_path} (type: {file_type})")
@@ -139,6 +142,8 @@ class BankStatementParser:
                 file_path,
                 company_identity=company_identity,
                 progress_callback=progress_callback,
+                bank_hint=bank_hint,
+                bank_id_already_attempted=bank_id_already_attempted,
             )
         else:
             raise ValueError(f"Unsupported file type: {file_type}")
@@ -148,8 +153,21 @@ class BankStatementParser:
         file_path: str,
         company_identity: Dict[str, Any] | None = None,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
+        *,
+        bank_hint: str | None = None,
+        bank_id_already_attempted: bool = False,
     ) -> Dict[str, Any]:
         """Parse PDF bank statement with table extraction and OCR fallback"""
+        from app.services.bank_parse_outcome import (
+            STATUS_ABSTAINED_NEEDS_LAYOUT,
+            STATUS_BANK_SELECTION_REQUIRED,
+            STATUS_COMPLETED,
+            STATUS_NO_ACTIVITY,
+            STATUS_PROVIDER_FAILED,
+            build_parse_result,
+            fallback_allowed_for_status,
+        )
+
         try:
             import fitz  # PyMuPDF
         except ImportError:
@@ -172,6 +190,10 @@ class BankStatementParser:
         
         # Detect bank from text
         bank_name = self._detect_bank(full_text)
+        hint = (bank_hint or "").strip().upper() or None
+        if hint and hint != "UNKNOWN":
+            bank_name = hint
+            logger.info("[BANK] Using dispatcher bank_hint=%s (skipping conflicting text id)", hint)
         logger.info(f"Detected bank from text extraction: {bank_name}")
         self._emit_progress(
             progress_callback,
@@ -183,6 +205,14 @@ class BankStatementParser:
         
         pages_processed = len(doc)
         page_verification_out: Dict[int, str] = {}
+        parse_status = STATUS_COMPLETED
+        timing_summary: Dict[str, Any] = {
+            "image_id_calls": 0,
+            "page_vlm_calls": 0,
+            "r2_calls": 0,
+            "retries": 0,
+            "fallbacks": 0,
+        }
 
         # Image-based PDF fast path: minimal extractable text means PyMuPDF table parsers
         # will find nothing. Skip the old qwen-vl-ocr-latest detection step and go directly
@@ -190,15 +220,40 @@ class BankStatementParser:
         if len(full_text.strip()) < 100:
             logger.info(
                 "[BANK] Minimal text extracted — image-based PDF detected. "
-                "Routing directly to VLM single-stage pipeline (skipping table parsers)."
+                "Routing with P0 safe-stop rules (no UNKNOWN full-page fan-out)."
             )
-            # Text detection is impossible for image-based PDFs.  Run a lightweight
-            # VLM bank-identification pre-pass on page 1 so the full pipeline can
-            # use the correct bank-specific dual-track prompt (e.g. SCB) instead of
-            # falling back to DEFAULT-only mode and timing out.
-            if bank_name == 'UNKNOWN':
+            # P0: at most one image bank-ID per request. Prefer dispatcher result.
+            if bank_name == "UNKNOWN":
+                if bank_id_already_attempted or hint == "UNKNOWN":
+                    logger.warning(
+                        "[BANK] Scanned PDF bank still UNKNOWN after dispatcher ID — "
+                        "returning bank_selection_required (no page VLM fan-out)"
+                    )
+                    return build_parse_result(
+                        bank="UNKNOWN",
+                        transactions=[],
+                        pages_processed=pages_processed,
+                        parse_status=STATUS_BANK_SELECTION_REQUIRED,
+                        full_text=full_text,
+                        reason_codes=["bank_selection_required", "scanned_unknown_bank"],
+                        timing_summary=timing_summary,
+                    )
                 bank_name = await self._identify_bank_from_image(file_path)
+                timing_summary["image_id_calls"] = 1
                 logger.info(f"[BANK] Image-based PDF bank identification: {bank_name}")
+                if bank_name == "UNKNOWN":
+                    return build_parse_result(
+                        bank="UNKNOWN",
+                        transactions=[],
+                        pages_processed=pages_processed,
+                        parse_status=STATUS_BANK_SELECTION_REQUIRED,
+                        full_text=full_text,
+                        reason_codes=["bank_selection_required", "image_id_unknown"],
+                        timing_summary=timing_summary,
+                    )
+            # HSBC / known banks: never treat empty Slice-0 abstain as permission
+            # for generic DEFAULT financial extraction.
+            image_generic_fallback_allowed = bank_name not in ("HSBC",)
             if bank_name == 'SCB':
                 # Route ALL SC PDFs through _parse_scb_statement (PyMuPDF → VLM fallback)
                 # so the entry point is consistent regardless of PDF type.
@@ -254,6 +309,17 @@ class BankStatementParser:
                     page_verification_out=page_verification_out,
                 )
             else:
+                # P0: never auto-run UNKNOWN DEFAULT full-page extraction.
+                if bank_name == "UNKNOWN":
+                    return build_parse_result(
+                        bank="UNKNOWN",
+                        transactions=[],
+                        pages_processed=pages_processed,
+                        parse_status=STATUS_BANK_SELECTION_REQUIRED,
+                        full_text=full_text,
+                        reason_codes=["bank_selection_required"],
+                        timing_summary=timing_summary,
+                    )
                 transactions = await self._parse_with_ocr_fallback(
                     file_path,
                     bank_name,
@@ -261,9 +327,21 @@ class BankStatementParser:
                     progress_callback=progress_callback,
                     page_verification_out=page_verification_out,
                 )
-            # When PyMuPDF fails (0 transactions), bank parsers call VLM internally; also
-            # run backup here so we never leave image-based path without trying VLM.
-            if not transactions:
+            # P0: empty list must not unlock generic VLM backup for HSBC abstention
+            # or other blocked statuses.
+            if bank_name == "HSBC" and not transactions:
+                parse_status = STATUS_ABSTAINED_NEEDS_LAYOUT
+                image_generic_fallback_allowed = False
+                if page_verification_out is not None:
+                    from app.services.hsbc_admission import mark_page_needs_layout_review
+
+                    for _pn in range(pages_processed):
+                        mark_page_needs_layout_review(page_verification_out, _pn + 1)
+            if (
+                not transactions
+                and image_generic_fallback_allowed
+                and fallback_allowed_for_status(parse_status)
+            ):
                 logger.info(
                     "[BANK] Image-based path returned no transactions — calling VLM backup."
                 )
@@ -273,6 +351,12 @@ class BankStatementParser:
                     company_identity=company_identity,
                     progress_callback=progress_callback,
                     page_verification_out=page_verification_out,
+                )
+            elif not transactions and not image_generic_fallback_allowed:
+                logger.info(
+                    "[BANK] Skipping generic VLM backup (parse_status=%s bank=%s)",
+                    parse_status,
+                    bank_name,
                 )
         else:
             # Text-based PDF: use bank-specific PyMuPDF table parser.
@@ -358,7 +442,14 @@ class BankStatementParser:
                 )
 
             # If table parser found nothing despite having text, fall back to VLM
-            if not transactions:
+            # P0: HSBC Slice-0 empty must not unlock generic DEFAULT financial extraction.
+            if not transactions and bank_name == "HSBC":
+                parse_status = STATUS_ABSTAINED_NEEDS_LAYOUT
+                logger.info(
+                    "[BANK] HSBC returned no transactions — skipping generic VLM backup "
+                    "(abstained_needs_layout)"
+                )
+            elif not transactions:
                 logger.info(
                     f"[BANK] {bank_name} table parser found no transactions — "
                     "falling back to VLM single-stage pipeline."
@@ -371,30 +462,35 @@ class BankStatementParser:
                     page_verification_out=page_verification_out,
                 )
 
-        logger.info(f"Parsed {len(transactions)} transactions from {bank_name} statement")
-        
-        # Calculate transactions per page breakdown
-        transactions_per_page = {}
+        if parse_status == STATUS_COMPLETED and not transactions:
+            parse_status = STATUS_NO_ACTIVITY
+
+        logger.info(
+            "Parsed %d transactions from %s statement (status=%s)",
+            len(transactions),
+            bank_name,
+            parse_status,
+        )
+
+        pv = (
+            {str(k): v for k, v in sorted(page_verification_out.items())}
+            if page_verification_out
+            else None
+        )
+        out = build_parse_result(
+            bank=bank_name,
+            transactions=transactions,
+            pages_processed=pages_processed,
+            parse_status=parse_status,
+            full_text=full_text,
+            page_verification=pv,
+            timing_summary=timing_summary,
+        )
         if transactions:
-            # Try to group by page (if page info available in metadata)
-            # For now, estimate evenly distributed
             avg_per_page = len(transactions) // pages_processed if pages_processed > 0 else 0
-            for i in range(pages_processed):
-                transactions_per_page[i + 1] = avg_per_page
-        
-        out: Dict[str, Any] = {
-            'bank': bank_name,
-            'transactions': transactions,
-            'count': len(transactions),
-            'pages_processed': pages_processed,
-            'transactions_per_page': transactions_per_page,
-            'avg_transactions_per_page': len(transactions) / pages_processed if pages_processed > 0 else 0,
-            # Keep a lightweight OCR/text preview for BANK chat without triggering a second /ocr/test call.
-            'ocr_preview_text': (full_text or '')[:12000],
-            'ocr_preview_source': 'ocr_or_pdf_text',
-        }
-        if page_verification_out:
-            out["page_verification"] = {str(k): v for k, v in sorted(page_verification_out.items())}
+            out["transactions_per_page"] = {
+                i + 1: avg_per_page for i in range(pages_processed)
+            }
         return out
     
     def _detect_bank(self, text: str) -> str:
@@ -7177,6 +7273,9 @@ class BankStatementParser:
                             "enable_thinking": False,
                         },
                         image_options={"max_side": 1200, "format": "JPEG", "quality": 85},
+                        # P0: one identity attempt — no retry / no same-stack fallback.
+                        allow_retry=False,
+                        allow_fallback=False,
                     )
                     page_text = (ocr_result.text if hasattr(ocr_result, 'text') else '') or ''
                     self._set_cached_ocr_text(cache_key, page_text)
@@ -7235,8 +7334,17 @@ class BankStatementParser:
         Known banks (BOC, OCBC, …): run PRIMARY (bank-specific) + FALLBACK (DEFAULT) in parallel,
         then arbitrate by valid transaction count + average confidence.
         Unknown banks: run DEFAULT prompt only (no wasted VLM call).
+
+        P0: refuse UNKNOWN full-page financial extraction (bank_selection_required
+        must be returned by the caller instead).
         """
-        logger.info(f"[BANK] Dual-track VLM pipeline starting for bank_type={bank_type}")
+        bt = (bank_type or "UNKNOWN").strip().upper() or "UNKNOWN"
+        logger.info(f"[BANK] Dual-track VLM pipeline starting for bank_type={bt}")
+        if bt == "UNKNOWN":
+            logger.warning(
+                "[BANK] Refusing UNKNOWN full-page VLM extraction (P0 safe-stop)"
+            )
+            return []
 
         try:
             from app.ocr.runtime import BANK_VLM_MODEL, ocr_service as _ocr_service
@@ -7253,6 +7361,7 @@ class BankStatementParser:
             parallel_pages = max(1, min(parallel_pages, 8))
             semaphore = asyncio.Semaphore(parallel_pages)
             completed_pages = 0
+            bank_type = bt
             progress_lock = asyncio.Lock()
 
             specific_prompt = BANK_PROMPT_DATABASE.get(bank_type)  # None if UNKNOWN
@@ -7710,6 +7819,17 @@ class BankStatementParser:
                             f"[BANK] process_page({page_num + 1}) raised exception: {page_err}",
                             exc_info=True,
                         )
+                        err_s = str(page_err).upper()
+                        if (
+                            "OCR_EMPTY_CONTENT" in err_s
+                            or "OCR FAILED" in err_s
+                            or "FALLBACKS FAILED" in err_s
+                            or "PROVIDER" in err_s
+                        ):
+                            page_density_map[page_num] = {
+                                **(page_density_map.get(page_num) or {}),
+                                "provider_failed": True,
+                            }
                         async with progress_lock:
                             completed_pages += 1
                         return page_num, []
@@ -7719,20 +7839,36 @@ class BankStatementParser:
 
             # Build a per-page result index so we can retry failures.
             page_results: Dict[int, List[Dict[str, Any]]] = {}
+            page_provider_failed: set[int] = set()
             for result in results:
                 if isinstance(result, Exception):
                     logger.error(f"[BANK] Page task failed: {result}", exc_info=True)
                     continue
                 page_num_r, page_txns_r = result
+                # Sentinel: process_page stores provider failure via empty list + flag
+                # on the txn list object when possible; also recover from logs via
+                # parallel set filled inside process_page (see below).
                 page_results[page_num_r] = page_txns_r
 
             # ── Round 2: retry pages with 0 transactions OR arithmetic violations ──
-            # Pages with 0 transactions are obvious failures.
-            # Pages whose winning track has arithmetic violations likely contain
-            # hallucinated data (e.g. fabricated balances that don't add up).
-            # Retrying with a higher token limit gives the VLM a fresh chance with
-            # the same (now-improved) prompts to produce correct output.
+            # P0: never R2 provider_failed / empty-content cascades — that multiplies
+            # the 30+ minute UNKNOWN fan-out. Only evidence-backed validation retries
+            # may be reconsidered later.
             zero_pages_raw = {pn for pn in range(page_count) if not page_results.get(pn)}
+            # Pages that raised OCR/provider errors are recorded on page_density_map
+            # under a synthetic key when process_page fails (see process_page except).
+            provider_failed_pages = {
+                pn
+                for pn in range(page_count)
+                if page_density_map.get(pn, {}).get("provider_failed") is True
+            }
+            if provider_failed_pages:
+                logger.info(
+                    "[BANK][R2] Skipping provider_failed pages (no R2 fan-out): "
+                    "pages %s",
+                    [p + 1 for p in sorted(provider_failed_pages)],
+                )
+            zero_pages_raw = zero_pages_raw - provider_failed_pages
             if bank_type in _chunk_banks:
                 # SC-only fast/stable guard: skip costly R2 on obvious sparse non-txn pages.
                 # Dense transaction pages still retry as normal.
