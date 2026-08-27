@@ -19,6 +19,13 @@ from app.services.extraction_validation import finalize_bank_transactions
 logger = logging.getLogger(__name__)
 
 
+def _bank_vlm_ocr_setup(vlm_model: str | None = None) -> tuple[str, str]:
+    """AP/AR-style BANK VLM setup: (ocr provider alias, model override)."""
+    from app.ocr.runtime import bank_vlm_ocr_setup
+
+    return bank_vlm_ocr_setup(vlm_model)
+
+
 def _bank_vlm_r2_max_tokens() -> int:
     """Round-2 dual-track retry output token budget.
 
@@ -5799,10 +5806,11 @@ class BankStatementParser:
                 f"max_side={effective_image_opts.get('max_side', '?')})..."
             )
 
+            _prov, _model = _bank_vlm_ocr_setup(vlm_model)
             ocr_result = await _ocr_service.recognize(
                 tmp_img_path,
-                provider_name=vlm_model,
-                model=vlm_model,
+                provider_name=_prov,
+                model=_model,
                 prompt_override=prompt,
                 ocr_options={
                     "max_tokens": max_tokens,
@@ -5898,10 +5906,11 @@ class BankStatementParser:
                 f"({vlm_model}, max_tokens={max_tokens}, "
                 f"max_side={effective_image_opts.get('max_side', '?')})..."
             )
+            _prov, _model = _bank_vlm_ocr_setup(vlm_model)
             ocr_result = await _ocr_service.recognize(
                 tmp_img_path,
-                provider_name=vlm_model,
-                model=vlm_model,
+                provider_name=_prov,
+                model=_model,
                 prompt_override=prompt,
                 ocr_options={
                     "max_tokens": max_tokens,
@@ -5956,10 +5965,11 @@ class BankStatementParser:
                 f"({vlm_model}, max_tokens={max_tokens}, "
                 f"max_side={effective_image_opts.get('max_side', '?')})..."
             )
+            _prov, _model = _bank_vlm_ocr_setup(vlm_model)
             ocr_result = await _ocr_service.recognize(
                 tmp_img_path,
-                provider_name=vlm_model,
-                model=vlm_model,
+                provider_name=_prov,
+                model=_model,
                 prompt_override=prompt_full,
                 ocr_options={
                     "max_tokens": max_tokens,
@@ -6033,10 +6043,11 @@ class BankStatementParser:
                 vlm_model,
                 max_tokens,
             )
+            _prov, _model = _bank_vlm_ocr_setup(vlm_model)
             ocr_result = await _ocr_service.recognize(
                 tmp_img_path,
-                provider_name=vlm_model,
-                model=vlm_model,
+                provider_name=_prov,
+                model=_model,
                 prompt_override=prompt_full,
                 ocr_options={
                     "max_tokens": max_tokens,
@@ -6103,10 +6114,11 @@ class BankStatementParser:
                 vlm_model,
                 max_tokens,
             )
+            _prov, _model = _bank_vlm_ocr_setup(vlm_model)
             ocr_result = await _ocr_service.recognize(
                 tmp_img_path,
-                provider_name=vlm_model,
-                model=vlm_model,
+                provider_name=_prov,
+                model=_model,
                 prompt_override=prompt_full,
                 ocr_options={
                     "max_tokens": max_tokens,
@@ -6173,10 +6185,11 @@ class BankStatementParser:
                 vlm_model,
                 max_tokens,
             )
+            _prov, _model = _bank_vlm_ocr_setup(vlm_model)
             ocr_result = await _ocr_service.recognize(
                 tmp_img_path,
-                provider_name=vlm_model,
-                model=vlm_model,
+                provider_name=_prov,
+                model=_model,
                 prompt_override=prompt_full,
                 ocr_options={
                     "max_tokens": max_tokens,
@@ -6243,10 +6256,11 @@ class BankStatementParser:
                 vlm_model,
                 max_tokens,
             )
+            _prov, _model = _bank_vlm_ocr_setup(vlm_model)
             ocr_result = await _ocr_service.recognize(
                 tmp_img_path,
-                provider_name=vlm_model,
-                model=vlm_model,
+                provider_name=_prov,
+                model=_model,
                 prompt_override=prompt_full,
                 ocr_options={
                     "max_tokens": max_tokens,
@@ -6313,10 +6327,11 @@ class BankStatementParser:
                 vlm_model,
                 max_tokens,
             )
+            _prov, _model = _bank_vlm_ocr_setup(vlm_model)
             ocr_result = await _ocr_service.recognize(
                 tmp_img_path,
-                provider_name=vlm_model,
-                model=vlm_model,
+                provider_name=_prov,
+                model=_model,
                 prompt_override=prompt_full,
                 ocr_options={
                     "max_tokens": max_tokens,
@@ -6383,10 +6398,11 @@ class BankStatementParser:
                 vlm_model,
                 max_tokens,
             )
+            _prov, _model = _bank_vlm_ocr_setup(vlm_model)
             ocr_result = await _ocr_service.recognize(
                 tmp_img_path,
-                provider_name=vlm_model,
-                model=vlm_model,
+                provider_name=_prov,
+                model=_model,
                 prompt_override=prompt_full,
                 ocr_options={
                     "max_tokens": max_tokens,
@@ -7237,10 +7253,11 @@ class BankStatementParser:
                 tmp_img.close()
                 pix.save(tmp_img_path)
                 try:
+                    _prov, _model = _bank_vlm_ocr_setup(BANK_VLM_MODEL)
                     ocr_result = await _ocr_service.recognize(
                         tmp_img_path,
-                        provider_name=BANK_VLM_MODEL,
-                        model=BANK_VLM_MODEL,
+                        provider_name=_prov,
+                        model=_model,
                         prompt_override=self._BANK_IDENTIFICATION_PROMPT,
                         ocr_options={
                             "max_tokens": 64,

@@ -3335,17 +3335,18 @@ async def retry_scenario_d_pdf_page(
     img_path = convert_one_pdf_page_to_temp_png(pdf_path, page_num)
     try:
         if processing_mode == "AR":
-            ocr_provider_name = AR_OCR_MODEL
+            # Same shape as AP: gateway alias + mode model override.
+            ocr_provider_name = settings.ocr_provider
             ocr_model_override = AR_OCR_MODEL
         elif processing_mode == "AP":
             ocr_provider_name = settings.ocr_provider
             ocr_model_override = AP_VLM_MODEL
+        elif processing_mode == "BANK":
+            ocr_provider_name = settings.ocr_provider
+            ocr_model_override = BANK_VLM_MODEL
         else:
             ocr_provider_name = settings.ocr_provider
-            ocr_model_override = (
-                BANK_VLM_MODEL if processing_mode == "BANK"
-                else settings.vlm_model
-            )
+            ocr_model_override = settings.vlm_model
 
         ocr_prompt_override = (
             BANK_TABLE_PARSING_PROMPT
@@ -5172,6 +5173,11 @@ async def ocr_test_core(
             logger.info("   Type: %s", "PDF" if is_pdf else "Image")
             logger.info("   Size: %s bytes", f"{file_size:,}")
             logger.info("   Mode: BANK (bank_document_dispatcher)")
+            logger.info(
+                "   Model: BANK_VLM_MODEL=%s (provider alias=%s)",
+                BANK_VLM_MODEL,
+                settings.ocr_provider,
+            )
             probe = inspect_bank_pdf(tmp_path) if is_pdf else None
             if probe is not None:
                 logger.info(
@@ -5213,12 +5219,16 @@ async def ocr_test_core(
         logger.info(f"   Type: {'PDF' if is_pdf else 'Image'}")
         logger.info(f"   Size: {file_size:,} bytes ({file_size/1024:.1f} KB)")
         logger.info(f"   Mode: {processing_mode}")
-        # Model IDs: AR/AP from env; others use VLM_MODEL default.
-        # Registry key stays the legacy alias; the real VLM id is passed via set_model().
+        # Model IDs from Settings / env; registry key is the OCR gateway alias.
+        # AP/AR/BANK all share: provider=settings.ocr_provider, model=<mode model>.
         if processing_mode == "AR":
-            ocr_provider_name = AR_OCR_MODEL
+            ocr_provider_name = settings.ocr_provider
             ocr_model_override = AR_OCR_MODEL
-            logger.info("   Model: AR_OCR_MODEL=%s", AR_OCR_MODEL)
+            logger.info(
+                "   Model: AR_OCR_MODEL=%s (provider alias=%s)",
+                AR_OCR_MODEL,
+                ocr_provider_name,
+            )
         elif processing_mode == "AP":
             ocr_provider_name = settings.ocr_provider
             _ap_manual = (ap_vlm_model_override or "").strip()
@@ -5236,6 +5246,14 @@ async def ocr_test_core(
                     AP_VLM_MODEL,
                     ocr_provider_name,
                 )
+        elif processing_mode == "BANK":
+            ocr_provider_name = settings.ocr_provider
+            ocr_model_override = BANK_VLM_MODEL
+            logger.info(
+                "   Model: BANK_VLM_MODEL=%s (provider alias=%s)",
+                BANK_VLM_MODEL,
+                ocr_provider_name,
+            )
         else:
             ocr_provider_name = settings.ocr_provider
             ocr_model_override = settings.vlm_model

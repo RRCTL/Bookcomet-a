@@ -24,7 +24,7 @@ const GATEWAY_META: Record<
   vlm: {
     title: 'VLM',
     description:
-      'Required for BANK parsing. Primary vision model for OCR/extraction and bank statement adapters. Empty model/URL/key fails closed (no silent vendor default).',
+      'Required for document parsing (AR, AP, BANK, and other vision OCR). Shared primary vision gateway for OCR/extraction; mode-specific prompts apply after document type is known. Empty model/URL/key fails closed (no silent vendor default).',
     required: true,
   },
   llm: {
