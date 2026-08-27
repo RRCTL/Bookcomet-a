@@ -5173,6 +5173,11 @@ async def ocr_test_core(
             logger.info("   Type: %s", "PDF" if is_pdf else "Image")
             logger.info("   Size: %s bytes", f"{file_size:,}")
             logger.info("   Mode: BANK (bank_document_dispatcher)")
+            logger.info(
+                "   Model: BANK_VLM_MODEL=%s (provider alias=%s)",
+                BANK_VLM_MODEL,
+                settings.ocr_provider,
+            )
             probe = inspect_bank_pdf(tmp_path) if is_pdf else None
             if probe is not None:
                 logger.info(
