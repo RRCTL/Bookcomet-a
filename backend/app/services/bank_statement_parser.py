@@ -19,6 +19,13 @@ from app.services.extraction_validation import finalize_bank_transactions
 logger = logging.getLogger(__name__)
 
 
+def _bank_vlm_provider_name(vlm_model: str) -> str:
+    """OCR gateway alias for BANK VLM calls (never treat model id as provider)."""
+    from app.ocr.runtime import resolve_bank_vlm_provider_name
+
+    return resolve_bank_vlm_provider_name(vlm_model)
+
+
 def _bank_vlm_r2_max_tokens() -> int:
     """Round-2 dual-track retry output token budget.
 
@@ -5801,7 +5808,7 @@ class BankStatementParser:
 
             ocr_result = await _ocr_service.recognize(
                 tmp_img_path,
-                provider_name=vlm_model,
+                provider_name=_bank_vlm_provider_name(vlm_model),
                 model=vlm_model,
                 prompt_override=prompt,
                 ocr_options={
@@ -5900,7 +5907,7 @@ class BankStatementParser:
             )
             ocr_result = await _ocr_service.recognize(
                 tmp_img_path,
-                provider_name=vlm_model,
+                provider_name=_bank_vlm_provider_name(vlm_model),
                 model=vlm_model,
                 prompt_override=prompt,
                 ocr_options={
@@ -5958,7 +5965,7 @@ class BankStatementParser:
             )
             ocr_result = await _ocr_service.recognize(
                 tmp_img_path,
-                provider_name=vlm_model,
+                provider_name=_bank_vlm_provider_name(vlm_model),
                 model=vlm_model,
                 prompt_override=prompt_full,
                 ocr_options={
@@ -6035,7 +6042,7 @@ class BankStatementParser:
             )
             ocr_result = await _ocr_service.recognize(
                 tmp_img_path,
-                provider_name=vlm_model,
+                provider_name=_bank_vlm_provider_name(vlm_model),
                 model=vlm_model,
                 prompt_override=prompt_full,
                 ocr_options={
@@ -6105,7 +6112,7 @@ class BankStatementParser:
             )
             ocr_result = await _ocr_service.recognize(
                 tmp_img_path,
-                provider_name=vlm_model,
+                provider_name=_bank_vlm_provider_name(vlm_model),
                 model=vlm_model,
                 prompt_override=prompt_full,
                 ocr_options={
@@ -6175,7 +6182,7 @@ class BankStatementParser:
             )
             ocr_result = await _ocr_service.recognize(
                 tmp_img_path,
-                provider_name=vlm_model,
+                provider_name=_bank_vlm_provider_name(vlm_model),
                 model=vlm_model,
                 prompt_override=prompt_full,
                 ocr_options={
@@ -6245,7 +6252,7 @@ class BankStatementParser:
             )
             ocr_result = await _ocr_service.recognize(
                 tmp_img_path,
-                provider_name=vlm_model,
+                provider_name=_bank_vlm_provider_name(vlm_model),
                 model=vlm_model,
                 prompt_override=prompt_full,
                 ocr_options={
@@ -6315,7 +6322,7 @@ class BankStatementParser:
             )
             ocr_result = await _ocr_service.recognize(
                 tmp_img_path,
-                provider_name=vlm_model,
+                provider_name=_bank_vlm_provider_name(vlm_model),
                 model=vlm_model,
                 prompt_override=prompt_full,
                 ocr_options={
@@ -6385,7 +6392,7 @@ class BankStatementParser:
             )
             ocr_result = await _ocr_service.recognize(
                 tmp_img_path,
-                provider_name=vlm_model,
+                provider_name=_bank_vlm_provider_name(vlm_model),
                 model=vlm_model,
                 prompt_override=prompt_full,
                 ocr_options={
@@ -7239,7 +7246,7 @@ class BankStatementParser:
                 try:
                     ocr_result = await _ocr_service.recognize(
                         tmp_img_path,
-                        provider_name=BANK_VLM_MODEL,
+                        provider_name=_bank_vlm_provider_name(BANK_VLM_MODEL),
                         model=BANK_VLM_MODEL,
                         prompt_override=self._BANK_IDENTIFICATION_PROMPT,
                         ocr_options={

@@ -47,6 +47,25 @@ def get_ocr_service() -> OcrService:
     return ocr_service
 
 
+def resolve_bank_vlm_provider_name(model_id: str | None = None) -> str:
+    """Map a BANK VLM model id to an OCR *provider* registry key.
+
+    Model ids (Settings → API → VLM model) are not provider aliases.
+    The primary BANK model always uses ``settings.ocr_provider``.
+    A non-primary model id (typically Cross-VLM) may use a registered
+    model-specific gateway entry when present; otherwise the same OCR gateway.
+    """
+    mid = (model_id or "").strip()
+    primary = resolve_bank_vlm_model(fail_closed=False)
+    if not mid or mid == primary:
+        return settings.ocr_provider
+    try:
+        ocr_service._registry.get(mid)
+        return mid
+    except ValueError:
+        return settings.ocr_provider
+
+
 def _llm_deploy_creds() -> tuple[str, str]:
     api_key = os.getenv("LLM_API_KEY") or os.getenv("DEPLOY_API_KEY", "")
     base_url = (

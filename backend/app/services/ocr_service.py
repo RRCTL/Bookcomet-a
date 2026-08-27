@@ -43,7 +43,24 @@ class OcrService:
             )
             selected_provider = self._provider_name
 
-        provider = self._registry.get(selected_provider)
+        # Callers sometimes pass a VLM *model id* as provider_name (BANK path).
+        # Model ids are not provider aliases — fall back to the configured OCR
+        # gateway and keep the id as the model override.
+        try:
+            provider = self._registry.get(selected_provider)
+        except ValueError:
+            gateway = self._provider_name or settings.ocr_provider
+            effective_model = (model or "").strip() or selected_provider
+            logger.warning(
+                "OCR provider %r is not registered; using gateway provider %r "
+                "with model=%r",
+                selected_provider,
+                gateway,
+                effective_model,
+            )
+            model = effective_model
+            selected_provider = gateway
+            provider = self._registry.get(selected_provider)
         if model and hasattr(provider, "set_model"):
             provider.set_model(model)
 
