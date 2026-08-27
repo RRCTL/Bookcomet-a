@@ -276,6 +276,10 @@ def apply_contracts_to_row(
 
 def export_blocked_by_contracts(rows: Sequence[dict[str, Any]]) -> bool:
     """True when any row has a blocking contract failure (silent bypass forbidden)."""
+    from app.services.hsbc_admission import export_blocked_by_admission
+
+    if export_blocked_by_admission(rows):
+        return True
     for r in rows:
         if r.get("_contracts_ok") is False:
             return True
@@ -286,6 +290,8 @@ def export_blocked_by_contracts(rows: Sequence[dict[str, Any]]) -> bool:
             "column_band_violation",
             "section_boundary_violation",
             "export_role_violation",
+            "needs_layout_review",
+            "vlm_financial_abstained",
         }:
             return True
         for issue in r.get("_contract_issues") or []:

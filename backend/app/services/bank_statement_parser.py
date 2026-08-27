@@ -1776,136 +1776,31 @@ class BankStatementParser:
         default_prompt: str,
         vlm_model: str,
         company_identity: Dict[str, Any] | None = None,
+        page_verification_out: Dict[int, str] | None = None,
     ) -> List[Dict[str, Any]]:
-        """Process one HSBC page through the three-stage pipeline:
-          1. Pre-scan  — count Deposit/Withdrawal amounts via PyMuPDF text positions
-          2. Annotate  — draw separator lines at transaction-row boundaries (OpenCV)
-          3. VLM loop  — extract transactions; retry with count-hint if mismatched
+        """HSBC V1 page path (legacy free-form VLM financial extraction).
+
+        Slice 0: demoted. Free-form VLM ``transactions[]`` must not become
+        canonical review/export/reconciliation/posting rows. Pre-scan is logged
+        for diagnostics only — a zero count is missing evidence, not permission
+        to invent rows. Prefer V2 (prescan amount anchors) or Slice-1 layout OCR.
         """
-        # ── Stage 1: Pre-scan ──────────────────────────────────────────────────
+        from app.services.hsbc_admission import mark_page_needs_layout_review
+
+        # ── Stage 1: Pre-scan (diagnostic only under Slice 0) ─────────────────
         dep_count, wdw_count, prescan_total = BankStatementParser._hsbc_prescan_count(page)
         logger.info(
             "[HSBC][P%d] Pre-scan: %d deposits + %d withdrawals = %d expected",
             page_num + 1, dep_count, wdw_count, prescan_total,
         )
-
-        tmp_path, page_hash, image_opts = self._hsbc_write_annotated_page_jpeg(page, page_num)
-        try:
-            # ── Stage 3: VLM extraction + validation loop ──────────────────
-            max_attempts  = max(1, int(os.getenv("HSBC_MAX_RETRIES", "3")))
-            best_txns: List[Dict[str, Any]] = []
-            # Manhattan distance of best_txns vs prescan (lower = better)
-            best_dist: int = 10_000
-
-            def _count_dep(txns: List[Dict[str, Any]]) -> int:
-                """Count transactions that have a Deposit (Cr) amount."""
-                return sum(
-                    1 for t in txns
-                    if t.get("存入") or t.get("deposit") or t.get("received")
-                )
-
-            def _count_wdw(txns: List[Dict[str, Any]]) -> int:
-                """Count transactions that have a Withdrawal (Dr) amount."""
-                return sum(
-                    1 for t in txns
-                    if t.get("提取") or t.get("withdrawal") or t.get("spent")
-                )
-
-            def _manhattan(txns: List[Dict[str, Any]]) -> int:
-                """Manhattan distance between VLM Cr/Dr counts and prescan counts."""
-                return abs(_count_dep(txns) - dep_count) + abs(_count_wdw(txns) - wdw_count)
-
-            for attempt in range(1, max_attempts + 1):
-                if attempt == 1:
-                    prompt       = specific_prompt
-                    attempt_hash = page_hash
-                    track        = "HSBC-P"
-                elif attempt == 2:
-                    prev_dep = _count_dep(best_txns)
-                    prev_wdw = _count_wdw(best_txns)
-                    hint = (
-                        "\n\n━━━ COUNT VERIFICATION (this page only) ━━━\n"
-                        f"A text-position scan found {dep_count} Deposit (Cr) amount(s) "
-                        f"and {wdw_count} Withdrawal (Dr) amount(s) on this page "
-                        f"({prescan_total} transaction amounts total, excluding the B/F BALANCE "
-                        f"row and 無交易 markers).\n"
-                        f"Your previous extraction returned {prev_dep} deposit(s) and "
-                        f"{prev_wdw} withdrawal(s). Please re-examine every row between the "
-                        f"separator lines visible in the image and correct your output to match "
-                        f"the expected {dep_count} deposit(s) and {wdw_count} withdrawal(s).\n"
-                        f"IMPORTANT: If you cannot find a transaction that clearly appears in "
-                        f"the image, do NOT invent one. It is better to return fewer rows than "
-                        f"to fabricate an amount from a balance figure or surrounding text."
-                    )
-                    prompt       = specific_prompt + hint
-                    attempt_hash = page_hash + ":r2"
-                    track        = "HSBC-RETRY"
-                else:
-                    # Last resort: generic DEFAULT prompt
-                    prompt       = default_prompt
-                    attempt_hash = page_hash + ":r3"
-                    track        = "HSBC-DEFAULT"
-
-                txns      = await self._run_vlm_track(
-                    tmp_path, prompt, attempt_hash,
-                    vlm_model, track, company_identity,
-                    max_tokens=8000,
-                    image_options=image_opts,
-                    filter_balance_anchor_rows=False,
-                )
-                vlm_dep   = _count_dep(txns)
-                vlm_wdw   = _count_wdw(txns)
-                dist      = abs(vlm_dep - dep_count) + abs(vlm_wdw - wdw_count)
-
-                # ── Best-result selection: lowest Manhattan distance wins ────
-                # Tie-break: more total transactions is better (catches all rows)
-                if dist < best_dist or (
-                    dist == best_dist
-                    and (vlm_dep + vlm_wdw) > (_count_dep(best_txns) + _count_wdw(best_txns))
-                ):
-                    best_txns = txns
-                    best_dist = dist
-
-                # ── Validation ─────────────────────────────────────────────
-                if prescan_total == 0:
-                    # No pre-scan signal (cover page or prescan failed) → accept
-                    logger.info(
-                        "[HSBC][P%d] Attempt %d: pre-scan=0 (no column headers), "
-                        "vlm dep=%d wdw=%d → accepting",
-                        page_num + 1, attempt, vlm_dep, vlm_wdw,
-                    )
-                    break
-
-                if vlm_dep == dep_count and vlm_wdw == wdw_count:
-                    logger.info(
-                        "[HSBC][P%d] Attempt %d/%d: prescan dep=%d wdw=%d, "
-                        "vlm dep=%d wdw=%d → EXACT MATCH ✓",
-                        page_num + 1, attempt, max_attempts,
-                        dep_count, wdw_count, vlm_dep, vlm_wdw,
-                    )
-                    break
-                else:
-                    if attempt < max_attempts:
-                        logger.warning(
-                            "[HSBC][P%d] Attempt %d/%d: prescan dep=%d wdw=%d, "
-                            "vlm dep=%d wdw=%d (dist=%d) → MISMATCH — retrying with hint",
-                            page_num + 1, attempt, max_attempts,
-                            dep_count, wdw_count, vlm_dep, vlm_wdw, dist,
-                        )
-                    else:
-                        logger.warning(
-                            "[HSBC][P%d] Attempt %d/%d: prescan dep=%d wdw=%d, "
-                            "vlm dep=%d wdw=%d (dist=%d) → MISMATCH — "
-                            "accepting best result (dist=%d)",
-                            page_num + 1, attempt, max_attempts,
-                            dep_count, wdw_count, vlm_dep, vlm_wdw, dist, best_dist,
-                        )
-
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-
-        return best_txns
+        logger.warning(
+            "[HSBC][P%d] Slice-0 abstain: V1 free-form financial emission disabled "
+            "(prescan=%d) — page marked needs_layout_review; zero canonical rows",
+            page_num + 1,
+            prescan_total,
+        )
+        mark_page_needs_layout_review(page_verification_out, page_num + 1)
+        return []
 
     # ─────────────────────────────────────────────────────────────────────────
     # V2 pipeline — prescan-driven: PyMuPDF supplies amounts, VLM reads text
@@ -1918,6 +1813,7 @@ class BankStatementParser:
         page_count: int,
         vlm_model: str,
         company_identity: Dict[str, Any] | None = None,
+        page_verification_out: Dict[int, str] | None = None,
     ) -> List[Dict[str, Any]]:
         """Prescan-driven HSBC pipeline (V2).
 
@@ -2513,10 +2409,30 @@ class BankStatementParser:
 
         annotate_date_groups(out_txns)
 
+        from app.services.hsbc_admission import (
+            admit_page_candidates,
+            mark_page_needs_layout_review,
+        )
+
+        _admission = admit_page_candidates(
+            candidates=out_txns,
+            amount_anchor_count=len(amounts),
+            source="hsbc_v2",
+        )
+        if _admission.abstained or _admission.page_status:
+            mark_page_needs_layout_review(page_verification_out, page_num + 1)
+        # Canonical only; unresolved anchors are non-exportable review objects.
+        out_txns = list(_admission.canonical_rows) + list(_admission.unresolved_anchors)
+
         logger.info(
-            "[HSBC-V2][P%d] Merged %d transactions (%d empty-section rows)",
-            page_num + 1, len(out_txns),
-            sum(1 for t in out_txns if t["description"] == "無交易"),
+            "[HSBC-V2][P%d] Merged %d transactions (%d empty-section rows) "
+            "admission canonical=%d unresolved=%d abstained=%s",
+            page_num + 1,
+            len(out_txns),
+            sum(1 for t in out_txns if t.get("description") == "無交易"),
+            len(_admission.canonical_rows),
+            len(_admission.unresolved_anchors),
+            _admission.abstained,
         )
         return out_txns
 
@@ -3582,7 +3498,8 @@ class BankStatementParser:
             page_current=0, page_total=page_count,
         )
 
-        _use_v2 = os.getenv("HSBC_PIPELINE_V2", "false").lower() in ("1", "true", "yes")
+        # Slice 0: prefer V2 evidence path; V1 is demoted (abstain-only).
+        _use_v2 = os.getenv("HSBC_PIPELINE_V2", "true").lower() in ("1", "true", "yes")
         logger.info("[HSBC] Pipeline version: %s", "V2 (prescan-driven)" if _use_v2 else "V1 (VLM-driven)")
 
         for page_num in range(page_count):
@@ -3595,7 +3512,7 @@ class BankStatementParser:
                     if _word_count < _SCANNED_THRESHOLD:
                         logger.info(
                             "[HSBC-V2][P%d] Only %d words detected (<%d) — "
-                            "scanned page, falling back to V1 VLM pipeline",
+                            "scanned page, Slice-0 V1 fallback abstains (needs layout OCR)",
                             page_num + 1, _word_count, _SCANNED_THRESHOLD,
                         )
                         page_txns = await self._hsbc_process_page(
@@ -3606,6 +3523,7 @@ class BankStatementParser:
                             default_prompt=default_prompt,
                             vlm_model=BANK_VLM_MODEL,
                             company_identity=company_identity,
+                            page_verification_out=page_verification_out,
                         )
                     else:
                         page_txns = await self._hsbc_process_page_v2(
@@ -3614,6 +3532,7 @@ class BankStatementParser:
                             page_count=page_count,
                             vlm_model=BANK_VLM_MODEL,
                             company_identity=company_identity,
+                            page_verification_out=page_verification_out,
                         )
                 else:
                     page_txns = await self._hsbc_process_page(
@@ -3624,6 +3543,7 @@ class BankStatementParser:
                         default_prompt=default_prompt,
                         vlm_model=BANK_VLM_MODEL,
                         company_identity=company_identity,
+                        page_verification_out=page_verification_out,
                     )
                 page_txns = await self._hsbc_apply_ar_manager_if_enabled(
                     page,
@@ -3661,37 +3581,17 @@ class BankStatementParser:
         if _use_v2 and not all_txns:
             logger.warning(
                 "[HSBC-V2] V2 found 0 transactions across %d pages — "
-                "falling back to full V1 VLM pipeline for entire document",
+                "Slice-0: will not fall back to free-form V1 financial emission; "
+                "marking pages needs_layout_review when still unset",
                 page_count,
             )
-            for page_num in range(page_count):
-                page = doc[page_num]
-                logger.info("[HSBC-V1-FALLBACK] Processing page %d/%d", page_num + 1, page_count)
-                try:
-                    page_txns = await self._hsbc_process_page(
-                        page=page,
-                        page_num=page_num,
-                        page_count=page_count,
-                        specific_prompt=specific_prompt,
-                        default_prompt=default_prompt,
-                        vlm_model=BANK_VLM_MODEL,
-                        company_identity=company_identity,
-                    )
-                    page_txns = await self._hsbc_apply_ar_manager_if_enabled(
-                        page,
-                        page_num,
-                        page_txns,
-                        page_verification_out,
-                        company_identity,
-                    )
-                    for txn in page_txns:
-                        txn["_page"] = page_num + 1
-                    all_txns.extend(page_txns)
-                except Exception as page_err:
-                    logger.error(
-                        "[HSBC-V1-FALLBACK] Page %d error: %s",
-                        page_num + 1, page_err, exc_info=True,
-                    )
+            from app.services.hsbc_admission import mark_page_needs_layout_review
+
+            if page_verification_out is not None:
+                for page_num in range(page_count):
+                    key = page_num + 1
+                    if key not in page_verification_out:
+                        mark_page_needs_layout_review(page_verification_out, key)
 
         return all_txns
 
@@ -6441,13 +6341,25 @@ class BankStatementParser:
         page_verification_out: Dict[int, str] | None,
         company_identity: Dict[str, Any] | None,
     ) -> List[Dict[str, Any]]:
-        """Optional second VLM (BANK_CROSS_VLM_*): merge manager rows into bookkeeper."""
+        """Optional second VLM (BANK_CROSS_VLM_*): merge manager rows into bookkeeper.
+
+        Slice 0: disabled unless every primary row already has layout amount evidence.
+        """
+        from app.services.hsbc_admission import hsbc_ar_manager_allowed
+
         cross_on = os.getenv("BANK_CROSS_VLM_VERIFY", "").lower() in (
             "1",
             "true",
             "yes",
         )
         if not cross_on:
+            return page_txns
+        if not hsbc_ar_manager_allowed(page_txns):
+            logger.info(
+                "[HSBC-AR-MGR] Page %d skipped (Slice-0): primary rows lack "
+                "layout amount evidence",
+                page_num + 1,
+            )
             return page_txns
         from app.core.config import require_bank_cross_vlm_settings
 
