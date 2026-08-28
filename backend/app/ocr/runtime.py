@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import os
 
-from app.core.config import resolve_bank_vlm_model, settings
+from app.core.config import _DEFAULT_BANK_VLM_MODEL, settings
 from app.services.ai_post_processor import AiPostProcessor
 from app.services.field_filtering import FieldFilteringPipeline
 from app.services.ocr_service import OcrService
@@ -18,9 +18,11 @@ logger = logging.getLogger(__name__)
 
 # Do not inject a vendor default into VLM_BASE_URL. An empty env must stay empty
 # so Settings → API → VLM shows a blank API URL until the user configures one.
+# OCR providers already fall back to LLM_BASE_URL (and their own callers) when unset.
 
-# BANK follows Settings → API → VLM unless BANK_VLM_MODEL is explicitly set.
-BANK_VLM_MODEL = resolve_bank_vlm_model(fail_closed=False)
+# Single bank-statement VLM model for all banks (HSBC, BOC, BEA, SCB, ...).
+# Per-bank behaviour differs by prompt in app/bank_prompts/, not by model id.
+BANK_VLM_MODEL = (os.getenv("BANK_VLM_MODEL") or "").strip() or _DEFAULT_BANK_VLM_MODEL
 
 ocr_service = OcrService()
 filtering_pipeline = FieldFilteringPipeline()
@@ -47,39 +49,6 @@ def get_ocr_service() -> OcrService:
     return ocr_service
 
 
-def resolve_bank_vlm_provider_name(model_id: str | None = None) -> str:
-    """OCR provider alias for a BANK VLM call — same rule as AP.
-
-    AP uses ``settings.ocr_provider`` + ``AP_VLM_MODEL``.
-    BANK uses ``settings.ocr_provider`` + Settings → API → VLM model
-    (``resolve_bank_vlm_model`` / optional ``BANK_VLM_MODEL`` pin).
-
-    Cross-VLM may keep a registered non-primary model id as the provider key
-    when it has a dedicated gateway entry; otherwise it also uses the OCR alias.
-    """
-    mid = (model_id or "").strip()
-    primary = resolve_bank_vlm_model(fail_closed=False)
-    if not mid or mid == primary:
-        return settings.ocr_provider
-    try:
-        ocr_service._registry.get(mid)
-        return mid
-    except ValueError:
-        return settings.ocr_provider
-
-
-def bank_vlm_ocr_setup(model_id: str | None = None) -> tuple[str, str]:
-    """Return ``(provider_alias, model_id)`` for BANK — mirrors AP/AR VLM setup.
-
-    Always pass the model via ``model=``; never treat the model id as the
-    OCR provider registry name for the primary Settings → API → VLM model.
-    """
-    mid = (model_id or resolve_bank_vlm_model(fail_closed=False)).strip()
-    if not mid:
-        mid = resolve_bank_vlm_model(fail_closed=False)
-    return resolve_bank_vlm_provider_name(mid), mid
-
-
 def _llm_deploy_creds() -> tuple[str, str]:
     api_key = os.getenv("LLM_API_KEY") or os.getenv("DEPLOY_API_KEY", "")
     base_url = (
@@ -96,7 +65,9 @@ def refresh_ai_runtime() -> None:
     """
     global BANK_VLM_MODEL
 
-    BANK_VLM_MODEL = resolve_bank_vlm_model(fail_closed=False)
+    BANK_VLM_MODEL = (
+        (os.getenv("BANK_VLM_MODEL") or "").strip() or _DEFAULT_BANK_VLM_MODEL
+    )
 
     from app.ocr.providers import OcrProviderRegistry
 
