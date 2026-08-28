@@ -202,13 +202,8 @@ def validate_deposit_advice_row(
     return ValidationResult(needs_review=bool(flags), validation_flags=tuple(flags))
 
 
-# Informational only — must never alone force needs_review.
-BANK_INFO_ONLY_VALIDATION_FLAGS = frozenset({"bank_balance_missing_expected"})
-
-
 def validate_bank_transaction(txn: Mapping[str, Any]) -> ValidationResult:
     flags: list[str] = []
-    info_flags: list[str] = []
 
     desc0 = str(txn.get("備註") or txn.get("description") or "").strip()
     if desc0 == "無交易":
@@ -238,17 +233,7 @@ def validate_bank_transaction(txn: Mapping[str, Any]) -> ValidationResult:
         bal_raw = txn.get("原幣結餘")
     bal_n = _parse_float_loose(bal_raw)
     if bal_n is None:
-        from app.services.hsbc_balance_policy import classify_balance_absence
-
-        absence = classify_balance_absence(txn)
-        if absence == "expected":
-            info_flags.append("bank_balance_missing_expected")
-        elif absence == "unresolved":
-            flags.append("date_group_unresolved")
-            flags.append("bank_balance_missing")
-        else:
-            # "missing" (incl. day-end last row, B/F/snapshot, non-HSBC)
-            flags.append("bank_balance_missing")
+        flags.append("bank_balance_missing")
 
     tx_date = str(
         txn.get("transaction_date")
@@ -257,38 +242,22 @@ def validate_bank_transaction(txn: Mapping[str, Any]) -> ValidationResult:
         or "",
     ).strip()
     if not tx_date:
-        # Avoid double-counting when date_group_unresolved already covers blank dates
-        # for HSBC day-end layout rows.
-        if "date_group_unresolved" not in flags:
-            flags.append("bank_transaction_date_missing")
+        flags.append("bank_transaction_date_missing")
 
-    all_flags = tuple(flags + [f for f in info_flags if f not in flags])
-    return ValidationResult(needs_review=bool(flags), validation_flags=all_flags)
+    return ValidationResult(needs_review=bool(flags), validation_flags=tuple(flags))
 
 
 def finalize_bank_transactions(
     rows: list[MutableMapping[str, Any]],
 ) -> list[MutableMapping[str, Any]]:
     """Attach validation flags and cross-row duplicate hints to bank VLM rows."""
-    from app.services.hsbc_balance_policy import annotate_date_groups
-
-    # Resolve date-group day-end / expected-missing before per-row validation.
-    working: list[MutableMapping[str, Any]] = [
-        dict(t) for t in rows if isinstance(t, dict)
-    ]
-    annotate_date_groups(working)
-
     out: list[MutableMapping[str, Any]] = []
-    for txn in working:
+    for t in rows:
+        if not isinstance(t, dict):
+            continue
+        txn: MutableMapping[str, Any] = dict(t)
         vr = validate_bank_transaction(txn)
         merge_validation_into_row(txn, vr)
-        if "bank_balance_missing_expected" in (txn.get("validation_flags") or []):
-            txn["balance_missing_expected"] = True
-        elif txn.get("balance_missing_expected") and "bank_balance_missing" in (
-            txn.get("validation_flags") or []
-        ):
-            # Do not keep a stale expected flag when validation says missing.
-            txn.pop("balance_missing_expected", None)
         out.append(txn)
     apply_batch_duplicate_flags_bank(out)
     return out

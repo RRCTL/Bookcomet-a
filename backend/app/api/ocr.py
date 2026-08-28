@@ -3335,18 +3335,17 @@ async def retry_scenario_d_pdf_page(
     img_path = convert_one_pdf_page_to_temp_png(pdf_path, page_num)
     try:
         if processing_mode == "AR":
-            # Same shape as AP: gateway alias + mode model override.
-            ocr_provider_name = settings.ocr_provider
+            ocr_provider_name = AR_OCR_MODEL
             ocr_model_override = AR_OCR_MODEL
         elif processing_mode == "AP":
             ocr_provider_name = settings.ocr_provider
             ocr_model_override = AP_VLM_MODEL
-        elif processing_mode == "BANK":
-            ocr_provider_name = settings.ocr_provider
-            ocr_model_override = BANK_VLM_MODEL
         else:
             ocr_provider_name = settings.ocr_provider
-            ocr_model_override = settings.vlm_model
+            ocr_model_override = (
+                BANK_VLM_MODEL if processing_mode == "BANK"
+                else settings.vlm_model
+            )
 
         ocr_prompt_override = (
             BANK_TABLE_PARSING_PROMPT
@@ -5153,82 +5152,17 @@ async def ocr_test_core(
 
         _raise_if_bg_job_cancelled(background_job_id)
 
-        # ── BANK Slice 1: always dispatch via bank probe — never Scenario D ──
-        if processing_mode == "BANK":
-            from app.core.config import require_bank_vlm_settings
-            from app.services.bank_document_dispatcher import (
-                bank_ocr_response_from_parser_result,
-                dispatch_bank_pdf,
-                inspect_bank_pdf,
-            )
-
-            # Slice 3: fail-closed before any VLM-backed bank parse
-            try:
-                require_bank_vlm_settings()
-            except ValueError as cfg_err:
-                raise HTTPException(status_code=400, detail=str(cfg_err)) from cfg_err
-
-            logger.info("=" * 60)
-            logger.info("[NEW REQUEST] %s", file.filename)
-            logger.info("   Type: %s", "PDF" if is_pdf else "Image")
-            logger.info("   Size: %s bytes", f"{file_size:,}")
-            logger.info("   Mode: BANK (bank_document_dispatcher)")
-            logger.info(
-                "   Model: BANK_VLM_MODEL=%s (provider alias=%s)",
-                BANK_VLM_MODEL,
-                settings.ocr_provider,
-            )
-            probe = inspect_bank_pdf(tmp_path) if is_pdf else None
-            if probe is not None:
-                logger.info(
-                    "   Probe: bank_id=%s route=%s adapter=%s",
-                    probe.bank_id,
-                    probe.route,
-                    probe.adapter,
-                )
-            company_identity = None
-            if company_id:
-                try:
-                    from app.api.bank_statements import _load_company_identity as _bci
-
-                    company_identity = _bci(db, company_id)
-                except Exception as id_err:
-                    logger.warning("[BANK-DISPATCH] company identity load skipped: %s", id_err)
-            file_type = suffix[1:] if suffix.startswith(".") else (suffix or "pdf")
-            bank_result = await dispatch_bank_pdf(
-                tmp_path,
-                file_type=file_type or "pdf",
-                company_identity=company_identity,
-            )
-            out = bank_ocr_response_from_parser_result(
-                filename=file.filename or "",
-                trace_id=trace_id,
-                result=bank_result,
-            )
-            logger.info(
-                "[BANK-DISPATCH] complete route=%s adapter=%s scenario_d_used=%s count=%s",
-                out.get("dispatcher_route"),
-                out.get("dispatcher_adapter"),
-                out.get("scenario_d_used"),
-                out.get("count"),
-            )
-            return out
-
         logger.info("="*60)
         logger.info(f"[NEW REQUEST] {file.filename}")
         logger.info(f"   Type: {'PDF' if is_pdf else 'Image'}")
         logger.info(f"   Size: {file_size:,} bytes ({file_size/1024:.1f} KB)")
         logger.info(f"   Mode: {processing_mode}")
-        # Model IDs from Settings / env; registry key is the OCR gateway alias.
-        # AP/AR/BANK all share: provider=settings.ocr_provider, model=<mode model>.
+        # Model IDs: AR/AP from env; BANK uses BANK_VLM_MODEL; others use VLM_MODEL default.
+        # Registry key stays the legacy alias; the real VLM id is passed via set_model().
         if processing_mode == "AR":
-            ocr_provider_name = settings.ocr_provider
+            ocr_provider_name = AR_OCR_MODEL
             ocr_model_override = AR_OCR_MODEL
-            logger.info(
-                "   Model: AR_OCR_MODEL=%s (provider alias=%s)",
-                AR_OCR_MODEL,
-                ocr_provider_name,
-            )
+            logger.info("   Model: AR_OCR_MODEL=%s", AR_OCR_MODEL)
         elif processing_mode == "AP":
             ocr_provider_name = settings.ocr_provider
             _ap_manual = (ap_vlm_model_override or "").strip()
@@ -5246,17 +5180,12 @@ async def ocr_test_core(
                     AP_VLM_MODEL,
                     ocr_provider_name,
                 )
-        elif processing_mode == "BANK":
-            ocr_provider_name = settings.ocr_provider
-            ocr_model_override = BANK_VLM_MODEL
-            logger.info(
-                "   Model: BANK_VLM_MODEL=%s (provider alias=%s)",
-                BANK_VLM_MODEL,
-                ocr_provider_name,
-            )
         else:
             ocr_provider_name = settings.ocr_provider
-            ocr_model_override = settings.vlm_model
+            ocr_model_override = (
+                BANK_VLM_MODEL if processing_mode == "BANK"
+                else settings.vlm_model
+            )
             logger.info("   Model: %s (mode=%s)", ocr_model_override, processing_mode)
         # AR and AP both use the same plain-text document-parsing prompt.
         # AR_AP_HTML_OCR_PROMPT is no longer used; the structured JSON extraction
