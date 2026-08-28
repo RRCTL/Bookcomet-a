@@ -5018,6 +5018,7 @@ async def ocr_test(
     force_process: bool = Form(False),
     ap_vlm_receipt_signal: Optional[str] = Form(None),
     ap_vlm_table_preset: Optional[str] = Form(None),
+    bank_override: Optional[str] = Form(None),
     company_id: str = Depends(get_current_company_id),
     trace_id: str = Depends(get_trace_id),
     db: Session = Depends(get_db),
@@ -5030,6 +5031,7 @@ async def ocr_test(
     Args:
         file: Upload file (image or PDF)
         processing_mode: AR (Receivables) or AP (Payables). Defaults to AR.
+        bank_override: Optional explicit bank id for BANK mode (never from filename).
     """
     async with long_running_db_work_slot():
         return await ocr_test_core(
@@ -5043,6 +5045,7 @@ async def ocr_test(
             db=db,
             ap_vlm_receipt_signal=ap_vlm_receipt_signal,
             ap_vlm_table_preset=ap_vlm_table_preset,
+            bank_override=bank_override,
         )
 
 
@@ -5066,6 +5069,7 @@ async def ocr_test_core(
     rescan_note: str | None = None,
     rescan_prior_summary: str | None = None,
     expected_receipt_count: int | None = None,
+    bank_override: str | None = None,
 ) -> dict:
     """Core OCR pipeline (shared by /ocr/test and background OCR jobs).
 
@@ -5199,6 +5203,7 @@ async def ocr_test_core(
                 tmp_path,
                 file_type=file_type or "pdf",
                 company_identity=company_identity,
+                bank_override=bank_override,
             )
             out = bank_ocr_response_from_parser_result(
                 filename=file.filename or "",

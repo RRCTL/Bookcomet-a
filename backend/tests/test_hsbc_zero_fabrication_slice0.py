@@ -181,21 +181,29 @@ def test_mark_page_needs_layout_review_and_v1_demotion_contract():
 
 @pytest.mark.asyncio
 async def test_v1_process_page_never_emits_financial_rows(monkeypatch):
-    """Slice 0: V1 path returns [] and marks needs_layout_review (no VLM call)."""
+    """Slice C: without layout anchors, page abstains (no free-form VLM)."""
     from app.services.bank_statement_parser import BankStatementParser
 
-    calls = {"vlm": 0}
+    calls = {"vlm": 0, "layout": 0}
 
     async def _boom(*_a, **_k):
         calls["vlm"] += 1
-        raise AssertionError("V1 must not call VLM for financial emission under Slice 0")
+        raise AssertionError("must not call VLM for financial emission")
+
+    def _layout(_page, **_k):
+        calls["layout"] += 1
+        return [], {"amount_anchor_count": 0, "token_count": 0}
 
     monkeypatch.setattr(
         BankStatementParser,
         "_hsbc_prescan_count",
-        staticmethod(lambda _page: (2, 1, 3)),
+        staticmethod(lambda _page: (0, 0, 0)),
     )
     monkeypatch.setattr(BankStatementParser, "_run_vlm_track", _boom)
+    monkeypatch.setattr(
+        "app.services.hsbc_layout_evidence.build_page_candidates_from_layout",
+        _layout,
+    )
 
     page_verification: dict[int, str] = {}
     parser = BankStatementParser.__new__(BankStatementParser)
@@ -211,4 +219,5 @@ async def test_v1_process_page_never_emits_financial_rows(monkeypatch):
     )
     assert result == []
     assert calls["vlm"] == 0
+    assert calls["layout"] == 1
     assert page_verification[1] == PAGE_STATUS_NEEDS_LAYOUT_REVIEW

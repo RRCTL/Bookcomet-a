@@ -135,14 +135,38 @@ async def dispatch_bank_pdf(
     file_type: str = "pdf",
     company_identity: dict[str, Any] | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    bank_override: str | None = None,
 ) -> dict[str, Any]:
-    """Probe then parse via BankStatementParser (HSBC → dedicated adapter path)."""
-    probe = inspect_bank_pdf(file_path)
+    """Probe then parse via BankStatementParser (HSBC → dedicated adapter path).
 
+    ``bank_override`` (Slice B): explicit client-selected bank id. Never derived
+    from filename. When set, skips image bank-ID and routes to that adapter.
+    """
+    from app.services.bank_override import normalize_bank_override, probe_fields_for_bank
+
+    probe = inspect_bank_pdf(file_path)
+    override = normalize_bank_override(bank_override)
+    bank_id_attempted = False
+
+    if override:
+        route, adapter = probe_fields_for_bank(override)
+        probe = BankProbe(
+            bank_id=override,
+            text_rich=probe.text_rich,
+            has_txn_header=probe.has_txn_header,
+            char_count=probe.char_count,
+            route=route,  # type: ignore[arg-type]
+            adapter=adapter,
+        )
+        logger.info(
+            "[BANK-DISPATCH] bank_override=%s route=%s adapter=%s (skip image ID)",
+            override,
+            probe.route,
+            probe.adapter,
+        )
     # Scanned / image PDFs often have no text layer — resolve bank via page-1 VLM
     # identity (settings model), then recompute route. No filename/page hardcodes.
-    bank_id_attempted = False
-    if probe.bank_id == "UNKNOWN" and not probe.text_rich:
+    elif probe.bank_id == "UNKNOWN" and not probe.text_rich:
         from app.core.config import require_bank_vlm_settings
         from app.services.bank_statement_parser import BankStatementParser
 
@@ -152,7 +176,7 @@ async def dispatch_bank_pdf(
         image_bank = await parser._identify_bank_from_image(file_path)
         if image_bank and image_bank != "UNKNOWN":
             if image_bank == "HSBC":
-                route: RouteName = "hsbc_adapter"
+                route = "hsbc_adapter"
                 adapter = "hsbc_adapter_v2"
             else:
                 route = "bank_adapter"
@@ -162,7 +186,7 @@ async def dispatch_bank_pdf(
                 text_rich=False,
                 has_txn_header=probe.has_txn_header,
                 char_count=probe.char_count,
-                route=route,
+                route=route,  # type: ignore[arg-type]
                 adapter=adapter,
             )
             logger.info(
@@ -189,13 +213,26 @@ async def dispatch_bank_pdf(
         company_identity=company_identity,
         progress_callback=progress_callback,
         bank_hint=probe.bank_id,
-        bank_id_already_attempted=bank_id_attempted,
+        bank_id_already_attempted=bank_id_attempted or bool(override),
     )
     if not isinstance(result, dict):
         result = {"transactions": result or [], "bank": probe.bank_id, "count": 0}
     result["bank_probe"] = probe.to_dict()
     result["dispatcher_route"] = probe.route
     result["dispatcher_adapter"] = probe.adapter
+    if override:
+        result["bank_override_applied"] = override
+        # Honest UX when override selected but layout evidence still missing.
+        if (
+            str(result.get("parse_status") or "") == "abstained_needs_layout"
+            or (
+                override == "HSBC"
+                and not (result.get("transactions") or [])
+                and str(result.get("parse_status") or "")
+                in {"abstained_needs_layout", "no_activity", "completed", ""}
+            )
+        ):
+            result.setdefault("user_message", "Bank selected; extraction waiting for layout OCR.")
     parsed_bank = str(result.get("bank") or "").upper()
     if probe.bank_id == "HSBC" and parsed_bank not in {"HSBC", "UNKNOWN", ""}:
         logger.warning(
@@ -232,6 +269,8 @@ def bank_ocr_response_from_parser_result(
         "fallback_allowed": result.get("fallback_allowed"),
         "reason_codes": result.get("reason_codes") or [],
         "timing_summary": result.get("timing_summary"),
+        "bank_override_applied": result.get("bank_override_applied"),
+        "user_message": result.get("user_message"),
         "scenario_d_used": False,
         "ocr_preview_text": result.get("ocr_preview_text", ""),
         "processing_steps": {

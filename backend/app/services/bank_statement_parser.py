@@ -1874,29 +1874,75 @@ class BankStatementParser:
         company_identity: Dict[str, Any] | None = None,
         page_verification_out: Dict[int, str] | None = None,
     ) -> List[Dict[str, Any]]:
-        """HSBC V1 page path (legacy free-form VLM financial extraction).
+        """HSBC V1 page path — Slice 0 demotes free-form VLM; Slice C tries layout evidence.
 
-        Slice 0: demoted. Free-form VLM ``transactions[]`` must not become
-        canonical review/export/reconciliation/posting rows. Pre-scan is logged
-        for diagnostics only — a zero count is missing evidence, not permission
-        to invent rows. Prefer V2 (prescan amount anchors) or Slice-1 layout OCR.
+        Order: layout OCR / word boxes → admit evidence-backed rows. If no amount
+        anchors, mark needs_layout_review and return [] (never invent VLM amounts).
         """
-        from app.services.hsbc_admission import mark_page_needs_layout_review
+        from app.services.hsbc_admission import (
+            admit_page_candidates,
+            mark_page_needs_layout_review,
+        )
+        from app.services.hsbc_layout_evidence import build_page_candidates_from_layout
 
-        # ── Stage 1: Pre-scan (diagnostic only under Slice 0) ─────────────────
+        # Diagnostic pre-scan count (text PDFs); scanned pages typically 0.
         dep_count, wdw_count, prescan_total = BankStatementParser._hsbc_prescan_count(page)
         logger.info(
             "[HSBC][P%d] Pre-scan: %d deposits + %d withdrawals = %d expected",
             page_num + 1, dep_count, wdw_count, prescan_total,
         )
-        logger.warning(
-            "[HSBC][P%d] Slice-0 abstain: V1 free-form financial emission disabled "
-            "(prescan=%d) — page marked needs_layout_review; zero canonical rows",
-            page_num + 1,
-            prescan_total,
+
+        try:
+            candidates, meta = build_page_candidates_from_layout(
+                page,
+                page_index_1based=page_num + 1,
+                force_ocr=prescan_total == 0,
+            )
+        except Exception as layout_err:
+            logger.warning(
+                "[HSBC][P%d] Layout evidence failed: %s",
+                page_num + 1,
+                layout_err,
+                exc_info=True,
+            )
+            candidates, meta = [], {"amount_anchor_count": 0}
+
+        amount_n = int(meta.get("amount_anchor_count") or 0)
+        if amount_n <= 0 and not candidates:
+            logger.warning(
+                "[HSBC][P%d] Slice-C abstain: no layout amount anchors "
+                "(tokens=%s) — needs_layout_review; zero canonical rows",
+                page_num + 1,
+                meta.get("token_count"),
+            )
+            mark_page_needs_layout_review(page_verification_out, page_num + 1)
+            return []
+
+        admission = admit_page_candidates(
+            candidates=candidates,
+            amount_anchor_count=max(amount_n, len(candidates)),
+            source="hsbc_layout",
         )
-        mark_page_needs_layout_review(page_verification_out, page_num + 1)
-        return []
+        if admission.abstained or not admission.canonical_rows:
+            if admission.abstained or admission.page_status:
+                mark_page_needs_layout_review(page_verification_out, page_num + 1)
+            out = list(admission.canonical_rows) + list(admission.unresolved_anchors)
+            logger.info(
+                "[HSBC][P%d] Layout admission canonical=%d unresolved=%d abstained=%s",
+                page_num + 1,
+                len(admission.canonical_rows),
+                len(admission.unresolved_anchors),
+                admission.abstained,
+            )
+            return out
+
+        logger.info(
+            "[HSBC][P%d] Layout admission canonical=%d unresolved=%d",
+            page_num + 1,
+            len(admission.canonical_rows),
+            len(admission.unresolved_anchors),
+        )
+        return list(admission.canonical_rows) + list(admission.unresolved_anchors)
 
     # ─────────────────────────────────────────────────────────────────────────
     # V2 pipeline — prescan-driven: PyMuPDF supplies amounts, VLM reads text
@@ -7262,13 +7308,15 @@ class BankStatementParser:
                 pix.save(tmp_img_path)
                 try:
                     _prov, _model = _bank_vlm_ocr_setup(BANK_VLM_MODEL)
+                    from app.services.bank_id_content import bank_id_prompt_suffix
+
                     ocr_result = await _ocr_service.recognize(
                         tmp_img_path,
                         provider_name=_prov,
                         model=_model,
-                        prompt_override=self._BANK_IDENTIFICATION_PROMPT,
+                        prompt_override=self._BANK_IDENTIFICATION_PROMPT + bank_id_prompt_suffix(),
                         ocr_options={
-                            "max_tokens": 64,
+                            "max_tokens": 128,
                             "temperature": 0.0,
                             "enable_thinking": False,
                         },
@@ -7307,14 +7355,26 @@ class BankStatementParser:
                                 break
 
             logger.info(f"[BANK-ID] VLM response: {page_text[:200]!r}")
+            from app.services.bank_id_content import (
+                bank_id_prompt_suffix,
+                visible_bank_id_from_content,
+            )
+
+            known_banks = set(BANK_KEYWORDS.keys()) | {'HSBC', 'HANG_SENG', 'DBS', 'BEA'}
+            bank_id = visible_bank_id_from_content(page_text, known=known_banks)
+            if bank_id:
+                logger.info(f"[BANK-ID] Identified bank: {bank_id}")
+                return bank_id
+            # Fallback: structured JSON extract (still visible content only).
             parsed = self._extract_json_from_vlm_output(page_text)
             if isinstance(parsed, dict):
                 bank_id = str(parsed.get('bank_id', 'UNKNOWN')).strip().upper()
-                known_banks = set(BANK_KEYWORDS.keys()) | {'HSBC', 'HANG_SENG', 'DBS', 'BEA'}
                 if bank_id in known_banks:
                     logger.info(f"[BANK-ID] Identified bank: {bank_id}")
                     return bank_id
                 logger.info(f"[BANK-ID] Unrecognised bank_id {bank_id!r} — staying UNKNOWN")
+            else:
+                logger.info("[BANK-ID] No visible bank_id JSON in content — staying UNKNOWN")
 
         except Exception as e:
             logger.warning(f"[BANK-ID] Bank identification pre-pass failed: {e}", exc_info=True)

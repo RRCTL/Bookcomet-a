@@ -316,6 +316,12 @@ def _persist_bank_transactions(
         "ocr_preview_source": result.get("ocr_preview_source", "unknown"),
         "import_batch_id": batch_id,
         "stored_count": stored_count,
+        "parse_status": result.get("parse_status"),
+        "fallback_allowed": result.get("fallback_allowed"),
+        "reason_codes": result.get("reason_codes") or [],
+        "bank_override_applied": result.get("bank_override_applied"),
+        "user_message": result.get("user_message"),
+        "page_verification": result.get("page_verification"),
     }
     pv = result.get("page_verification")
     if isinstance(pv, dict) and pv:
@@ -323,7 +329,13 @@ def _persist_bank_transactions(
     return out
 
 
-async def _run_upload_job(job_id: str, tmp_path: str, suffix: str, company_id: str) -> None:
+async def _run_upload_job(
+    job_id: str,
+    tmp_path: str,
+    suffix: str,
+    company_id: str,
+    bank_override: str | None = None,
+) -> None:
     db = SessionLocal()
     try:
         company_identity = _load_company_identity(db, company_id)
@@ -371,6 +383,7 @@ async def _run_upload_job(job_id: str, tmp_path: str, suffix: str, company_id: s
             file_type=file_type,
             company_identity=company_identity,
             progress_callback=on_progress,
+            bank_override=bank_override,
         )
 
         if _is_upload_job_cancelled(job_id):
@@ -492,6 +505,7 @@ async def get_bank_statement_page_count(
 @router.post("/bank-statements/upload")
 async def upload_bank_statement(
     file: UploadFile = File(...),
+    bank_override: str | None = Form(None),
     company_id: str = Depends(get_current_company_id),
     db: Session = Depends(get_db)
 ):
@@ -518,14 +532,29 @@ async def upload_bank_statement(
         tmp_path = tmp.name
 
     try:
-        parser = BankStatementParser()
         file_type = suffix[1:]  # Remove dot (e.g., '.pdf' -> 'pdf')
         company_identity = _load_company_identity(db, company_id)
-        result = await parser.parse_statement(
-            tmp_path,
-            file_type,
-            company_identity=company_identity,
-        )
+        if file_type == "pdf":
+            from app.core.config import require_bank_vlm_settings
+            from app.services.bank_document_dispatcher import dispatch_bank_pdf
+
+            try:
+                require_bank_vlm_settings()
+            except ValueError as cfg_err:
+                raise HTTPException(status_code=400, detail=str(cfg_err)) from cfg_err
+            result = await dispatch_bank_pdf(
+                tmp_path,
+                file_type=file_type,
+                company_identity=company_identity,
+                bank_override=bank_override,
+            )
+        else:
+            parser = BankStatementParser()
+            result = await parser.parse_statement(
+                tmp_path,
+                file_type,
+                company_identity=company_identity,
+            )
         logger.info("Successfully parsed %s transactions from %s", result["count"], result["bank"])
         return _persist_bank_transactions(db, company_id, result)
         
@@ -549,6 +578,7 @@ async def upload_bank_statement(
 async def start_upload_bank_statement_job(
     file: UploadFile = File(...),
     task_id: str = Form(...),
+    bank_override: str | None = Form(None),
     company_id: str = Depends(get_current_company_id),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -594,11 +624,14 @@ async def start_upload_bank_statement_job(
             "error": None,
             "result": None,
             "page_verification": {},
+            "bank_override": (bank_override or "").strip() or None,
             "created_at_ts": time.time(),
             "updated_at_ts": time.time(),
         }
 
-    asyncio.create_task(_run_upload_job(job_id, tmp_path, suffix, company_id))
+    asyncio.create_task(
+        _run_upload_job(job_id, tmp_path, suffix, company_id, bank_override=bank_override)
+    )
     return {"job_id": job_id, "status": "queued"}
 
 

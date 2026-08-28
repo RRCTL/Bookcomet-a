@@ -2623,27 +2623,59 @@ export default function WorkspaceApp() {
           ),
         }))
 
-        let result: any = null
-        let lastPercent = 5
-        for (let pollCount = 0; pollCount < 4500; pollCount++) {
-          const status = await api.getBankStatementUploadJobStatus(started.job_id, taskCompanyId)
-          const pageTotal = Number(status?.page_total || estimatedPages || 1)
-          const pageCurrent = Number(status?.page_current || 0)
-          const percent = Number(status?.progress_percent ?? lastPercent)
-          const label = typeof status?.label === 'string' && status.label.trim() ? status.label : 'BANK processing'
-          lastPercent = Number.isFinite(percent) ? percent : lastPercent
-          const pvRaw = status?.page_verification
-          const pageVerification = pvRaw && typeof pvRaw === 'object' && !Array.isArray(pvRaw)
-            ? pvRaw as Record<string, string>
-            : undefined
-          upsertProgressMsg(progressMessageId, file.name, lastPercent, label, () => progressBaseMeta(pageCurrent, pageTotal, pageVerification))
-          if (status?.status === 'completed') { result = status?.result; break }
-          if (status?.status === 'cancelled') {
-            throw new DOMException('Bank statement upload cancelled', 'AbortError')
+        const pollBankJob = async (jobId: string) => {
+          let lastPercent = 5
+          for (let pollCount = 0; pollCount < 4500; pollCount++) {
+            const status = await api.getBankStatementUploadJobStatus(jobId, taskCompanyId)
+            const pageTotal = Number(status?.page_total || estimatedPages || 1)
+            const pageCurrent = Number(status?.page_current || 0)
+            const percent = Number(status?.progress_percent ?? lastPercent)
+            const label = typeof status?.label === 'string' && status.label.trim() ? status.label : 'BANK processing'
+            lastPercent = Number.isFinite(percent) ? percent : lastPercent
+            const pvRaw = status?.page_verification
+            const pageVerification = pvRaw && typeof pvRaw === 'object' && !Array.isArray(pvRaw)
+              ? pvRaw as Record<string, string>
+              : undefined
+            upsertProgressMsg(progressMessageId, file.name, lastPercent, label, () => progressBaseMeta(pageCurrent, pageTotal, pageVerification))
+            if (status?.status === 'completed') return status?.result
+            if (status?.status === 'cancelled') {
+              throw new DOMException('Bank statement upload cancelled', 'AbortError')
+            }
+            if (status?.status === 'failed') throw new Error(status?.error || 'Bank statement parse failed')
+            await new Promise((resolve) => setTimeout(resolve, 1000))
           }
-          if (status?.status === 'failed') throw new Error(status?.error || 'Bank statement parse failed')
-          await new Promise((resolve) => setTimeout(resolve, 1000))
+          throw new Error('Bank statement processing timed out. Please try again.')
         }
+
+        let result: any = await pollBankJob(started.job_id)
+
+        // Slice B: explicit bank override when auto-ID could not resolve a scanned PDF.
+        if (result?.parse_status === 'bank_selection_required') {
+          addMsgBeforeSpreadsheet({
+            id: `bank-select-${Date.now()}`,
+            role: 'assistant',
+            content:
+              `--- ${file.name} ---\nBank could not be identified automatically.\n` +
+              `Select the bank to continue (extraction still waits for layout OCR if evidence is missing).\n` +
+              `Do not rely on the filename.`,
+          })
+          const picked = typeof window !== 'undefined'
+            ? window.prompt(
+              'Select bank code (e.g. HSBC, BOC, SCB, BEA, HANG_SENG). Leave blank to skip.',
+              'HSBC',
+            )
+            : null
+          const override = (picked || '').trim().toUpperCase()
+          if (override) {
+            upsertProgressMsg(progressMessageId, file.name, 8, `Re-running with bank_override=${override}`, () => progressBaseMeta())
+            const restarted = await api.startBankStatementUploadJob(file, taskId, taskCompanyId, override)
+            if (!restarted?.job_id) throw new Error('Failed to restart bank statement job with override')
+            bankJobId = restarted.job_id
+            localBankUploadJobIdsRef.current.add(bankJobId)
+            result = await pollBankJob(restarted.job_id)
+          }
+        }
+
         if (!result) throw new Error('Bank statement processing timed out. Please try again.')
 
         const ocrPreviewText = typeof result.ocr_preview_text === 'string' ? result.ocr_preview_text.trim() : ''
@@ -2654,9 +2686,14 @@ export default function WorkspaceApp() {
           ocrContent += '\n```\n'
           addMsgBeforeSpreadsheet({ id: `bank-ocr-${Date.now()}`, role: 'assistant', content: ocrContent, fullOcrText: ocrPreviewText })
         }
+        const statusNote = result.parse_status === 'abstained_needs_layout' || result.user_message
+          ? `\nStatus: ${result.parse_status || 'unknown'}\n${result.user_message || 'Bank selected; extraction waiting for layout OCR.'}`
+          : result.parse_status === 'bank_selection_required'
+            ? `\nStatus: bank_selection_required (no bank selected)`
+            : ''
         addMsgBeforeSpreadsheet({
           id: `bank-parse-${Date.now()}`, role: 'assistant',
-          content: `--- ${file.name} ---\nBANK parse complete\nBank: ${result.bank || 'UNKNOWN'}\nTransactions: ${result.count || 0}\nPages: ${result.pages_processed || 1}`,
+          content: `--- ${file.name} ---\nBANK parse complete\nBank: ${result.bank || 'UNKNOWN'}\nTransactions: ${result.count || 0}\nPages: ${result.pages_processed || 1}${statusNote}`,
         })
 
         const getTxnValue = (txn: any, keys: string[]) => {

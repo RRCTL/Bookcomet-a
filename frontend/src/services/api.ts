@@ -480,31 +480,18 @@ export const api = {
     return response.json();
   },
 
-  async uploadBankStatement(file: File): Promise<any> {
-    const formData = new FormData();
-    formData.append('file', file);
-    
-    const response = await apiFetch('/bank-statements/upload', {
-      method: 'POST',
-      body: formData,
-    });
-    
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ detail: response.statusText }));
-      throw new Error(`Bank statement upload failed: ${error.detail || response.statusText}`);
-    }
-    
-    return response.json();
-  },
-
   async startBankStatementUploadJob(
     file: File,
     taskId: string,
     companyId?: string | null,
+    bankOverride?: string | null,
   ): Promise<{ job_id: string; status: string }> {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('task_id', taskId);
+    if (bankOverride && bankOverride.trim()) {
+      formData.append('bank_override', bankOverride.trim().toUpperCase());
+    }
 
     const response = await apiFetch('/bank-statements/upload/start', {
       method: 'POST',
@@ -517,6 +504,28 @@ export const api = {
       throw new Error(`Bank statement upload start failed: ${error.detail || response.statusText}`);
     }
 
+    return response.json();
+  },
+
+  async uploadBankStatement(
+    file: File,
+    companyId?: string | null,
+    bankOverride?: string | null,
+  ): Promise<any> {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (bankOverride && bankOverride.trim()) {
+      formData.append('bank_override', bankOverride.trim().toUpperCase());
+    }
+    const response = await apiFetch('/bank-statements/upload', {
+      method: 'POST',
+      body: formData,
+      companyId,
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(`Bank statement upload failed: ${error.detail || response.statusText}`);
+    }
     return response.json();
   },
 
