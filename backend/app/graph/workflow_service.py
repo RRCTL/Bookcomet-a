@@ -63,6 +63,7 @@ from app.services.re_vlm_hints import (
     sanitize_rescan_note,
     validate_rescan_reasons,
 )
+from app.services.bank_override import bank_override_from_graph
 
 logger = logging.getLogger(__name__)
 
@@ -1174,6 +1175,7 @@ class WorkflowService:
         rescan_reasons: list[str] | None = None,
         rescan_note: str | None = None,
         expected_receipt_count: int | None = None,
+        bank_override: str | None = None,
     ) -> dict[str, Any]:
         from app.services.abuse_guard import company_ocr_concurrency
 
@@ -1221,6 +1223,7 @@ class WorkflowService:
                         rescan_note=safe_note or None,
                         rescan_prior_summary=prior_summary or None,
                         expected_receipt_count=expected_count,
+                        bank_override=bank_override,
                     )
         except WorkflowRunCancelled:
             run_file.file_status = "pending"
@@ -1262,6 +1265,20 @@ class WorkflowService:
             run_file.result_summary_json = result
             db.commit()
             return {"ok": False, "warning": True, "needs_confirmation": True, "result": result}
+
+        # Slice B: scanned BANK PDF could not be auto-identified — stop for explicit override.
+        parse_status = str(result.get("parse_status") or "") if isinstance(result, dict) else ""
+        if parse_status == "bank_selection_required":
+            run_file.file_status = "warning"
+            run_file.error_text = "bank_selection_required"
+            run_file.result_summary_json = result
+            db.commit()
+            return {
+                "ok": False,
+                "warning": True,
+                "bank_selection_required": True,
+                "result": result,
+            }
 
         count_val = result.get("count_validation") if isinstance(result, dict) else None
         if isinstance(count_val, dict):
@@ -1406,6 +1423,9 @@ class WorkflowService:
                 receipt_signal=file_signal,
                 table_preset=file_preset,
                 multi_receipt_confirmed=file_multi or multi_confirmed,
+                bank_override=bank_override_from_graph(
+                    run.graph_json if isinstance(run.graph_json, dict) else None
+                ),
                 **vlm_kwargs,
             )
             if result.get("ok") or result.get("cached"):
@@ -1650,6 +1670,9 @@ class WorkflowService:
                 receipt_signal=file_signal,
                 table_preset=file_preset,
                 multi_receipt_confirmed=file_multi or multi_confirmed,
+                bank_override=bank_override_from_graph(
+                    run.graph_json if isinstance(run.graph_json, dict) else None
+                ),
                 **vlm_kwargs,
             )
             if result.get("ok"):
@@ -1761,12 +1784,18 @@ class WorkflowService:
         rescan_reasons: list[str] | None = None,
         rescan_note: str | None = None,
         expected_receipt_count: int | None = None,
+        bank_override: str | None = None,
     ) -> WorkflowRun:
         if _run_has_locked_approved_table(run):
             raise HTTPException(status_code=409, detail=RE_VLM_LOCKED_DETAIL)
         validated_reasons = validate_rescan_reasons(rescan_reasons)
         safe_note = sanitize_rescan_note(rescan_note)
         expected_count = normalize_expected_receipt_count(expected_receipt_count)
+        from app.services.bank_override import normalize_bank_override
+
+        effective_bank_override = normalize_bank_override(bank_override) or bank_override_from_graph(
+            run.graph_json if isinstance(run.graph_json, dict) else None
+        )
         receipt_signal, table_preset = receipt_settings(run.graph_json)
         multi_confirmed = receipt_signal == "multi_per_page" or force_process
         vlm_kwargs = WorkflowService._vlm_ocr_kwargs(run)
@@ -1815,6 +1844,10 @@ class WorkflowService:
             _append_console(
                 run, "info", f"Re-VLM reasons: {reason_text}{note_suffix}{count_suffix}"
             )
+        if effective_bank_override:
+            _append_console(
+                run, "info", f"VLM bank_override={effective_bank_override}"
+            )
         _clear_run_cancel(run)
         db.commit()
         await workflow_event_hub.snapshot(run.id, run.run_status, run.node_states_json)
@@ -1849,6 +1882,7 @@ class WorkflowService:
                         rescan_reasons=validated_reasons,
                         rescan_note=safe_note,
                         expected_receipt_count=expected_count,
+                        bank_override=effective_bank_override,
                         **vlm_kwargs,
                     )
                 )

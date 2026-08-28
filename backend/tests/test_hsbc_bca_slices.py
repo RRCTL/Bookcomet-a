@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.services.bank_id_content import visible_bank_id_from_content
-from app.services.bank_override import normalize_bank_override, probe_fields_for_bank
+from app.services.bank_override import (
+    bank_override_from_graph,
+    normalize_bank_override,
+    probe_fields_for_bank,
+)
 from app.services.hsbc_admission import admit_page_candidates
 from app.services.hsbc_layout_evidence import (
     LayoutToken,
@@ -28,6 +32,23 @@ def test_normalize_bank_override_rejects_unknown_and_filename_shaped():
     # Must not treat arbitrary strings / filename stems as banks
     assert normalize_bank_override("MMC-HSBC-DEC25") is None
     assert normalize_bank_override("not_a_bank") is None
+
+
+def test_bank_override_from_graph_reads_top_level_and_mode_node():
+    assert bank_override_from_graph(None) is None
+    assert bank_override_from_graph({"bank_override": "HSBC"}) == "HSBC"
+    assert (
+        bank_override_from_graph(
+            {
+                "nodes": [
+                    {"type": "ModeConfig", "data": {"bank_override": "boc"}},
+                ]
+            }
+        )
+        == "BOC"
+    )
+    # Filename-shaped values on the graph are rejected
+    assert bank_override_from_graph({"bank_override": "MMC-HSBC-DEC25"}) is None
 
 
 def test_probe_fields_for_hsbc():

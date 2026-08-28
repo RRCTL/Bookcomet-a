@@ -262,7 +262,14 @@ class DeepSeekOcrProvider(OcrProvider):
             # Pass enable_thinking=false to suppress the thinking chain and get
             # direct JSON output, keeping response times well under the timeout.
             if "enable_thinking" in options:
-                payload["enable_thinking"] = bool(options["enable_thinking"])
+                enable_thinking = bool(options["enable_thinking"])
+                payload["enable_thinking"] = enable_thinking
+                # Some Qwen/vLLM gateways only honor thinking via chat_template_kwargs.
+                existing_ctk = payload.get("chat_template_kwargs")
+                if not isinstance(existing_ctk, dict):
+                    existing_ctk = {}
+                existing_ctk = {**existing_ctk, "enable_thinking": enable_thinking}
+                payload["chat_template_kwargs"] = existing_ctk
 
             _payload_bytes = len(_json.dumps(payload).encode("utf-8"))
             logger.info(
@@ -344,10 +351,25 @@ class DeepSeekOcrProvider(OcrProvider):
         if not choices:
             raise RuntimeError("OCR_NO_CHOICES: DeepSeek OCR returned no choices.")
 
-        message = choices[0].get("message", {})
-        content = message.get("content", "")
-        if not content:
-            raise RuntimeError("OCR_EMPTY_CONTENT: DeepSeek OCR returned empty content.")
+        message = choices[0].get("message", {}) or {}
+        # Visible content only — never promote reasoning_content / thinking fields.
+        raw_content = message.get("content", "")
+        if isinstance(raw_content, list):
+            parts: list[str] = []
+            for part in raw_content:
+                if isinstance(part, str) and part.strip():
+                    parts.append(part.strip())
+                elif isinstance(part, dict):
+                    text = part.get("text") or part.get("content")
+                    if text is not None and str(text).strip():
+                        parts.append(str(text).strip())
+            content = "\n".join(parts)
+        elif raw_content is None:
+            content = ""
+        else:
+            content = str(raw_content)
+        if not content.strip():
+            raise RuntimeError("OCR_EMPTY_CONTENT: OCR gateway returned empty visible content.")
 
         lines: list[OcrLine] = []
         text_parts: list[str] = []
@@ -366,7 +388,7 @@ class DeepSeekOcrProvider(OcrProvider):
             )
 
         if not lines:
-            logger.warning("DeepSeek OCR returned content without text lines.")
+            logger.warning("OCR gateway returned content without text lines.")
 
         return OcrResult(
             text=" ".join(text_parts),

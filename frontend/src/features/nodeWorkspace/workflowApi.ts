@@ -36,6 +36,19 @@ export type WorkflowRun = {
   updated_at: string
 }
 
+/** Slice B: scanned BANK file stopped for explicit bank_override (never from filename). */
+export function fileNeedsBankSelection(file: WorkflowRunFile): boolean {
+  const err = (file.error_text || '').toLowerCase()
+  if (err.includes('bank_selection_required')) return true
+  const summary = file.result_summary_json
+  if (!summary || typeof summary !== 'object') return false
+  return String((summary as { parse_status?: unknown }).parse_status || '') === 'bank_selection_required'
+}
+
+export function taskFileIdsNeedingBankSelection(run: WorkflowRun): string[] {
+  return (run.files ?? []).filter(fileNeedsBankSelection).map(f => f.task_file_id)
+}
+
 export type WorkflowGraph = {
   schemaVersion?: number
   nodes: Array<{
@@ -53,6 +66,8 @@ export type WorkflowGraph = {
   }>
   processingMode?: string
   graphV1Backup?: WorkflowGraph
+  /** Slice B: explicit bank for BANK mode first VLM (never from filename). */
+  bank_override?: string | null
 }
 
 export type WorkflowTemplate = {
@@ -338,6 +353,7 @@ export const workflowApi = {
       rescan_reasons?: string[]
       rescan_note?: string | null
       expected_receipt_count?: number | null
+      bank_override?: string | null
     },
   ) =>
     wfJson<WorkflowRun>(companyId, `/api/workflows/runs/${id}/re-vlm`, {
@@ -349,6 +365,7 @@ export const workflowApi = {
         rescan_reasons: options?.rescan_reasons ?? [],
         rescan_note: options?.rescan_note ?? null,
         expected_receipt_count: options?.expected_receipt_count ?? null,
+        bank_override: options?.bank_override ?? null,
       }),
     }),
   forceProcess: (companyId: string, runId: string, taskFileId: string) =>

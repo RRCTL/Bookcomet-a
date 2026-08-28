@@ -89,6 +89,8 @@ class ReVlmRequest(BaseModel):
     rescan_reasons: list[str] = Field(default_factory=list)
     rescan_note: Optional[str] = None
     expected_receipt_count: Optional[int] = None
+    # Explicit bank id for BANK mode (Slice B). Never derived from filename.
+    bank_override: Optional[str] = None
 
 
 class MoveRunFileBatchRequest(BaseModel):
@@ -1077,6 +1079,7 @@ async def re_vlm_run(
         rescan_reasons=body.rescan_reasons,
         rescan_note=body.rescan_note,
         expected_receipt_count=body.expected_receipt_count,
+        bank_override=body.bank_override,
     )
     return _run_out(run, db)
 

@@ -7316,7 +7316,9 @@ class BankStatementParser:
                         model=_model,
                         prompt_override=self._BANK_IDENTIFICATION_PROMPT + bank_id_prompt_suffix(),
                         ocr_options={
-                            "max_tokens": 128,
+                            # Thinking models may ignore enable_thinking; keep budget
+                            # for visible JSON after any hidden reasoning (first VLM).
+                            "max_tokens": 1024,
                             "temperature": 0.0,
                             "enable_thinking": False,
                         },
@@ -7326,7 +7328,10 @@ class BankStatementParser:
                         allow_fallback=False,
                     )
                     page_text = (ocr_result.text if hasattr(ocr_result, 'text') else '') or ''
-                    self._set_cached_ocr_text(cache_key, page_text)
+                    # Never cache empty — empty often means thinking ate the budget;
+                    # allow a later pass (or bank_override) to recover.
+                    if page_text.strip():
+                        self._set_cached_ocr_text(cache_key, page_text)
                 finally:
                     if os.path.exists(tmp_img_path):
                         # Windows can keep this temp file locked briefly when OCR

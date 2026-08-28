@@ -66,6 +66,7 @@ import {
   applyRunReVlmLocally,
   runLooksProcessing,
   shouldIgnoreRunRefreshAfterStop,
+  taskFileIdsNeedingBankSelection,
   type WorkflowFolder,
   type WorkflowGraph,
   type WorkflowNodeCatalogEntry,
@@ -1304,8 +1305,34 @@ export default function NodeWorkspace() {
     }, 2000)
     try {
       await flushGraphBeforeRun(runId, graphForRun)
-      const r = await workflowApi.execute(companyId, activeRun.id)
+      let r = await workflowApi.execute(companyId, activeRun.id)
       setFullRunFromServer(r)
+
+      // BANK: first VLM may stop for bank_selection_required. Prompt once, pin
+      // bank_override on the graph, and Run again so the same execute/VLM path
+      // applies the override (not a separate Re-VLM flow).
+      if ((r.processing_mode || '').toUpperCase() === 'BANK') {
+        const needIds = taskFileIdsNeedingBankSelection(r)
+        if (needIds.length > 0) {
+          const picked =
+            typeof window !== 'undefined'
+              ? window.prompt(
+                  'Bank could not be identified on first VLM. Enter bank code (e.g. HSBC, BOC, SCB, BEA, HANG_SENG). Leave blank to skip.',
+                  'HSBC',
+                )
+              : null
+          const override = (picked || '').trim().toUpperCase()
+          if (override) {
+            const nextGraph = { ...r.graph_json, bank_override: override }
+            r = await workflowApi.patchRun(companyId, runId, nextGraph)
+            setFullRunFromServer(r)
+            syncNodes(r, undefined, true)
+            r = await workflowApi.execute(companyId, runId)
+            setFullRunFromServer(r)
+          }
+        }
+      }
+
       if (r.run_status === 'awaiting_review') {
         syncTableFromRun(r, true)
       }

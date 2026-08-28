@@ -15,7 +15,8 @@ class WorkflowEventHub:
         self._lock = asyncio.Lock()
 
     async def connect(self, run_id: str, ws: WebSocket) -> None:
-        await ws.accept()
+        # Caller (workflow_run_ws) already accepted the socket after auth.
+        # Do not accept again — double-accept raises ASGI protocol errors.
         async with self._lock:
             self._rooms.setdefault(run_id, set()).add(ws)
 
