@@ -83,20 +83,46 @@ function stampPageOnRows(rows: Record<string, unknown>[], pageNum: unknown): Rec
   return rows
 }
 
-/** If page payload has image_quality but row lacks extraction_provenance.image_quality, attach it. */
+function asBox(v: unknown): { x: number; y: number; w: number; h: number } | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null
+  const r = v as Record<string, unknown>
+  const x = Number(r.x)
+  const y = Number(r.y)
+  const w = Number(r.w)
+  const h = Number(r.h)
+  if (![x, y, w, h].every(n => Number.isFinite(n)) || w <= 0 || h <= 0) return null
+  return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) }
+}
+
+/** Stamp page-level AQ + M-VDU crop box onto rows missing those provenance fields. */
 function stampImageQualityOnRows(
   rows: Record<string, unknown>[],
   pageObj: Record<string, unknown>,
 ): Record<string, unknown>[] {
   const pageIq = pageObj.image_quality
-  if (!pageIq || typeof pageIq !== 'object' || Array.isArray(pageIq)) return rows
+  const bbox = asBox(pageObj.receipt_bbox)
+  const page = Number(pageObj.page)
+  const receiptIndex = Number(pageObj.receipt_index)
+  const hasIq = Boolean(pageIq && typeof pageIq === 'object' && !Array.isArray(pageIq))
+  if (!hasIq && !bbox && !(Number.isFinite(receiptIndex) && receiptIndex >= 1)) return rows
   for (const row of rows) {
     const prov =
       row.extraction_provenance && typeof row.extraction_provenance === 'object'
-        ? (row.extraction_provenance as Record<string, unknown>)
-        : null
-    if (prov?.image_quality && typeof prov.image_quality === 'object') continue
-    row.extraction_provenance = { ...(prov ?? {}), image_quality: pageIq }
+        ? { ...(row.extraction_provenance as Record<string, unknown>) }
+        : {}
+    if (hasIq && !(prov.image_quality && typeof prov.image_quality === 'object')) {
+      prov.image_quality = pageIq
+    }
+    if (Number.isFinite(page) && page >= 1 && prov.source_pdf_page == null) {
+      prov.source_pdf_page = page
+    }
+    if (Number.isFinite(receiptIndex) && receiptIndex >= 1 && prov.receipt_index == null) {
+      prov.receipt_index = receiptIndex
+    }
+    if (bbox && !asBox(prov.receipt_bbox_pixels) && !asBox(prov.receipt_region_norm)) {
+      prov.receipt_bbox_pixels = bbox
+    }
+    if (Object.keys(prov).length > 0) row.extraction_provenance = prov
   }
   return rows
 }

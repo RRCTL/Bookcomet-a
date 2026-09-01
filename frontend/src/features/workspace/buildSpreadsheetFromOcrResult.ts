@@ -53,18 +53,76 @@ function apTableSpreadsheetExtras(
   }
 }
 
+export type PageCropContext = {
+  page?: unknown
+  receipt_index?: unknown
+  receipt_bbox?: unknown
+  image_quality?: unknown
+}
+
+function asPlainObject(v: unknown): Record<string, unknown> | null {
+  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+}
+
+function asPixelBox(v: unknown): { x: number; y: number; w: number; h: number } | null {
+  const r = asPlainObject(v)
+  if (!r) return null
+  const x = Number(r.x)
+  const y = Number(r.y)
+  const w = Number(r.w)
+  const h = Number(r.h)
+  if (![x, y, w, h].every(n => Number.isFinite(n)) || w <= 0 || h <= 0) return null
+  return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) }
+}
+
+/** Merge M-VDU page crop box onto row provenance when the VLM row omitted it. */
+export function mergePageCropIntoProvenance(
+  existing: Record<string, unknown> | null | undefined,
+  pageCtx?: PageCropContext | null,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...(existing ?? {}) }
+  const page = Number(pageCtx?.page)
+  if (Number.isFinite(page) && page >= 1 && next.source_pdf_page == null) {
+    next.source_pdf_page = page
+  }
+  const idx = Number(pageCtx?.receipt_index)
+  if (Number.isFinite(idx) && idx >= 1 && next.receipt_index == null) {
+    next.receipt_index = idx
+  }
+  const hasRegion =
+    asPlainObject(next.receipt_region_norm) != null || asPixelBox(next.receipt_bbox_pixels) != null
+  const bbox = asPixelBox(pageCtx?.receipt_bbox)
+  if (!hasRegion && bbox) {
+    next.receipt_bbox_pixels = bbox
+  }
+  if (!next.image_quality && asPlainObject(pageCtx?.image_quality)) {
+    next.image_quality = pageCtx!.image_quality
+  }
+  return next
+}
+
 /**
  * Keep AQ / validation audit fields on SpreadsheetRow → ARAP Live output.
  * Without this, Image quality column stays empty (—) even when OCR attached provenance.
+ * Optional pageCtx stamps M-VDU receipt_bbox / receipt_index onto every row from that crop.
  */
-export function provenanceSpreadsheetExtras(source: Record<string, any>): Record<string, unknown> {
+export function provenanceSpreadsheetExtras(
+  source: Record<string, any>,
+  pageCtx?: PageCropContext | null,
+): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   const prov = source?.extraction_provenance
+  let merged: Record<string, unknown> | null = null
   if (prov && typeof prov === 'object' && !Array.isArray(prov)) {
-    out.extraction_provenance = prov
+    merged = { ...prov }
   } else if (source?.image_quality && typeof source.image_quality === 'object') {
-    // Page-level or row-level AQ audit without nested provenance wrapper.
-    out.extraction_provenance = { image_quality: source.image_quality }
+    merged = { image_quality: source.image_quality }
+  }
+  if (pageCtx) {
+    merged = mergePageCropIntoProvenance(merged, pageCtx)
+  }
+  if (merged && Object.keys(merged).length > 0) {
+    out.extraction_provenance = merged
   }
   if (typeof source?.needs_review === 'boolean') out.needs_review = source.needs_review
   if (Array.isArray(source?.validation_flags)) out.validation_flags = source.validation_flags
@@ -156,6 +214,7 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
     rowIdPrefix: string,
     pageConfidence?: unknown,
     filePosition?: string,
+    pageCtx?: PageCropContext | null,
   ) => {
     const tsvRows = Array.isArray(fields?.tsv_rows) ? fields.tsv_rows.filter((r: any) => r && typeof r === 'object') : []
     const cleanTsvRows = tsvRows.filter((row: any) => {
@@ -200,7 +259,7 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
           confidence: formatConfidenceDisplay(getFieldValue(row, ['confidence', '信心度']) || pageConfidence),
           file_position: resolveSpreadsheetFilePosition(row, fileName, filePosition),
           ...apTableSpreadsheetExtras(row),
-          ...provenanceSpreadsheetExtras(row),
+          ...provenanceSpreadsheetExtras(row, pageCtx),
         })
         rowIndex++
       })
@@ -272,7 +331,7 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
           ),
           file_position: resolveSpreadsheetFilePosition(receipt, fileName, filePosition),
           ...apTableSpreadsheetExtras(receipt, fields),
-          ...provenanceSpreadsheetExtras(receipt),
+          ...provenanceSpreadsheetExtras(receipt, pageCtx),
         })
         rowIndex++
       })
@@ -344,7 +403,7 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
           ),
           file_position: resolveSpreadsheetFilePosition(receipt, fileName, filePosition),
           ...apTableSpreadsheetExtras(receipt, fields),
-          ...provenanceSpreadsheetExtras(receipt),
+          ...provenanceSpreadsheetExtras(receipt, pageCtx),
         })
         rowIndex++
       })
@@ -404,7 +463,7 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
       confidence: formatConfidenceDisplay(getFieldValue(fields, ['confidence']) || pageConfidence),
       file_position: resolveSpreadsheetFilePosition(fields, fileName, filePosition),
       ...apTableSpreadsheetExtras(fields),
-      ...provenanceSpreadsheetExtras(fields),
+      ...provenanceSpreadsheetExtras(fields, pageCtx),
     })
     rowIndex++
   }
@@ -458,6 +517,12 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
         `${fileId}-page${pageData.page}-r${pageData.receipt_index ?? 0}`,
         pageData?.field_confidence || fields?.confidence,
         `${fileName} ${pageLabel}`,
+        {
+          page: pageData.page,
+          receipt_index: pageData.receipt_index,
+          receipt_bbox: pageData.receipt_bbox,
+          image_quality: pageData.image_quality,
+        },
       )
     }
   } else {
