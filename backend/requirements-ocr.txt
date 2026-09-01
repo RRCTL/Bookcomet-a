@@ -1,5 +1,5 @@
 # OCR Engines
-paddleocr>=2.7.0.3
+paddleocr>=3.7.0
 easyocr>=1.7.2
 pytesseract==0.3.13
 
