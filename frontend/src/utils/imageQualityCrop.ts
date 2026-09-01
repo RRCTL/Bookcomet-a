@@ -77,6 +77,25 @@ export function resolveCropTaskFileId(
   return files.length === 1 ? files[0]!.taskFileId : null
 }
 
+/** True when the row has M-VDU crop region provenance (target receipt box). */
+export function rowHasReceiptCropRegion(row: Record<string, unknown>): boolean {
+  const prov = asRecord(row.extraction_provenance)
+  if (!prov) return false
+  return Boolean(asNormRegion(prov.receipt_region_norm) || asBbox(prov.receipt_bbox_pixels))
+}
+
+/**
+ * M-VDU Live output: row can open on-demand crop preview of its target receipt.
+ * Requires region provenance so normal single-receipt VLM rows stay without Preview.
+ */
+export function rowCanShowReceiptCropPreview(
+  row: Record<string, unknown>,
+  files: CropPreviewFile[],
+): boolean {
+  if (!rowHasReceiptCropRegion(row)) return false
+  return resolveCropTaskFileId(row, files) != null
+}
+
 export function buildReceiptCropRequest(
   row: Record<string, unknown>,
   files: CropPreviewFile[],
