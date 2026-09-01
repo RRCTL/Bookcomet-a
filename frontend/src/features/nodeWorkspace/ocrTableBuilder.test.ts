@@ -143,6 +143,26 @@ describe('rowsFromOcrPayload', () => {
     const prov = rows[0]?.extraction_provenance as { image_quality?: { status?: string } }
     expect(prov?.image_quality?.status).toBe('recoverable')
   })
+
+  it('stamps page receipt_bbox onto rows missing crop provenance', () => {
+    const rows = rowsFromOcrPayload({
+      pages: [
+        {
+          page: 1,
+          receipt_index: 3,
+          receipt_bbox: { x: 5, y: 6, w: 40, h: 50 },
+          ai_enhanced: { tsv_rows: [{ amount: '10', payee: 'Synthetic' }] },
+        },
+      ],
+    })
+    expect(rows).toHaveLength(1)
+    const prov = rows[0]?.extraction_provenance as {
+      receipt_bbox_pixels?: { x: number; w: number }
+      receipt_index?: number
+    }
+    expect(prov.receipt_index).toBe(3)
+    expect(prov.receipt_bbox_pixels).toEqual({ x: 5, y: 6, w: 40, h: 50 })
+  })
 })
 
 describe('buildTablePayloadFromOcrByFile AP source page', () => {

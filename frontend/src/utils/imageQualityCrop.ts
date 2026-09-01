@@ -39,13 +39,20 @@ function asBbox(v: unknown): { x: number; y: number; w: number; h: number } | nu
 }
 
 function sourceStem(sourceFile: string): string {
-  const base = sourceFile.replace(/\s+P\d+\b/i, '').trim()
+  const base = sourceFile.replace(/\s+P\d+(?:-R\d+)?\b/i, '').trim()
   const slash = Math.max(base.lastIndexOf('/'), base.lastIndexOf('\\'))
   return slash >= 0 ? base.slice(slash + 1) : base
 }
 
 function pageFromSourceFile(sourceFile: string): number | null {
-  const m = sourceFile.match(/\bP(\d+)\b/i)
+  const m = sourceFile.match(/\bP(\d+)(?:-R\d+)?\b/i)
+  if (!m) return null
+  const n = Number(m[1])
+  return Number.isFinite(n) && n >= 1 ? n : null
+}
+
+function receiptIndexFromSourceFile(sourceFile: string): number | null {
+  const m = sourceFile.match(/\bP\d+-R(\d+)\b/i)
   if (!m) return null
   const n = Number(m[1])
   return Number.isFinite(n) && n >= 1 ? n : null
@@ -67,14 +74,14 @@ export function resolveCropTaskFileId(
   }
 
   const source = String(row.source_file ?? row.file_position ?? '').trim()
-  if (!source) return files.length === 1 ? files[0]!.taskFileId : null
+  if (!source) return files[0]!.taskFileId
   const stem = sourceStem(source).toLowerCase()
   const byName = files.find(f => {
     const name = (f.originalFilename ?? '').trim().toLowerCase()
     return name && (name === stem || stem.endsWith(name) || name.endsWith(stem))
   })
   if (byName) return byName.taskFileId
-  return files.length === 1 ? files[0]!.taskFileId : null
+  return files[0]!.taskFileId
 }
 
 /** True when the row has M-VDU crop region provenance (target receipt box). */
@@ -84,16 +91,25 @@ export function rowHasReceiptCropRegion(row: Record<string, unknown>): boolean {
   return Boolean(asNormRegion(prov.receipt_region_norm) || asBbox(prov.receipt_bbox_pixels))
 }
 
+/** M-VDU / multi-receipt row (region, receipt_index, or Source Page P#-R#). */
+export function rowLooksLikeMvduReceipt(row: Record<string, unknown>): boolean {
+  if (rowHasReceiptCropRegion(row)) return true
+  const prov = asRecord(row.extraction_provenance)
+  const fromProv = Number(prov?.receipt_index ?? row.receipt_index)
+  if (Number.isFinite(fromProv) && fromProv >= 1) return true
+  const src = String(row.source_file ?? row.file_position ?? '')
+  return receiptIndexFromSourceFile(src) != null
+}
+
 /**
- * M-VDU Live output: row can open on-demand crop preview of its target receipt.
- * Requires region provenance so normal single-receipt VLM rows stay without Preview.
+ * Process Live output: Preview on every receipt row when the run has uploaded files.
+ * Crop uses row region/bbox when present; otherwise the linked page (full page).
  */
 export function rowCanShowReceiptCropPreview(
   row: Record<string, unknown>,
   files: CropPreviewFile[],
 ): boolean {
-  if (!rowHasReceiptCropRegion(row)) return false
-  return resolveCropTaskFileId(row, files) != null
+  return files.length > 0 && resolveCropTaskFileId(row, files) != null
 }
 
 export function buildReceiptCropRequest(
