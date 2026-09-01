@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { buildReceiptCropRequest, resolveCropTaskFileId } from './imageQualityCrop'
+import {
+  buildReceiptCropRequest,
+  resolveCropTaskFileId,
+  rowCanShowReceiptCropPreview,
+  rowHasReceiptCropRegion,
+} from './imageQualityCrop'
 
 describe('resolveCropTaskFileId', () => {
   const files = [
@@ -34,5 +39,30 @@ describe('buildReceiptCropRequest', () => {
       regionNorm: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 },
       regionBbox: null,
     })
+  })
+})
+
+describe('rowCanShowReceiptCropPreview', () => {
+  const files = [{ taskFileId: 'file-a', originalFilename: 'synthetic.pdf' }]
+
+  it('is true for M-VDU rows with region provenance (even without AQ)', () => {
+    const row = {
+      source_file: 'synthetic.pdf P1',
+      extraction_provenance: {
+        source_pdf_page: 1,
+        receipt_region_norm: { x: 0.05, y: 0.1, w: 0.4, h: 0.35 },
+      },
+    }
+    expect(rowHasReceiptCropRegion(row)).toBe(true)
+    expect(rowCanShowReceiptCropPreview(row, files)).toBe(true)
+  })
+
+  it('is false for normal VLM rows without region (file alone is not enough)', () => {
+    const row = {
+      source_file: 'synthetic.pdf',
+      extraction_provenance: { source_pdf_page: 1 },
+    }
+    expect(rowHasReceiptCropRegion(row)).toBe(false)
+    expect(rowCanShowReceiptCropPreview(row, files)).toBe(false)
   })
 })

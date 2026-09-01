@@ -17,7 +17,7 @@ import {
   imageQualityChipStyle,
   readImageQuality,
 } from '../utils/imageQualityUi'
-import { buildReceiptCropRequest, type CropPreviewFile } from '../utils/imageQualityCrop'
+import { buildReceiptCropRequest, rowCanShowReceiptCropPreview, type CropPreviewFile } from '../utils/imageQualityCrop'
 import { taskApi } from '../services/api'
 import { formatBankSourceFile } from '../utils/bankSourceFile'
 
@@ -89,7 +89,7 @@ interface Props {
   onApprove?: () => void
   canApprove?: boolean
   approveBusy?: boolean
-  /** Process Live output: on-demand crop preview inside Image quality expand box. */
+  /** Process Live output: on-demand crop preview for M-VDU target receipts (any row with region provenance). */
   cropPreview?: {
     taskId: string
     companyId?: string | null
@@ -499,14 +499,25 @@ export function ARAPReview({
     () => rows.filter(r => readImageQuality(r).present).length,
     [rows],
   )
-  const selectedQualityRow = useMemo(() => {
+  const cropEligibleCount = useMemo(() => {
+    if (!cropPreview?.taskId) return 0
+    const files = cropPreview.files ?? []
+    return rows.filter(r => rowCanShowReceiptCropPreview(r as Record<string, unknown>, files)).length
+  }, [rows, cropPreview])
+  /** Single-selected row for receipt preview and/or AQ metrics (not AQ-only). */
+  const selectedDetailRow = useMemo(() => {
     if (selected.size !== 1) return null
     const id = Array.from(selected)[0]
     const row = rows.find(r => r._id === id)
     if (!row) return null
     const iq = readImageQuality(row)
-    return iq.present ? { row, iq } : null
-  }, [rows, selected])
+    const files = cropPreview?.files ?? []
+    const canCrop =
+      Boolean(cropPreview?.taskId) &&
+      rowCanShowReceiptCropPreview(row as Record<string, unknown>, files)
+    if (!iq.present && !canCrop) return null
+    return { row, iq, canCrop }
+  }, [rows, selected, cropPreview])
 
   useEffect(() => {
     let cancelled = false
@@ -525,7 +536,7 @@ export function ARAPReview({
       }
     }
 
-    if (!selectedQualityRow || !qualityPanelOpen || !cropPreview?.taskId) {
+    if (!selectedDetailRow?.canCrop || !qualityPanelOpen || !cropPreview?.taskId) {
       clearPreview()
       return () => {
         cancelled = true
@@ -534,7 +545,7 @@ export function ARAPReview({
     }
 
     const req = buildReceiptCropRequest(
-      selectedQualityRow.row as Record<string, unknown>,
+      selectedDetailRow.row as Record<string, unknown>,
       cropPreview.files ?? [],
     )
     if (!req) {
@@ -579,7 +590,7 @@ export function ARAPReview({
       cancelled = true
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [selectedQualityRow, qualityPanelOpen, cropPreview])
+  }, [selectedDetailRow, qualityPanelOpen, cropPreview])
 
   const { isMobile } = useViewport()
   const S = useMemo(() => resolveARAPStyles(isMobile), [isMobile])
@@ -647,6 +658,11 @@ export function ARAPReview({
           </button>
         )}
         <div style={{ flex: 1 }} />
+        {cropEligibleCount > 0 && (
+          <div style={{ ...S.rowCount, marginRight: 12 }} title="M-VDU rows with target receipt crop preview">
+            Receipt preview: {cropEligibleCount} rows
+          </div>
+        )}
         {qualityRows > 0 && (
           <div style={{ ...S.rowCount, marginRight: 12 }} title="Rows with AQ image-quality provenance">
             Image quality: {qualityRows} rows
@@ -691,6 +707,7 @@ export function ARAPReview({
                   <th style={{ ...S.th, minWidth: 90 }}>Category</th>
                   <th style={{ ...S.th, minWidth: 200 }}>Description</th>
                   <th style={{ ...S.th, minWidth: 90 }}>Payment Status</th>
+                  <th style={{ ...S.th, minWidth: 72 }}>Preview</th>
                   <th style={{ ...S.th, minWidth: 120 }}>Image quality</th>
                   <th style={{ ...S.th, width: 70 }}>Confidence</th>
                 </>
@@ -707,6 +724,7 @@ export function ARAPReview({
                   <th style={{ ...S.th, minWidth: 130 }}>Account Code</th>
                   <th style={{ ...S.th, minWidth: 90 }}>Category</th>
                   <th style={{ ...S.th, minWidth: 220 }}>Memo</th>
+                  <th style={{ ...S.th, minWidth: 72 }}>Preview</th>
                   <th style={{ ...S.th, minWidth: 120 }}>Image quality</th>
                   <th style={{ ...S.th, width: 70 }}>Confidence</th>
                 </>
@@ -727,6 +745,12 @@ export function ARAPReview({
               const rowBg = isSelected ? '#e6f4ea' : needsReview ? '#fff5f5' : glPosted ? '#fffbeb' : locked ? '#f0fdf4' : undefined
               const imageQuality = readImageQuality(row)
               const iqChip = imageQualityChipStyle(imageQuality.status)
+              const canCropPreview =
+                Boolean(cropPreview?.taskId) &&
+                rowCanShowReceiptCropPreview(
+                  row as Record<string, unknown>,
+                  cropPreview?.files ?? [],
+                )
               return (
                 <tr
                   key={row._id}
@@ -1169,6 +1193,36 @@ export function ARAPReview({
                     </td>
                   )}
 
+                  {/* Receipt crop preview (M-VDU target region; all eligible rows) */}
+                  <td style={S.td} onClick={e => e.stopPropagation()}>
+                    {canCropPreview ? (
+                      <button
+                        type="button"
+                        title="Preview target receipt crop"
+                        onClick={() => {
+                          setSelected(new Set([row._id]))
+                          setQualityPanelOpen(true)
+                        }}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          border: '1px solid #cbd5e1',
+                          background: '#fff',
+                          color: '#334155',
+                          borderRadius: 4,
+                          fontSize: 11,
+                          fontWeight: 600,
+                          padding: '3px 8px',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Preview
+                      </button>
+                    ) : (
+                      <span style={{ color: '#9ca3af', fontSize: 11 }}>—</span>
+                    )}
+                  </td>
+
                   {/* Image quality (AQ provenance) */}
                   <td style={S.td} onClick={e => e.stopPropagation()}>
                     {imageQuality.present ? (
@@ -1216,8 +1270,8 @@ export function ARAPReview({
         </table>
       </div>
 
-      {/* ── Receipt image quality panel (real AQ provenance; no crop photos) ── */}
-      {selectedQualityRow && (
+      {/* ── Receipt preview / image quality panel ── */}
+      {selectedDetailRow && (
         <div
           style={{
             margin: '0 12px 12px',
@@ -1239,11 +1293,11 @@ export function ARAPReview({
             }}
           >
             <div style={{ fontSize: 13, fontWeight: 600 }}>
-              Receipt image quality
+              {selectedDetailRow.iq.present ? 'Receipt image quality' : 'Receipt preview'}
               <span style={{ marginLeft: 8, fontWeight: 400, color: '#6b7280' }}>
-                {selectedQualityRow.iq.uiLabel}
-                {selectedQualityRow.row.source_file
-                  ? ` · ${String(selectedQualityRow.row.source_file)}`
+                {selectedDetailRow.iq.present ? selectedDetailRow.iq.uiLabel : 'Target crop'}
+                {selectedDetailRow.row.source_file
+                  ? ` · ${String(selectedDetailRow.row.source_file)}`
                   : ''}
               </span>
             </div>
@@ -1257,7 +1311,7 @@ export function ARAPReview({
           </div>
           {qualityPanelOpen && (
             <div style={{ padding: 12, fontSize: 12, color: '#374151' }}>
-              {cropPreview?.taskId ? (
+              {selectedDetailRow.canCrop && cropPreview?.taskId ? (
                 <div
                   style={{
                     border: '1px solid #e5e7eb',
@@ -1300,43 +1354,45 @@ export function ARAPReview({
                   </div>
                 </div>
               ) : null}
+              {selectedDetailRow.iq.present ? (
+                <>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
                 <span
                   style={{
-                    border: `1px solid ${imageQualityChipStyle(selectedQualityRow.iq.status).border}`,
-                    background: imageQualityChipStyle(selectedQualityRow.iq.status).bg,
-                    color: imageQualityChipStyle(selectedQualityRow.iq.status).fg,
+                    border: `1px solid ${imageQualityChipStyle(selectedDetailRow.iq.status).border}`,
+                    background: imageQualityChipStyle(selectedDetailRow.iq.status).bg,
+                    color: imageQualityChipStyle(selectedDetailRow.iq.status).fg,
                     borderRadius: 4,
                     padding: '2px 8px',
                     fontWeight: 600,
                   }}
                 >
-                  {selectedQualityRow.iq.status || 'unknown'}
+                  {selectedDetailRow.iq.status || 'unknown'}
                 </span>
                 <span style={{ color: '#6b7280' }}>
-                  selection: {selectedQualityRow.iq.selection || '—'}
+                  selection: {selectedDetailRow.iq.selection || '—'}
                 </span>
-                {selectedQualityRow.iq.scoreBefore != null && (
+                {selectedDetailRow.iq.scoreBefore != null && (
                   <span style={{ color: '#6b7280' }}>
-                    score: {selectedQualityRow.iq.scoreBefore.toFixed(3)}
-                    {selectedQualityRow.iq.scoreAfter != null
-                      ? ` → ${selectedQualityRow.iq.scoreAfter.toFixed(3)}`
+                    score: {selectedDetailRow.iq.scoreBefore.toFixed(3)}
+                    {selectedDetailRow.iq.scoreAfter != null
+                      ? ` → ${selectedDetailRow.iq.scoreAfter.toFixed(3)}`
                       : ''}
                   </span>
                 )}
               </div>
-              {selectedQualityRow.iq.reason ? (
-                <p style={{ margin: '0 0 8px', color: '#4b5563' }}>{selectedQualityRow.iq.reason}</p>
+              {selectedDetailRow.iq.reason ? (
+                <p style={{ margin: '0 0 8px', color: '#4b5563' }}>{selectedDetailRow.iq.reason}</p>
               ) : null}
-              {selectedQualityRow.iq.issues.length > 0 ? (
+              {selectedDetailRow.iq.issues.length > 0 ? (
                 <p style={{ margin: '0 0 8px' }}>
-                  Issues: {selectedQualityRow.iq.issues.join(', ')}
+                  Issues: {selectedDetailRow.iq.issues.join(', ')}
                 </p>
               ) : null}
               <p style={{ margin: '0 0 8px' }}>
                 Recipe:{' '}
-                {selectedQualityRow.iq.recipeOps.length
-                  ? selectedQualityRow.iq.recipeOps.join(' → ')
+                {selectedDetailRow.iq.recipeOps.length
+                  ? selectedDetailRow.iq.recipeOps.join(' → ')
                   : 'none'}
               </p>
               <div
@@ -1348,9 +1404,9 @@ export function ARAPReview({
               >
                 <div>
                   <div style={{ fontWeight: 600, marginBottom: 4 }}>Before</div>
-                  {(selectedQualityRow.iq.qualityBefore
+                  {(selectedDetailRow.iq.qualityBefore
                     ? IMAGE_QUALITY_METRIC_KEYS.filter(
-                        k => selectedQualityRow.iq.qualityBefore?.[k] != null,
+                        k => selectedDetailRow.iq.qualityBefore?.[k] != null,
                       )
                     : []
                   ).map(k => (
@@ -1365,18 +1421,18 @@ export function ARAPReview({
                       }}
                     >
                       <span>{k}</span>
-                      <span>{Number(selectedQualityRow.iq.qualityBefore?.[k]).toFixed(4)}</span>
+                      <span>{Number(selectedDetailRow.iq.qualityBefore?.[k]).toFixed(4)}</span>
                     </div>
                   ))}
-                  {!selectedQualityRow.iq.qualityBefore && (
+                  {!selectedDetailRow.iq.qualityBefore && (
                     <div style={{ color: '#9ca3af', fontSize: 11 }}>No metrics</div>
                   )}
                 </div>
                 <div>
                   <div style={{ fontWeight: 600, marginBottom: 4 }}>After</div>
-                  {selectedQualityRow.iq.qualityAfter ? (
+                  {selectedDetailRow.iq.qualityAfter ? (
                     IMAGE_QUALITY_METRIC_KEYS.filter(
-                      k => selectedQualityRow.iq.qualityAfter?.[k] != null,
+                      k => selectedDetailRow.iq.qualityAfter?.[k] != null,
                     ).map(k => (
                       <div
                         key={k}
@@ -1389,7 +1445,7 @@ export function ARAPReview({
                         }}
                       >
                         <span>{k}</span>
-                        <span>{Number(selectedQualityRow.iq.qualityAfter?.[k]).toFixed(4)}</span>
+                        <span>{Number(selectedDetailRow.iq.qualityAfter?.[k]).toFixed(4)}</span>
                       </div>
                     ))
                   ) : (
@@ -1401,6 +1457,13 @@ export function ARAPReview({
                 Metrics from local OpenCV AQ audit. Crop preview is rendered on demand from the
                 uploaded file and region provenance (not a separately stored crop asset).
               </p>
+                </>
+              ) : (
+                <p style={{ margin: 0, fontSize: 11, color: '#9ca3af' }}>
+                  On-demand crop of this M-VDU target receipt from the uploaded file and region
+                  provenance.
+                </p>
+              )}
             </div>
           )}
         </div>
