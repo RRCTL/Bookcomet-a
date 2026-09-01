@@ -8,7 +8,12 @@ import random
 
 import requests
 
-from app.core.config import resolve_settings_vlm_model, settings
+from app.core.config import (
+    resolve_layout_classify_model,
+    resolve_ocr_provider,
+    resolve_settings_vlm_model,
+    settings,
+)
 
 
 def _normalize_ocr_base_url(base_url: str) -> str:
@@ -386,8 +391,8 @@ class OcrProviderRegistry:
         self._providers: dict[str, OcrProvider] = {
             "DeepSeek-OCR": provider,
         }
-        self._providers[settings.ocr_provider] = provider
-        self._providers[settings.document_layout_classify_model] = provider
+        self._providers[resolve_ocr_provider()] = provider
+        self._providers[resolve_layout_classify_model()] = provider
         # Dynamically register any model name set via AR_OCR_MODEL env var
         if ar_model and ar_model not in self._providers:
             self._providers[ar_model] = provider

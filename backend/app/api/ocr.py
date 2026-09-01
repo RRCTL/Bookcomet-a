@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Mapping, Optional
 from fastapi import APIRouter, File, HTTPException, UploadFile, Form, Depends
 from sqlalchemy.orm import Session
 
-from app.core.config import resolve_settings_vlm_model, settings
+from app.core.config import resolve_layout_classify_model, resolve_settings_vlm_model, settings
 from app.ocr.interfaces import OcrLine, OcrResult
 from app.ocr.runtime import (
     BANK_VLM_MODEL,
@@ -4685,7 +4685,7 @@ async def _classify_document_layout(
       Single page  → Scenario A (invoice, skip OCR split) vs B (receipts, run split)
       Multi-page   → Scenario C (invoice, stitch+parse) vs D (receipts, per-page split)
 
-    Uses DOCUMENT_LAYOUT_CLASSIFY_MODEL from config (fast, cheap, single-word classification).
+    Uses DOCUMENT_LAYOUT_CLASSIFY_MODEL if set, else Settings VLM_MODEL.
     Falls back to "receipts" on any error so the safer per-page path is taken.
     """
     CLASSIFIER_PROMPT = (
@@ -4704,7 +4704,7 @@ async def _classify_document_layout(
         result = await _ocr_service.recognize(
             first_page_path,
             provider_name=ocr_provider_name,
-            model=settings.document_layout_classify_model,
+            model=resolve_layout_classify_model(),
             prompt_override=CLASSIFIER_PROMPT,
             ocr_options={"temperature": 0.0},
         )

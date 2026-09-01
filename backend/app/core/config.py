@@ -11,25 +11,37 @@ _backend_env_path = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(dotenv_path=_backend_env_path, override=False)
 
 # Default model IDs — override via backend/.env (single definition in code).
-_DEFAULT_OCR_ALIAS = "qwen-vl-ocr-latest"
 _DEFAULT_DEPLOY_MODEL = "qwen3.5-plus-2026-02-15"
 _DEFAULT_BANK_VLM_MODEL = "qwen3.5-plus-2026-02-15"
 _DEFAULT_VLM_MODEL = "qwen-vl-ocr-latest"
-_DEFAULT_LAYOUT_CLASSIFY_MODEL = "qwen3-vl-plus"
 _DEFAULT_AI_ENHANCE_REASONER_MODEL = "qwen3.5-plus-2026-02-15"
 
 
 def resolve_settings_vlm_model(*overrides: str | None) -> str:
     """First non-empty override, else Settings VLM_MODEL, else the built-in default.
 
-    AP / AR / BANK primary extraction should follow Settings → API VLM unless a
-    mode-specific env (AP_VLM_MODEL, AR_OCR_MODEL, BANK_VLM_MODEL) is set.
+    AP / AR / BANK primary extraction and the invoice/receipts layout classifier
+    follow Settings → API VLM unless a mode-specific env is set
+    (AP_VLM_MODEL, AR_OCR_MODEL, BANK_VLM_MODEL, DOCUMENT_LAYOUT_CLASSIFY_MODEL).
     """
     for raw in overrides:
         val = (raw or "").strip()
         if val:
             return val
     return (os.getenv("VLM_MODEL") or "").strip() or _DEFAULT_VLM_MODEL
+
+
+def resolve_ocr_provider() -> str:
+    """Explicit OCR_PROVIDER (local backend or alias), else Settings VLM id."""
+    explicit = (os.getenv("OCR_PROVIDER") or "").strip()
+    if explicit:
+        return explicit
+    return resolve_settings_vlm_model()
+
+
+def resolve_layout_classify_model() -> str:
+    """DOCUMENT_LAYOUT_CLASSIFY_MODEL if set, else Settings VLM_MODEL."""
+    return resolve_settings_vlm_model(os.getenv("DOCUMENT_LAYOUT_CLASSIFY_MODEL"))
 
 
 def _env_float(key: str, default: float) -> float:
@@ -59,9 +71,7 @@ class Settings:
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     host: str = os.getenv("HOST", "127.0.0.1")
     port: int = int(os.getenv("PORT", "8000"))
-    ocr_provider: str = (
-        os.getenv("OCR_PROVIDER", _DEFAULT_OCR_ALIAS).strip() or _DEFAULT_OCR_ALIAS
-    )
+    ocr_provider: str = resolve_ocr_provider()
     # Text LLM gateway model (manager review, chat, gate, account coding).
     # Neutral name LLM_MODEL preferred; legacy DEPLOY_MODEL still accepted.
     deploy_model: str = (
@@ -76,11 +86,8 @@ class Settings:
     vlm_model: str = resolve_settings_vlm_model()
     # Legacy AP-only default; AP primary now prefers Settings VLM when AP_VLM_MODEL is unset.
     ap_vlm_default: str = resolve_settings_vlm_model(os.getenv("AP_VLM_DEFAULT"))
-    # invoice vs receipts layout classifier (single-word VLM)
-    document_layout_classify_model: str = (
-        os.getenv("DOCUMENT_LAYOUT_CLASSIFY_MODEL", _DEFAULT_LAYOUT_CLASSIFY_MODEL).strip()
-        or _DEFAULT_LAYOUT_CLASSIFY_MODEL
-    )
+    # invoice vs receipts layout classifier (single-word VLM). Empty env → Settings VLM.
+    document_layout_classify_model: str = resolve_layout_classify_model()
     ai_enhance_reasoner_model: str = (
         (os.getenv("AI_ENHANCE_REASONER_MODEL") or "").strip()
         or _DEFAULT_AI_ENHANCE_REASONER_MODEL

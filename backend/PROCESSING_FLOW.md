@@ -37,7 +37,7 @@ The live workspace pipeline runs through **`ocr_test_core`** in `backend/app/api
 
 ### Models and prompts (AP)
 
-- **Registry provider name** is `qwen-vl-ocr-latest`; the **actual model id** sent to the gateway is **`AP_VLM_MODEL`** (env `AP_VLM_MODEL` or legacy `AP_MULTI_RECEIPT_OCR_MODEL`, default `qwen-vl-ocr-latest`).
+- **Registry provider name** is `OCR_PROVIDER` when set, otherwise Settings `VLM_MODEL`. The **actual model id** sent to the gateway is **`AP_VLM_MODEL`** (env `AP_VLM_MODEL` or legacy `AP_MULTI_RECEIPT_OCR_MODEL`, else Settings `VLM_MODEL`).
 - **Stage‑1 (document parsing) prompt:** `AP_MULTI_RECEIPT_DOCUMENT_PARSING_PROMPT` for AR/AP, optionally prefixed with **company profile** and appended with **rule-memory AI hints** (`_load_rule_memory_for_ocr` / `_extract_ai_instructions` for modes in `AR`, `AP`, `BANK`, `OTHER`).
 - OCR text passed into prompts is **`sanitise_ocr_text`**’d where applicable.
 
@@ -47,7 +47,7 @@ The live workspace pipeline runs through **`ocr_test_core`** in `backend/app/api
 
 ### Layout routing (invoice vs composite receipts)
 
-**Classifier:** `_classify_document_layout` — fast VLM (`qwen3-vl-plus`), normalized to **`invoice`** (single structured document) vs **`receipts`** (composite scan).
+**Classifier:** `_classify_document_layout` — VLM (`DOCUMENT_LAYOUT_CLASSIFY_MODEL` if set, else Settings `VLM_MODEL`), normalized to **`invoice`** (single structured document) vs **`receipts`** (composite scan).
 
 **Shortcuts**
 
@@ -241,7 +241,7 @@ Removes temp upload and converted page images; releases concurrency slot.
 | PDF rasterization | PyMuPDF | Workspace AP/AR always image path |
 | OCR (AP/AR) | VLM via `ocr_service` | Model from env (e.g. `AP_VLM_MODEL`) |
 | Receipt splitting | OpenCV / PIL | `_detect_receipt_regions_v2`, optional VLM boxes (AP) |
-| Layout classify | VLM (`qwen3-vl-plus`) | Invoice vs composite receipts |
+| Layout classify | VLM (Settings `VLM_MODEL`, or `DOCUMENT_LAYOUT_CLASSIFY_MODEL`) | Invoice vs composite receipts |
 | Document gate | Rules + keywords + LLM | `document_gate.py` |
 | Structured rows (AP/AR) | VLM JSON + validation | `_extract_ap_ai_fields_for_page`, cheque branches |
 | Optional enhance (non-AR/AP path) | DeepSeek-compatible API | When key configured |

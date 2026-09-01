@@ -16,6 +16,8 @@ from app.core.config import (
     _DEFAULT_AI_ENHANCE_REASONER_MODEL,
     _DEFAULT_DEPLOY_MODEL,
     _DEFAULT_VLM_MODEL,
+    resolve_layout_classify_model,
+    resolve_ocr_provider,
     resolve_settings_vlm_model,
     settings,
 )
@@ -189,6 +191,8 @@ def _sync_settings_from_env() -> None:
     ).lower() in ("true", "1", "yes")
     settings.ap_cross_vlm_model = os.getenv("AP_CROSS_VLM_MODEL", "").strip()
     settings.bank_vlm_model = resolve_settings_vlm_model(os.getenv("BANK_VLM_MODEL"))
+    settings.ocr_provider = resolve_ocr_provider()
+    settings.document_layout_classify_model = resolve_layout_classify_model()
 
 
 def _apply_bank_cross_verify_flag(model: str) -> None:

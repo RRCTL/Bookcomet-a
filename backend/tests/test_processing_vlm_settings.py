@@ -2,7 +2,12 @@
 
 import pytest
 
-from app.core.config import _DEFAULT_VLM_MODEL, resolve_settings_vlm_model
+from app.core.config import (
+    _DEFAULT_VLM_MODEL,
+    resolve_layout_classify_model,
+    resolve_ocr_provider,
+    resolve_settings_vlm_model,
+)
 
 
 def test_resolve_uses_settings_vlm_when_mode_unset(monkeypatch: pytest.MonkeyPatch):
@@ -56,7 +61,53 @@ def test_registry_registers_settings_vlm(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("BANK_VLM_MODEL", raising=False)
     monkeypatch.delenv("BANK_CROSS_VLM_MODEL", raising=False)
     monkeypatch.delenv("AP_CROSS_VLM_MODEL", raising=False)
+    monkeypatch.delenv("OCR_PROVIDER", raising=False)
+    monkeypatch.delenv("DOCUMENT_LAYOUT_CLASSIFY_MODEL", raising=False)
     from app.ocr.providers import OcrProviderRegistry
 
     reg = OcrProviderRegistry()
     assert reg.get("settings-vlm-fictional") is not None
+
+
+def test_layout_classify_follows_settings_vlm(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("VLM_MODEL", "settings-vlm-fictional")
+    monkeypatch.delenv("DOCUMENT_LAYOUT_CLASSIFY_MODEL", raising=False)
+    assert resolve_layout_classify_model() == "settings-vlm-fictional"
+
+
+def test_layout_classify_env_overrides_settings(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("VLM_MODEL", "settings-vlm-fictional")
+    monkeypatch.setenv("DOCUMENT_LAYOUT_CLASSIFY_MODEL", "layout-only-fictional")
+    assert resolve_layout_classify_model() == "layout-only-fictional"
+
+
+def test_empty_ocr_provider_follows_settings_vlm(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("VLM_MODEL", "settings-vlm-fictional")
+    monkeypatch.delenv("OCR_PROVIDER", raising=False)
+    assert resolve_ocr_provider() == "settings-vlm-fictional"
+
+
+def test_explicit_ocr_provider_kept(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("VLM_MODEL", "settings-vlm-fictional")
+    monkeypatch.setenv("OCR_PROVIDER", "easy")
+    assert resolve_ocr_provider() == "easy"
+
+
+def test_sync_refreshes_layout_and_ocr_provider(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("VLM_MODEL", "settings-vlm-fictional")
+    monkeypatch.delenv("DOCUMENT_LAYOUT_CLASSIFY_MODEL", raising=False)
+    monkeypatch.delenv("OCR_PROVIDER", raising=False)
+    from app.core.config import settings
+    from app.core.gateway_settings import _sync_settings_from_env
+
+    prev_ocr = settings.ocr_provider
+    prev_layout = settings.document_layout_classify_model
+    prev_vlm = settings.vlm_model
+    try:
+        _sync_settings_from_env()
+        assert settings.document_layout_classify_model == "settings-vlm-fictional"
+        assert settings.ocr_provider == "settings-vlm-fictional"
+    finally:
+        settings.ocr_provider = prev_ocr
+        settings.document_layout_classify_model = prev_layout
+        settings.vlm_model = prev_vlm
