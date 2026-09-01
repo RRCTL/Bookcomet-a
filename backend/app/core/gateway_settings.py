@@ -14,9 +14,11 @@ from urllib.parse import urlparse
 
 from app.core.config import (
     _DEFAULT_AI_ENHANCE_REASONER_MODEL,
-    _DEFAULT_BANK_VLM_MODEL,
     _DEFAULT_DEPLOY_MODEL,
     _DEFAULT_VLM_MODEL,
+    resolve_layout_classify_model,
+    resolve_ocr_provider,
+    resolve_settings_vlm_model,
     settings,
 )
 
@@ -159,9 +161,7 @@ def _sync_settings_from_env() -> None:
     settings.vlm_api_base = (
         os.getenv("VLM_BASE_URL") or os.getenv("LLM_BASE_URL") or ""
     )
-    settings.vlm_model = (
-        (os.getenv("VLM_MODEL") or "").strip() or _DEFAULT_VLM_MODEL
-    )
+    settings.vlm_model = resolve_settings_vlm_model()
     settings.deploy_model = (
         (os.getenv("LLM_MODEL") or os.getenv("DEPLOY_MODEL") or "").strip()
         or _DEFAULT_DEPLOY_MODEL
@@ -190,9 +190,9 @@ def _sync_settings_from_env() -> None:
         os.getenv("AI_ENHANCE_USE_REASONER") or "false"
     ).lower() in ("true", "1", "yes")
     settings.ap_cross_vlm_model = os.getenv("AP_CROSS_VLM_MODEL", "").strip()
-    settings.bank_vlm_model = (
-        (os.getenv("BANK_VLM_MODEL") or "").strip() or _DEFAULT_BANK_VLM_MODEL
-    )
+    settings.bank_vlm_model = resolve_settings_vlm_model(os.getenv("BANK_VLM_MODEL"))
+    settings.ocr_provider = resolve_ocr_provider()
+    settings.document_layout_classify_model = resolve_layout_classify_model()
 
 
 def _apply_bank_cross_verify_flag(model: str) -> None:

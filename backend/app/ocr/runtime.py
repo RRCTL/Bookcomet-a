@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import os
 
-from app.core.config import _DEFAULT_BANK_VLM_MODEL, settings
+from app.core.config import resolve_settings_vlm_model, settings
 from app.services.ai_post_processor import AiPostProcessor
 from app.services.field_filtering import FieldFilteringPipeline
 from app.services.ocr_service import OcrService
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Single bank-statement VLM model for all banks (HSBC, BOC, BEA, SCB, ...).
 # Per-bank behaviour differs by prompt in app/bank_prompts/, not by model id.
-BANK_VLM_MODEL = (os.getenv("BANK_VLM_MODEL") or "").strip() or _DEFAULT_BANK_VLM_MODEL
+BANK_VLM_MODEL = resolve_settings_vlm_model(os.getenv("BANK_VLM_MODEL"))
 
 ocr_service = OcrService()
 filtering_pipeline = FieldFilteringPipeline()
@@ -65,9 +65,7 @@ def refresh_ai_runtime() -> None:
     """
     global BANK_VLM_MODEL
 
-    BANK_VLM_MODEL = (
-        (os.getenv("BANK_VLM_MODEL") or "").strip() or _DEFAULT_BANK_VLM_MODEL
-    )
+    BANK_VLM_MODEL = resolve_settings_vlm_model(os.getenv("BANK_VLM_MODEL"))
 
     from app.ocr.providers import OcrProviderRegistry
 
@@ -118,10 +116,17 @@ def refresh_ai_runtime() -> None:
         except Exception as exc:
             logger.warning("Failed to refresh LLM cache in %s: %s", mod_path, exc)
 
-    # AP cross model module globals (ocr + tasks import path).
+    # AP / AR / BANK primary models + cross-VLM globals (ocr + tasks import path).
+    ap_vlm = ""
+    ar_ocr = ""
     try:
         from app.api import ocr as _ocr_api
 
+        ap_vlm = _ocr_api.resolve_ap_vlm_model()
+        ar_ocr = _ocr_api.resolve_ar_ocr_model()
+        _ocr_api.AP_VLM_MODEL = ap_vlm
+        _ocr_api.AP_MULTI_RECEIPT_OCR_MODEL = ap_vlm
+        _ocr_api.AR_OCR_MODEL = ar_ocr
         _ocr_api.AP_CROSS_VLM_MODEL = os.getenv("AP_CROSS_VLM_MODEL", "").strip()
         _ocr_api.BANK_VLM_MODEL = BANK_VLM_MODEL
     except Exception as exc:
@@ -136,7 +141,10 @@ def refresh_ai_runtime() -> None:
         logger.warning("Failed to refresh tasks AP_CROSS_VLM_MODEL: %s", exc)
 
     logger.info(
-        "AI runtime refreshed (BANK_VLM_MODEL=%s, deploy_model=%s, ap_cross=%s)",
+        "AI runtime refreshed (VLM_MODEL=%s AP_VLM=%s AR_OCR=%s BANK_VLM=%s deploy=%s ap_cross=%s)",
+        settings.vlm_model,
+        ap_vlm or "(unset)",
+        ar_ocr or "(unset)",
         BANK_VLM_MODEL,
         settings.deploy_model,
         settings.ap_cross_vlm_model or "(unset)",

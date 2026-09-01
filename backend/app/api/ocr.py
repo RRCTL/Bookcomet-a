@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Mapping, Optional
 from fastapi import APIRouter, File, HTTPException, UploadFile, Form, Depends
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
+from app.core.config import resolve_layout_classify_model, resolve_settings_vlm_model, settings
 from app.ocr.interfaces import OcrLine, OcrResult
 from app.ocr.runtime import (
     BANK_VLM_MODEL,
@@ -286,19 +286,32 @@ Quality rules:
 - If text is uncertain, keep best-effort text in place instead of dropping it.
 """
 
-# AP payables: VLM id for both passes (document OCR + structured JSON). Same gateway as BANK/AR.
-# Env order: AP_VLM_MODEL → AP_MULTI_RECEIPT_OCR_MODEL (legacy) → AP_VLM_DEFAULT (config).
-_AP_VLM_ENV = os.getenv("AP_VLM_MODEL", "").strip()
-_AP_VLM_LEGACY = os.getenv("AP_MULTI_RECEIPT_OCR_MODEL", "").strip()
-AP_VLM_MODEL = _AP_VLM_ENV or _AP_VLM_LEGACY or settings.ap_vlm_default
+# AP payables: VLM id for both passes (document OCR + structured JSON).
+# Env order: AP_VLM_MODEL → AP_MULTI_RECEIPT_OCR_MODEL (legacy) → Settings VLM_MODEL.
+def resolve_ap_vlm_model() -> str:
+    return resolve_settings_vlm_model(
+        os.getenv("AP_VLM_MODEL"),
+        os.getenv("AP_MULTI_RECEIPT_OCR_MODEL"),
+    )
+
+
+def resolve_ar_ocr_model() -> str:
+    # AR_OCR_MODEL if set; else same chain as AP (including Settings VLM_MODEL).
+    return resolve_settings_vlm_model(
+        os.getenv("AR_OCR_MODEL"),
+        os.getenv("AP_VLM_MODEL"),
+        os.getenv("AP_MULTI_RECEIPT_OCR_MODEL"),
+    )
+
+
+AP_VLM_MODEL = resolve_ap_vlm_model()
 # Backward-compatible name used throughout this module (same resolved string as AP_VLM_MODEL).
 AP_MULTI_RECEIPT_OCR_MODEL = AP_VLM_MODEL
 # Optional second VLM for manual AP "Double check" only (see POST /api/tasks/.../ap-cross-verify).
 AP_CROSS_VLM_MODEL = os.getenv("AP_CROSS_VLM_MODEL", "").strip()
 
 # Model used for AR mode OCR & AI extraction.
-# Set AR_OCR_MODEL in .env to test a different model for AR without affecting AP.
-AR_OCR_MODEL = os.getenv("AR_OCR_MODEL", AP_VLM_MODEL)
+AR_OCR_MODEL = resolve_ar_ocr_model()
 
 # AP multi-receipt: optional VLM-first page layout (bounding boxes) before OpenCV segmentation.
 _AP_VLM_LAYOUT_FLAG = os.getenv("AP_VLM_LAYOUT_CROP_ENABLED", "").strip().lower()
@@ -4672,7 +4685,7 @@ async def _classify_document_layout(
       Single page  → Scenario A (invoice, skip OCR split) vs B (receipts, run split)
       Multi-page   → Scenario C (invoice, stitch+parse) vs D (receipts, per-page split)
 
-    Uses DOCUMENT_LAYOUT_CLASSIFY_MODEL from config (fast, cheap, single-word classification).
+    Uses DOCUMENT_LAYOUT_CLASSIFY_MODEL if set, else Settings VLM_MODEL.
     Falls back to "receipts" on any error so the safer per-page path is taken.
     """
     CLASSIFIER_PROMPT = (
@@ -4691,7 +4704,7 @@ async def _classify_document_layout(
         result = await _ocr_service.recognize(
             first_page_path,
             provider_name=ocr_provider_name,
-            model=settings.document_layout_classify_model,
+            model=resolve_layout_classify_model(),
             prompt_override=CLASSIFIER_PROMPT,
             ocr_options={"temperature": 0.0},
         )
