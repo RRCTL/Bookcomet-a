@@ -36,5 +36,5 @@ Pillow>=12.3.0     # Image processing
 opencv-python-headless>=5.0.0.93
 
 # Bank statements (Excel/CSV parsing)
-pandas>=2.0.0
+pandas>=3.0.5
 
