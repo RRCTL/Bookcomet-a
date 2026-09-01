@@ -18,7 +18,7 @@ cryptography>=49.0.0,<50.0.0
 bcrypt>=5.0.0
 # SEC-CODE-009: optional TOTP MFA
 pyotp>=2.10.0
-fastapi-mail>=1.6.5
+fastapi-mail>=1.6.8
 pydantic[email]>=2.13.4
 
 # AI/ML
