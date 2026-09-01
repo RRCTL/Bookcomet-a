@@ -19,6 +19,19 @@ _DEFAULT_LAYOUT_CLASSIFY_MODEL = "qwen3-vl-plus"
 _DEFAULT_AI_ENHANCE_REASONER_MODEL = "qwen3.5-plus-2026-02-15"
 
 
+def resolve_settings_vlm_model(*overrides: str | None) -> str:
+    """First non-empty override, else Settings VLM_MODEL, else the built-in default.
+
+    AP / AR / BANK primary extraction should follow Settings → API VLM unless a
+    mode-specific env (AP_VLM_MODEL, AR_OCR_MODEL, BANK_VLM_MODEL) is set.
+    """
+    for raw in overrides:
+        val = (raw or "").strip()
+        if val:
+            return val
+    return (os.getenv("VLM_MODEL") or "").strip() or _DEFAULT_VLM_MODEL
+
+
 def _env_float(key: str, default: float) -> float:
     raw = (os.getenv(key, "") or "").strip()
     if not raw:
@@ -57,18 +70,12 @@ class Settings:
     )
     # Document gate LLM: GATE_MODEL if set, else deploy_model
     gate_model_env: str = os.getenv("GATE_MODEL", "").strip()
-    # BANK mode VLM id (bank_statement_parser, OCR registry)
-    bank_vlm_model: str = (
-        (os.getenv("BANK_VLM_MODEL") or "").strip() or _DEFAULT_BANK_VLM_MODEL
-    )
+    # BANK mode VLM id (bank_statement_parser, OCR registry). Empty BANK_VLM_MODEL → Settings VLM.
+    bank_vlm_model: str = resolve_settings_vlm_model(os.getenv("BANK_VLM_MODEL"))
     # Default OCR payload model (OpenAI-compatible VLM gateway).
-    vlm_model: str = (
-        (os.getenv("VLM_MODEL") or "").strip() or _DEFAULT_VLM_MODEL
-    )
-    # AP VLM when AP_VLM_MODEL and AP_MULTI_RECEIPT_OCR_MODEL are both unset
-    ap_vlm_default: str = (
-        os.getenv("AP_VLM_DEFAULT", _DEFAULT_OCR_ALIAS).strip() or _DEFAULT_OCR_ALIAS
-    )
+    vlm_model: str = resolve_settings_vlm_model()
+    # Legacy AP-only default; AP primary now prefers Settings VLM when AP_VLM_MODEL is unset.
+    ap_vlm_default: str = resolve_settings_vlm_model(os.getenv("AP_VLM_DEFAULT"))
     # invoice vs receipts layout classifier (single-word VLM)
     document_layout_classify_model: str = (
         os.getenv("DOCUMENT_LAYOUT_CLASSIFY_MODEL", _DEFAULT_LAYOUT_CLASSIFY_MODEL).strip()

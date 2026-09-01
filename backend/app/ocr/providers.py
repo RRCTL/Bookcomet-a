@@ -8,7 +8,7 @@ import random
 
 import requests
 
-from app.core.config import _DEFAULT_BANK_VLM_MODEL, _DEFAULT_OCR_ALIAS, settings
+from app.core.config import resolve_settings_vlm_model, settings
 
 
 def _normalize_ocr_base_url(base_url: str) -> str:
@@ -391,17 +391,25 @@ class OcrProviderRegistry:
         # Dynamically register any model name set via AR_OCR_MODEL env var
         if ar_model and ar_model not in self._providers:
             self._providers[ar_model] = provider
-        # AP payables VLM — same resolution order as app.api.ocr (AP_VLM_MODEL → legacy → default)
-        _ap_vlm = (
-            os.getenv("AP_VLM_MODEL", "").strip()
-            or os.getenv("AP_MULTI_RECEIPT_OCR_MODEL", "").strip()
-            or (os.getenv("AP_VLM_DEFAULT") or "").strip()
-            or _DEFAULT_OCR_ALIAS
+        _settings_vlm = resolve_settings_vlm_model()
+        if _settings_vlm not in self._providers:
+            self._providers[_settings_vlm] = provider
+        # AP payables VLM — same resolution as app.api.ocr (mode env → Settings VLM).
+        _ap_vlm = resolve_settings_vlm_model(
+            os.getenv("AP_VLM_MODEL"),
+            os.getenv("AP_MULTI_RECEIPT_OCR_MODEL"),
         )
         if _ap_vlm not in self._providers:
             self._providers[_ap_vlm] = provider
-        # Bank-statement row extraction — one model id (matches ocr.runtime BANK_VLM_MODEL).
-        _bank_vlm = (os.getenv("BANK_VLM_MODEL") or "").strip() or _DEFAULT_BANK_VLM_MODEL
+        _ar_ocr = resolve_settings_vlm_model(
+            os.getenv("AR_OCR_MODEL"),
+            os.getenv("AP_VLM_MODEL"),
+            os.getenv("AP_MULTI_RECEIPT_OCR_MODEL"),
+        )
+        if _ar_ocr not in self._providers:
+            self._providers[_ar_ocr] = provider
+        # Bank-statement row extraction — BANK_VLM_MODEL or Settings VLM.
+        _bank_vlm = resolve_settings_vlm_model(os.getenv("BANK_VLM_MODEL"))
         if _bank_vlm not in self._providers:
             self._providers[_bank_vlm] = provider
 
