@@ -57,13 +57,13 @@ describe('rowCanShowReceiptCropPreview', () => {
     expect(rowCanShowReceiptCropPreview(row, files)).toBe(true)
   })
 
-  it('is true for every Live output row when a source file exists (no region required)', () => {
+  it('preview_requires_bbox: no Target crop without a stored region', () => {
     const row = {
       source_file: 'synthetic.pdf',
       extraction_provenance: { source_pdf_page: 1 },
     }
     expect(rowHasReceiptCropRegion(row)).toBe(false)
-    expect(rowCanShowReceiptCropPreview(row, files)).toBe(true)
+    expect(rowCanShowReceiptCropPreview(row, files)).toBe(false)
   })
 
   it('is false when the run has no uploaded files', () => {

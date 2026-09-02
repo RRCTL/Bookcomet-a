@@ -163,6 +163,27 @@ describe('rowsFromOcrPayload', () => {
     expect(prov.receipt_index).toBe(3)
     expect(prov.receipt_bbox_pixels).toEqual({ x: 5, y: 6, w: 40, h: 50 })
   })
+
+  it('stamps receipt_instance_id from the page object', () => {
+    const rows = rowsFromOcrPayload({
+      pages: [
+        {
+          page: 2,
+          receipt_index: 1,
+          receipt_instance_id: 'p2-r01',
+          segmentation_mode: 'vlm_detect',
+          receipt_bbox: { x: 1, y: 2, w: 10, h: 12 },
+          ai_enhanced: { tsv_rows: [{ amount: '2', payee: 'Synthetic' }] },
+        },
+      ],
+    })
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.extraction_provenance).toMatchObject({
+      receipt_instance_id: 'p2-r01',
+      segmentation_mode: 'vlm_detect',
+      receipt_bbox_pixels: { x: 1, y: 2, w: 10, h: 12 },
+    })
+  })
 })
 
 describe('buildTablePayloadFromOcrByFile AP source page', () => {
