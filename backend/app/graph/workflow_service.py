@@ -450,11 +450,19 @@ def _rescan_prior_summary_for_run_file(run_file: WorkflowRunFile) -> str:
     return "; ".join(parts)
 
 
+# Include in-flight files so Scenario D page snapshots stream into the review table.
+_OCR_LIVE_FILE_STATUSES = frozenset({"ok", "running", "warning"})
+
+
+def _run_file_has_live_ocr(rf: Any) -> bool:
+    return str(getattr(rf, "file_status", "") or "") in _OCR_LIVE_FILE_STATUSES
+
+
 def _merge_run_files_ocr(run_files: list[WorkflowRunFile]) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     for rf in run_files:
         payload = rf.result_summary_json
-        if not isinstance(payload, dict) or rf.file_status != "ok":
+        if not isinstance(payload, dict) or not _run_file_has_live_ocr(rf):
             continue
         merged.extend(rows_from_ocr_payload(payload))
     return merged
@@ -539,12 +547,66 @@ def _ocr_by_file_from_run_files(run_files: list[WorkflowRunFile]) -> dict[str, l
     out: dict[str, list[dict[str, Any]]] = {}
     for rf in run_files:
         payload = rf.result_summary_json
-        if not isinstance(payload, dict) or rf.file_status != "ok":
+        if not isinstance(payload, dict) or not _run_file_has_live_ocr(rf):
             continue
         rows = rows_from_ocr_payload(payload)
         if rows:
             out[rf.task_file_id] = rows
     return out
+
+
+def apply_partial_ocr_to_running_file(
+    run: WorkflowRun,
+    run_files: list[WorkflowRunFile],
+    running_file: WorkflowRunFile,
+    result_json: dict[str, Any],
+) -> None:
+    """Stamp mid-flight OCR pages onto a still-running file and refresh ocr_by_file."""
+    running_file.result_summary_json = result_json
+    merged = _merge_run_files_ocr(run_files)
+    _apply_vlm_ocr_states(run, run_files, merged)
+
+
+def persist_workflow_ocr_partial(
+    workflow_run_id: str,
+    result_json: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Commit Scenario D page snapshots so GET /runs + WS can fill the table early."""
+    if not workflow_run_id or not isinstance(result_json, dict):
+        return None
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        run = db.query(WorkflowRun).filter(WorkflowRun.id == workflow_run_id).first()
+        if not run or str(run.run_status) not in {"executing", "queued", "running", "coa_running"}:
+            return None
+        rf = (
+            db.query(WorkflowRunFile)
+            .filter(
+                WorkflowRunFile.run_id == run.id,
+                WorkflowRunFile.file_status == "running",
+            )
+            .first()
+        )
+        if not rf:
+            return None
+        live = db.query(WorkflowRunFile).filter(WorkflowRunFile.run_id == run.id).all()
+        apply_partial_ocr_to_running_file(run, live, rf, result_json)
+        db.commit()
+        return {
+            "run_status": run.run_status,
+            "node_states_json": run.node_states_json,
+        }
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "[OCR Partial] failed to persist workflow snapshot for run %s",
+            workflow_run_id,
+        )
+        return None
+    finally:
+        db.close()
 
 
 def _apply_vlm_ocr_states(

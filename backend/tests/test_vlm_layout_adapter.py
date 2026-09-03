@@ -496,6 +496,16 @@ async def test_crop_extract_uses_settings_image_options(monkeypatch, tmp_path) -
     assert seen_opts == [{"max_side": 800, "format": "JPEG", "quality": 70}]
 
 
+def test_ap_receipt_ocr_image_options_always_jpeg(monkeypatch) -> None:
+    monkeypatch.setattr(ocr, "AP_CROP_OCR_IMAGE_MAX_SIDE", 0)
+    monkeypatch.setattr(ocr, "AP_CROP_OCR_JPEG_QUALITY", 90)
+    assert ocr._ap_receipt_ocr_image_options() == {
+        "max_side": 0,
+        "format": "JPEG",
+        "quality": 90,
+    }
+
+
 @pytest.mark.asyncio
 async def test_vlm_empty_extraction_still_emits_linked_candidate(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("AP_DETECTION_BACKEND", raising=False)

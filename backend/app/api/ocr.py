@@ -200,6 +200,36 @@ def _persist_background_job_partial_result(
         db.close()
 
 
+async def _persist_ocr_partial_snapshot(
+    *,
+    job_id: str | None,
+    result_json: dict[str, Any],
+    progress_percent: int | None = None,
+    progress_label: str | None = None,
+    workflow_run_id: str | None = None,
+) -> None:
+    """Job + workflow mid-flight snapshots (workflow path has no background_job_id)."""
+    _persist_background_job_partial_result(
+        job_id=job_id,
+        result_json=result_json,
+        progress_percent=progress_percent,
+        progress_label=progress_label,
+    )
+    wf_id = workflow_run_id or _workflow_run_id_cv.get()
+    if not wf_id:
+        return
+    from app.graph.workflow_events import workflow_event_hub
+    from app.graph.workflow_service import persist_workflow_ocr_partial
+
+    snap = persist_workflow_ocr_partial(wf_id, result_json)
+    if snap:
+        await workflow_event_hub.snapshot(
+            wf_id,
+            str(snap.get("run_status") or "executing"),
+            snap.get("node_states_json"),
+        )
+
+
 async def _poll_cancel_tasks(
     tracked: list[asyncio.Task[Any]],
     *,
@@ -357,15 +387,16 @@ def _ap_ocr_structured_only() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
-def _ap_receipt_ocr_image_options() -> dict | None:
-    """Upload options from Settings/env. max_side 0 means provider default (no baked size)."""
-    if AP_CROP_OCR_IMAGE_MAX_SIDE > 0:
-        return {
-            "max_side": AP_CROP_OCR_IMAGE_MAX_SIDE,
-            "format": "JPEG",
-            "quality": AP_CROP_OCR_JPEG_QUALITY,
-        }
-    return None
+def _ap_receipt_ocr_image_options() -> dict:
+    """Always JPEG so the provider uses one upload profile, not the 4-step PNG ladder.
+
+    max_side 0 means no resize (provider keeps original pixels as JPEG).
+    """
+    return {
+        "max_side": AP_CROP_OCR_IMAGE_MAX_SIDE,
+        "format": "JPEG",
+        "quality": AP_CROP_OCR_JPEG_QUALITY,
+    }
 try:
     _layout_jq = int(os.getenv("AP_VLM_LAYOUT_JPEG_QUALITY", "88"))
 except ValueError:
@@ -5855,8 +5886,9 @@ async def ocr_test_core(
                                         partial_pages.append(_partial)
                                 if partial_pages:
                                     partial_outcome = recompute_ocr_job_outcome_from_pages(partial_pages)
-                                    _persist_background_job_partial_result(
+                                    await _persist_ocr_partial_snapshot(
                                         job_id=background_job_id,
+                                        workflow_run_id=workflow_run_id,
                                         result_json={
                                             "trace_id": trace_id,
                                             "filename": file.filename,

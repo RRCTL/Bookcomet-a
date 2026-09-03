@@ -113,6 +113,19 @@ describe('getOcrByFileFromRun', () => {
     expect(Object.keys(ocr)).toEqual(['workflow'])
     expect(ocr.workflow).toHaveLength(1)
   })
+
+  it('reads result_summary_json from a still-running file', () => {
+    const row = { amount: '12.0', payee: 'Live Page', date: '2022-01-08' }
+    const run = makeRun({})
+    run.run_status = 'executing'
+    run.files[0]!.file_status = 'running'
+    run.files[0]!.result_summary_json = {
+      pages: [{ page: 1, ai_enhanced: { tsv_rows: [row] } }],
+    }
+    const ocr = getOcrByFileFromRun(run)
+    expect(Object.keys(ocr)).toEqual(['file-a'])
+    expect(ocr['file-a']?.[0]?.payee).toBe('Live Page')
+  })
 })
 
 describe('rowsFromOcrPayload', () => {

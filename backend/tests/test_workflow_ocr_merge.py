@@ -6,6 +6,7 @@ from app.graph.workflow_service import (
     _apply_vlm_ocr_states,
     _merge_run_files_ocr,
     _ocr_by_file_from_run_files,
+    apply_partial_ocr_to_running_file,
     rows_from_ocr_payload,
 )
 from app.models.workflow import WorkflowRun
@@ -113,20 +114,34 @@ def test_merge_empty_payload():
     assert rows_from_ocr_payload({}) == []
 
 
-def test_merge_run_files_skips_non_ok_status():
+def test_merge_run_files_skips_pending_and_failed():
     ok_file = SimpleNamespace(
         file_status="ok",
         task_file_id="file-a",
         result_summary_json={"ai_enhanced": {"tsv_rows": [{"voucher_no": "OK"}]}},
+    )
+    running_file = SimpleNamespace(
+        file_status="running",
+        task_file_id="file-r",
+        result_summary_json={"ai_enhanced": {"tsv_rows": [{"voucher_no": "LIVE"}]}},
     )
     warn_file = SimpleNamespace(
         file_status="warning",
         task_file_id="file-b",
         result_summary_json={"ai_enhanced": {"tsv_rows": [{"voucher_no": "WARN"}]}},
     )
-    rows = _merge_run_files_ocr([ok_file, warn_file])
-    assert len(rows) == 1
-    assert rows[0]["voucher_no"] == "OK"
+    pending = SimpleNamespace(
+        file_status="pending",
+        task_file_id="file-p",
+        result_summary_json={"ai_enhanced": {"tsv_rows": [{"voucher_no": "PEND"}]}},
+    )
+    failed = SimpleNamespace(
+        file_status="failed",
+        task_file_id="file-f",
+        result_summary_json={"ai_enhanced": {"tsv_rows": [{"voucher_no": "FAIL"}]}},
+    )
+    rows = _merge_run_files_ocr([ok_file, running_file, warn_file, pending, failed])
+    assert {r["voucher_no"] for r in rows} == {"OK", "LIVE", "WARN"}
 
 
 def test_apply_vlm_ocr_states_keeps_per_file_ocr_on_merge_path():
@@ -173,7 +188,50 @@ def test_ocr_by_file_keys_task_file_id():
         task_file_id="id-3",
         result_summary_json={"ai_enhanced": {"tsv_rows": [{"voucher_no": "C"}]}},
     )
-    by_file = _ocr_by_file_from_run_files([f1, f2, pending])
-    assert set(by_file.keys()) == {"id-1", "id-2"}
+    running = SimpleNamespace(
+        file_status="running",
+        task_file_id="id-4",
+        result_summary_json={
+            "pages": [
+                {"page": 1, "ai_enhanced": {"tsv_rows": [{"voucher_no": "P1"}]}},
+            ],
+        },
+    )
+    by_file = _ocr_by_file_from_run_files([f1, f2, pending, running])
+    assert set(by_file.keys()) == {"id-1", "id-2", "id-4"}
     assert by_file["id-1"][0]["voucher_no"] == "A"
     assert by_file["id-2"][0]["voucher_no"] == "B"
+    assert by_file["id-4"][0]["voucher_no"] == "P1"
+
+
+def test_apply_partial_ocr_to_running_file_streams_pages():
+    running = SimpleNamespace(
+        file_status="running",
+        task_file_id="file-live",
+        result_summary_json=None,
+    )
+    run = WorkflowRun(
+        id="run-live",
+        company_id="co-1",
+        task_id="task-1",
+        owner_user_id="user-1",
+        processing_mode="AP",
+        graph_json={},
+        node_states_json={},
+    )
+    apply_partial_ocr_to_running_file(
+        run,
+        [running],
+        running,
+        {
+            "pages": [
+                {"page": 1, "ai_enhanced": {"tsv_rows": [{"voucher_no": "LIVE-1"}]}},
+                {"page": 2, "ai_enhanced": {"tsv_rows": [{"voucher_no": "LIVE-2"}]}},
+            ],
+        },
+    )
+    assert running.result_summary_json["pages"][0]["page"] == 1
+    assert [r["voucher_no"] for r in run.node_states_json["ocr_by_file"]["file-live"]] == [
+        "LIVE-1",
+        "LIVE-2",
+    ]

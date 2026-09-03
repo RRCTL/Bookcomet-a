@@ -212,6 +212,7 @@
 .erp-preview-btn:hover { background: var(--erp-accent-weak); }
 .erp-preview-btn:disabled { color: #9aa3b2; cursor: default; border-color: var(--erp-border); }
 .erp-empty { padding: 40px; text-align: center; color: var(--erp-text-mute); font-size: 13px; }
+.erp-empty--compact { padding: 8px 12px; text-align: left; font-size: 12px; }
 .erp-expand-btn { border: none; background: transparent; cursor: pointer; color: var(--erp-text-mute); font-size: 11px; padding: 2px 4px; line-height: 1; }
 .erp-expand-btn:hover { color: var(--erp-accent); }
 .erp-expand-row td { background: #fafbfc; padding: 0; }

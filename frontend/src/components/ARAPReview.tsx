@@ -229,8 +229,8 @@ export function ARAPReview({
   reconState,
   onUnlock,
   isProcessing = false,
-  completedFiles = 0,
-  totalFiles = 0,
+  completedFiles: _completedFiles = 0,
+  totalFiles: _totalFiles = 0,
   glPostedLedgerLockKeys,
   glVoucherNoByGroupId = {},
   onRetryOcrPage,
@@ -675,18 +675,6 @@ export function ARAPReview({
         )}
         <div style={S.rowCount}>{rows.length} transactions</div>
       </div>
-
-      {/* ── Processing banner ── */}
-      {isProcessing && (
-        <div style={S.processingBanner}>
-          <span style={S.processingDot} />
-          <span>
-            OCR is still processing
-            {totalFiles > 0 && ` (${completedFiles} / ${totalFiles} files done)`}
-            ; the table will keep updating...
-          </span>
-        </div>
-      )}
 
       {/* ── Table ── */}
       <div style={S.tableContainer}>
