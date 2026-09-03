@@ -225,3 +225,29 @@ def test_ai_enhance_client_uses_vlm_read_timeout(monkeypatch: pytest.MonkeyPatch
     svc = AiEnhanceClient(default_model="qwen-chat")
     svc.chat_completions(messages=[{"role": "user", "content": "hi"}])
     assert captured["timeout"] == (20.0, 360.0)
+
+
+def test_resolve_vlm_enable_thinking_default_off(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("VLM_ENABLE_THINKING", raising=False)
+    from app.ocr.providers import resolve_vlm_enable_thinking
+
+    assert resolve_vlm_enable_thinking() is False
+    assert resolve_vlm_enable_thinking({}) is False
+    assert resolve_vlm_enable_thinking({"model": "settings-vlm"}) is False
+
+
+def test_resolve_vlm_enable_thinking_env_on(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("VLM_ENABLE_THINKING", "true")
+    from app.ocr.providers import resolve_vlm_enable_thinking
+
+    assert resolve_vlm_enable_thinking() is True
+    assert resolve_vlm_enable_thinking({}) is True
+
+
+def test_resolve_vlm_enable_thinking_options_win(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("VLM_ENABLE_THINKING", "true")
+    from app.ocr.providers import resolve_vlm_enable_thinking
+
+    assert resolve_vlm_enable_thinking({"enable_thinking": False}) is False
+    monkeypatch.delenv("VLM_ENABLE_THINKING", raising=False)
+    assert resolve_vlm_enable_thinking({"enable_thinking": True}) is True

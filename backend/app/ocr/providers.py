@@ -25,6 +25,15 @@ def _normalize_ocr_base_url(base_url: str) -> str:
     return bu
 
 
+def resolve_vlm_enable_thinking(ocr_options: dict | None = None) -> bool:
+    """Settings/env thinking flag. Default off. Explicit ocr_options wins. No vendor name match."""
+    options = ocr_options or {}
+    if "enable_thinking" in options:
+        return bool(options["enable_thinking"])
+    raw = (os.getenv("VLM_ENABLE_THINKING") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 class DeepSeekOcrProvider(OcrProvider):
     # DMXAPI OCR model (OpenAI-compatible)
     name = "DeepSeek-OCR"
@@ -261,13 +270,10 @@ class DeepSeekOcrProvider(OcrProvider):
             }
             if "max_tokens" in options:
                 payload["max_tokens"] = int(options["max_tokens"])
-            # Qwen3.x models run chain-of-thought (thinking) by default, generating
-            # thousands of hidden reasoning tokens before the visible JSON output.
-            # On dense bank-statement pages this pushes generation time past 180 s.
-            # Pass enable_thinking=false to suppress the thinking chain and get
-            # direct JSON output, keeping response times well under the timeout.
-            if "enable_thinking" in options:
-                payload["enable_thinking"] = bool(options["enable_thinking"])
+            # Default off (VLM_ENABLE_THINKING). Hidden thinking tokens can hold the
+            # socket until VLM_READ_TIMEOUT / VLM_TIMEOUT and then return empty content.
+            # Callers may still set ocr_options.enable_thinking. No vendor-name match.
+            payload["enable_thinking"] = resolve_vlm_enable_thinking(options)
 
             _payload_bytes = len(_json.dumps(payload).encode("utf-8"))
             logger.info(

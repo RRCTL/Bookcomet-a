@@ -1,4 +1,4 @@
-"""Guess mode auto-confirms multi-receipt force-split (no needs_confirmation prompt)."""
+"""Guess mode: one Detect call, never OpenCV force-split, no confirmation prompt."""
 
 from __future__ import annotations
 

@@ -304,6 +304,7 @@ def test_stub_candidate_row_links_preview() -> None:
 @pytest.mark.asyncio
 async def test_vlm_each_box_becomes_instance_and_ocr(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("AP_DETECTION_BACKEND", raising=False)
+    monkeypatch.delenv("AP_OCR_STRUCTURED_ONLY", raising=False)
     from PIL import Image
 
     page_png = tmp_path / "synthetic_page.png"
@@ -315,6 +316,87 @@ async def test_vlm_each_box_becomes_instance_and_ocr(monkeypatch, tmp_path) -> N
     async def two_boxes(*_a, **kwargs):
         assert kwargs.get("vlm_only") is True
         return [tiny, normal]
+
+    recognize_paths: list[str] = []
+    extract_calls: list[str] = []
+    opencv_calls: list[str] = []
+
+    def boom(name: str):
+        def _inner(*_a, **_k):
+            opencv_calls.append(name)
+            raise AssertionError(f"{name} must not run on AP/AR Settings VLM Detect")
+
+        return _inner
+
+    class _FakeOcr:
+        async def recognize(self, image_path, **_k):
+            recognize_paths.append(image_path)
+            return OcrResult(text="SYNTHETIC", lines=[], metadata={})
+
+    class _FakeFilter:
+        def filter_and_extract(self, _result):
+            return {"fields": {}, "overall_confidence": 0.9, "missing_fields": []}
+
+    async def fake_extract(**kwargs):
+        extract_calls.append(str(kwargs.get("img_path") or ""))
+        return {
+            "output_format": "tsv",
+            "ai_processed": True,
+            "tsv_rows": [{"amount": "9.00", "payee": "Synthetic Shop"}],
+        }
+
+    async def passthrough_merge(*, ai_primary, **_k):
+        return ai_primary
+
+    monkeypatch.setattr(ocr, "_ap_vlm_layout_try_receipt_regions", two_boxes)
+    monkeypatch.setattr(ocr, "_ocr_service", _FakeOcr())
+    monkeypatch.setattr(ocr, "_filtering_pipeline", _FakeFilter())
+    monkeypatch.setattr(ocr, "_extract_ar_ap_ai_fields_routed", fake_extract)
+    monkeypatch.setattr(ocr, "_ap_apply_cross_vlm_merge_if_configured", passthrough_merge)
+    monkeypatch.setattr(ocr._receipt_image_quality, "quality_enabled", lambda: False)
+    monkeypatch.setattr(ocr, "_detect_receipt_regions_v2", boom("detect_v2"))
+    monkeypatch.setattr(ocr, "_force_split_receipt_regions", boom("force_split"))
+
+    result = await ocr._run_ap_multi_receipt_ocr_from_image(
+        str(page_png),
+        trace_id="t",
+        filename="synthetic.pdf",
+        ocr_provider_name="vlm",
+        ocr_model_override="settings-vlm",
+        ocr_prompt_override=None,
+        processing_mode="AP",
+        confirmed=True,
+        pdf_page_num=4,
+    )
+    assert result is not None
+    pages = result["pages"]
+    assert len(pages) == 2
+    assert recognize_paths == []
+    assert len(extract_calls) == 2
+    assert opencv_calls == []
+    assert {p["receipt_instance_id"] for p in pages} == {"p4-r01", "p4-r02"}
+    assert pages[0]["receipt_bbox"] == tiny
+    assert pages[1]["receipt_bbox"] == normal
+    for page in pages:
+        rows = (page.get("ai_enhanced") or {}).get("tsv_rows") or []
+        assert len(rows) == 1
+        prov = rows[0]["extraction_provenance"]
+        assert prov["receipt_instance_id"] == page["receipt_instance_id"]
+        assert prov["receipt_bbox_pixels"] == page["receipt_bbox"]
+        assert "receipt_region_norm" in prov
+        assert prov["segmentation_mode"] == "vlm_detect"
+
+
+@pytest.mark.asyncio
+async def test_structured_only_off_runs_pass1_recognize(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AP_OCR_STRUCTURED_ONLY", "false")
+    from PIL import Image
+
+    page_png = tmp_path / "synthetic_page.png"
+    Image.new("RGB", (200, 200), (255, 255, 255)).save(page_png)
+
+    async def one_box(*_a, **_k):
+        return [{"x": 20, "y": 20, "w": 80, "h": 90}]
 
     recognize_paths: list[str] = []
 
@@ -331,13 +413,13 @@ async def test_vlm_each_box_becomes_instance_and_ocr(monkeypatch, tmp_path) -> N
         return {
             "output_format": "tsv",
             "ai_processed": True,
-            "tsv_rows": [{"amount": "9.00", "payee": "Synthetic Shop"}],
+            "tsv_rows": [{"amount": "1.00", "payee": "Synthetic"}],
         }
 
     async def passthrough_merge(*, ai_primary, **_k):
         return ai_primary
 
-    monkeypatch.setattr(ocr, "_ap_vlm_layout_try_receipt_regions", two_boxes)
+    monkeypatch.setattr(ocr, "_ap_vlm_layout_try_receipt_regions", one_box)
     monkeypatch.setattr(ocr, "_ocr_service", _FakeOcr())
     monkeypatch.setattr(ocr, "_filtering_pipeline", _FakeFilter())
     monkeypatch.setattr(ocr, "_extract_ar_ap_ai_fields_routed", fake_extract)
@@ -353,22 +435,10 @@ async def test_vlm_each_box_becomes_instance_and_ocr(monkeypatch, tmp_path) -> N
         ocr_prompt_override=None,
         processing_mode="AP",
         confirmed=True,
-        pdf_page_num=4,
+        pdf_page_num=1,
     )
     assert result is not None
-    pages = result["pages"]
-    assert len(pages) == 2
-    assert len(recognize_paths) == 2
-    assert {p["receipt_instance_id"] for p in pages} == {"p4-r01", "p4-r02"}
-    assert pages[0]["receipt_bbox"] == tiny
-    assert pages[1]["receipt_bbox"] == normal
-    for page in pages:
-        rows = (page.get("ai_enhanced") or {}).get("tsv_rows") or []
-        assert len(rows) == 1
-        prov = rows[0]["extraction_provenance"]
-        assert prov["receipt_instance_id"] == page["receipt_instance_id"]
-        assert prov["receipt_bbox_pixels"] == page["receipt_bbox"]
-        assert prov["segmentation_mode"] == "vlm_detect"
+    assert len(recognize_paths) == 1
 
 
 @pytest.mark.asyncio
