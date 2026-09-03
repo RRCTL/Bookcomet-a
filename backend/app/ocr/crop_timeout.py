@@ -12,19 +12,11 @@ OCR_TIMEOUT_MEMO = "[OCR timeout]"
 VLM_CROP_TIMEOUT_CODE = "VLM_CROP_TIMEOUT"
 OCR_TIMEOUT_FLAG = "ocr_timeout"
 _DEFAULT_CROP_TIMEOUT_S = 120.0
-_DEFAULT_HTTP_MAX_RETRIES = 3
 
 
 def _positive_float(raw: str) -> float | None:
     try:
         return max(1.0, float(raw))
-    except (TypeError, ValueError):
-        return None
-
-
-def _positive_int(raw: Any) -> int | None:
-    try:
-        return max(1, int(raw))
     except (TypeError, ValueError):
         return None
 
@@ -44,21 +36,6 @@ def resolve_ap_crop_ocr_timeout_s() -> float:
         if parsed is not None:
             return parsed
     return _DEFAULT_CROP_TIMEOUT_S
-
-
-def resolve_vlm_http_max_retries(ocr_options: dict | None = None) -> int:
-    """ocr_options.http_max_retries, else VLM_HTTP_MAX_RETRIES, else 3."""
-    options = ocr_options or {}
-    if options.get("http_max_retries") is not None:
-        parsed = _positive_int(options.get("http_max_retries"))
-        if parsed is not None:
-            return parsed
-    raw = (os.getenv("VLM_HTTP_MAX_RETRIES") or "").strip()
-    if raw:
-        parsed = _positive_int(raw)
-        if parsed is not None:
-            return parsed
-    return _DEFAULT_HTTP_MAX_RETRIES
 
 
 def build_crop_stub_tsv_row(

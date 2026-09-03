@@ -14,7 +14,23 @@ from app.core.config import (
     resolve_settings_vlm_model,
     settings,
 )
-from app.ocr.crop_timeout import resolve_vlm_http_max_retries
+
+
+def resolve_vlm_http_max_retries(ocr_options: dict | None = None) -> int:
+    """ocr_options.http_max_retries, else VLM_HTTP_MAX_RETRIES, else 3."""
+    options = ocr_options or {}
+    if options.get("http_max_retries") is not None:
+        try:
+            return max(1, int(options.get("http_max_retries")))
+        except (TypeError, ValueError):
+            pass
+    raw = (os.getenv("VLM_HTTP_MAX_RETRIES") or "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return 3
 
 
 def _normalize_ocr_base_url(base_url: str) -> str:

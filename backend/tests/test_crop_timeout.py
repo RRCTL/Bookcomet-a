@@ -13,8 +13,8 @@ from app.ocr.crop_timeout import (
     build_crop_timeout_page,
     crop_outcomes_to_persist_payloads,
     resolve_ap_crop_ocr_timeout_s,
-    resolve_vlm_http_max_retries,
 )
+from app.ocr.providers import resolve_vlm_http_max_retries
 
 
 def test_resolve_crop_timeout_prefers_override(monkeypatch: pytest.MonkeyPatch) -> None:
