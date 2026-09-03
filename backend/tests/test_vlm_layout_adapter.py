@@ -442,6 +442,61 @@ async def test_structured_only_off_runs_pass1_recognize(monkeypatch, tmp_path) -
 
 
 @pytest.mark.asyncio
+async def test_crop_extract_uses_settings_image_options(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(ocr, "AP_CROP_OCR_IMAGE_MAX_SIDE", 800)
+    monkeypatch.setattr(ocr, "AP_CROP_OCR_JPEG_QUALITY", 70)
+    from PIL import Image
+
+    page_png = tmp_path / "synthetic_page.png"
+    Image.new("RGB", (200, 200), (255, 255, 255)).save(page_png)
+
+    async def one_box(*_a, **_k):
+        return [{"x": 20, "y": 20, "w": 80, "h": 90}]
+
+    seen_opts: list[dict | None] = []
+
+    class _FakeOcr:
+        async def recognize(self, *_a, **_k):
+            raise AssertionError("structured-only must skip pass-1 recognize")
+
+    class _FakeFilter:
+        def filter_and_extract(self, _result):
+            return {"fields": {}, "overall_confidence": 0.0, "missing_fields": []}
+
+    async def fake_extract(**kwargs):
+        seen_opts.append(kwargs.get("image_options"))
+        return {
+            "output_format": "tsv",
+            "ai_processed": True,
+            "tsv_rows": [{"amount": "2.00", "payee": "Synthetic"}],
+        }
+
+    async def passthrough_merge(*, ai_primary, **_k):
+        return ai_primary
+
+    monkeypatch.setattr(ocr, "_ap_vlm_layout_try_receipt_regions", one_box)
+    monkeypatch.setattr(ocr, "_ocr_service", _FakeOcr())
+    monkeypatch.setattr(ocr, "_filtering_pipeline", _FakeFilter())
+    monkeypatch.setattr(ocr, "_extract_ar_ap_ai_fields_routed", fake_extract)
+    monkeypatch.setattr(ocr, "_ap_apply_cross_vlm_merge_if_configured", passthrough_merge)
+    monkeypatch.setattr(ocr._receipt_image_quality, "quality_enabled", lambda: False)
+
+    result = await ocr._run_ap_multi_receipt_ocr_from_image(
+        str(page_png),
+        trace_id="t",
+        filename="synthetic.pdf",
+        ocr_provider_name="vlm",
+        ocr_model_override="settings-vlm",
+        ocr_prompt_override=None,
+        processing_mode="AP",
+        confirmed=True,
+        pdf_page_num=1,
+    )
+    assert result is not None
+    assert seen_opts == [{"max_side": 800, "format": "JPEG", "quality": 70}]
+
+
+@pytest.mark.asyncio
 async def test_vlm_empty_extraction_still_emits_linked_candidate(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("AP_DETECTION_BACKEND", raising=False)
     from PIL import Image
