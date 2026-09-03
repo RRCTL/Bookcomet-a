@@ -67,6 +67,12 @@ from app.services.job_tasks import OcrBackgroundJobCancelled, background_job_can
 from app.services import extraction_validation as _extraction_validation
 from app.services import receipt_image_quality as _receipt_image_quality
 from app.ocr import cross_check as _ocr_cross_check
+from app.ocr.crop_timeout import (
+    build_crop_failure_page,
+    build_crop_partial_snapshot,
+    public_page_for_crop_outcome,
+    resolve_ap_crop_ocr_timeout_s,
+)
 from app.ocr.vlm_layout_detect import (
     VLM_RECEIPT_DETECT_PROMPT,
     is_vlm_detection_backend,
@@ -187,6 +193,11 @@ def _persist_background_job_partial_result(
             return
         if job.status in ("failed", "completed", "cancelled"):
             return
+        prior = job.result_json
+        if isinstance(prior, dict):
+            from app.graph.ocr_partial_merge import merge_partial_ocr_summary
+
+            result_json = merge_partial_ocr_summary(prior, result_json)
         job.result_json = result_json
         if progress_percent is not None:
             job.progress_percent = str(max(0, min(99, int(progress_percent))))
@@ -228,6 +239,31 @@ async def _persist_ocr_partial_snapshot(
             str(snap.get("run_status") or "executing"),
             snap.get("node_states_json"),
         )
+
+
+async def _persist_one_crop_page(
+    *,
+    page: dict[str, Any],
+    filename: str,
+    trace_id: str,
+    processing_mode: str,
+    background_job_id: str | None,
+    provider: str,
+) -> None:
+    """Write one finished crop into the running workflow/job snapshot."""
+    try:
+        await _persist_ocr_partial_snapshot(
+            job_id=background_job_id,
+            result_json=build_crop_partial_snapshot(
+                trace_id=trace_id,
+                filename=filename,
+                processing_mode=processing_mode,
+                page=page,
+                provider=provider,
+            ),
+        )
+    except Exception:
+        logger.exception("[OCR Partial] failed to persist crop page snapshot")
 
 
 async def _poll_cancel_tasks(
@@ -372,6 +408,8 @@ try:
     AP_CROP_OCR_CONCURRENCY = max(1, int(os.getenv("AP_CROP_OCR_CONCURRENCY", "8")))
 except ValueError:
     AP_CROP_OCR_CONCURRENCY = 8
+# AP_CROP_OCR_TIMEOUT_S / VLM_READ_TIMEOUT / VLM_HTTP_MAX_RETRIES are read at
+# call time via resolve_ap_crop_ocr_timeout_s and resolve_vlm_http_max_retries.
 try:
     AP_CROP_OCR_IMAGE_MAX_SIDE = max(0, int(os.getenv("AP_CROP_OCR_IMAGE_MAX_SIDE", "0")))
 except ValueError:
@@ -397,6 +435,11 @@ def _ap_receipt_ocr_image_options() -> dict:
         "format": "JPEG",
         "quality": AP_CROP_OCR_JPEG_QUALITY,
     }
+
+
+def _ap_receipt_ocr_options(*, temperature: float = 0.0) -> dict[str, Any]:
+    """Receipt/crop structured OCR: one HTTP attempt so the crop cap matches the socket."""
+    return {"temperature": temperature, "http_max_retries": 1}
 try:
     _layout_jq = int(os.getenv("AP_VLM_LAYOUT_JPEG_QUALITY", "88"))
 except ValueError:
@@ -1719,7 +1762,7 @@ async def _extract_ap_ai_fields_for_page(
             provider_name=ocr_provider_name,
             model=model,
             prompt_override=structured_prompt,
-            ocr_options={"temperature": 0.0},
+            ocr_options=_ap_receipt_ocr_options(temperature=0.0),
             image_options=image_options,
         )
         raw_text = structured_result.text.strip()
@@ -2965,6 +3008,7 @@ async def _run_ap_multi_receipt_ocr_from_image(
                     provider_name=ocr_provider_name,
                     model=AP_MULTI_RECEIPT_OCR_MODEL,
                     prompt_override=ocr_prompt_override or AP_MULTI_RECEIPT_DOCUMENT_PARSING_PROMPT,
+                    ocr_options=_ap_receipt_ocr_options(temperature=0.1),
                     image_options=crop_pass_image_options,
                 )
                 _raise_if_bg_job_cancelled(background_job_id)
@@ -3067,20 +3111,16 @@ async def _run_ap_multi_receipt_ocr_from_image(
             reason = _crop_guard_reason(receipt_bbox)
             if reason and not vlm_mode:
                 skipped_rows.append(
-                    {
-                        "page": pdf_page_num,
-                        "receipt_index": page_num,
-                        "receipt_instance_id": receipt_instance_id(pdf_page_num, page_num),
-                        "status": "error",
-                        "error_code": reason,
-                        "error_detail": f"Skipped crop preflight: {reason}",
-                        "text": "",
-                        "lines_count": 0,
-                        "extracted_fields": {},
-                        "field_confidence": 0.0,
-                        "ai_enhanced": None,
-                        "receipt_bbox": receipt_bbox,
-                    }
+                    build_crop_failure_page(
+                        pdf_page_num=pdf_page_num,
+                        receipt_index=page_num,
+                        receipt_bbox=receipt_bbox,
+                        parent_image_size=None,
+                        vlm_mode=vlm_mode,
+                        error_code=reason,
+                        error_detail=f"Skipped crop preflight: {reason}",
+                        seg_source=seg_source or "opencv",
+                    )
                 )
                 continue
             if reason and vlm_mode:
@@ -3106,62 +3146,17 @@ async def _run_ap_multi_receipt_ocr_from_image(
                 len(receipt_regions),
                 pdf_page_num,
             )
-        poll_crops: asyncio.Task[None] | None = None
-        if background_job_id and async_tasks:
-            poll_crops = asyncio.create_task(
-                _poll_cancel_tasks(async_tasks, job_id=background_job_id),
-            )
-        try:
-            raw_results = await asyncio.gather(*async_tasks, return_exceptions=True)
-        finally:
-            if poll_crops is not None:
-                poll_crops.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await poll_crops
-        for (receipt_index, _bbox, _task), r in zip(crop_jobs, raw_results):
-            if isinstance(r, asyncio.CancelledError):
-                if background_job_id and background_job_cancelled(background_job_id):
-                    raise OcrBackgroundJobCancelled()
-                raise r
-            if isinstance(r, OcrBackgroundJobCancelled):
-                raise r
-            if isinstance(r, BaseException):
-                crop_errors += 1
-                logger.error(
-                    "   [AP] Multi-receipt crop %s/%s failed: %s",
-                    receipt_index,
-                    n_crops,
-                    r,
+            for skipped in skipped_rows:
+                all_pages_results.append(skipped)
+                await _persist_one_crop_page(
+                    page=skipped,
+                    filename=filename,
+                    trace_id=trace_id,
+                    processing_mode=processing_mode,
+                    background_job_id=background_job_id,
+                    provider=ocr_provider_name,
                 )
-                all_pages_results.append(
-                    {
-                        "page": pdf_page_num,
-                        "receipt_index": receipt_index,
-                        "receipt_instance_id": receipt_instance_id(pdf_page_num, receipt_index),
-                        "status": "error",
-                        "error_detail": str(r)[:4000],
-                        "text": "",
-                        "lines_count": 0,
-                        "extracted_fields": {},
-                        "field_confidence": 0.0,
-                        "ai_enhanced": None,
-                        "receipt_bbox": _bbox,
-                        "segmentation_mode": "vlm_detect" if vlm_mode else "opencv",
-                        "segmentation_source": "vlm_layout" if vlm_mode else (seg_source or "opencv"),
-                    }
-                )
-            else:
-                if isinstance(r, dict):
-                    r.setdefault("status", "success")
-                    r.setdefault(
-                        "receipt_instance_id",
-                        receipt_instance_id(pdf_page_num, receipt_index),
-                    )
-                all_pages_results.append(r)
-        all_pages_results.extend(skipped_rows)
-        crop_errors += len(skipped_rows)
-        all_pages_results.sort(key=lambda row: row.get("receipt_index", 0))
-        batch_rows: list[Any] = []
+        crop_timeout_s = resolve_ap_crop_ocr_timeout_s()
         parent_wh_for_stub: tuple[int, int] | None = None
         try:
             from PIL import Image
@@ -3170,6 +3165,90 @@ async def _run_ap_multi_receipt_ocr_from_image(
                 parent_wh_for_stub = _im.size
         except Exception:
             parent_wh_for_stub = None
+
+        async def _await_crop(
+            page_num: int,
+            receipt_bbox: dict[str, int],
+            task: asyncio.Task,
+        ) -> tuple[int, dict[str, int], Any]:
+            try:
+                return page_num, receipt_bbox, await asyncio.wait_for(
+                    task, timeout=crop_timeout_s
+                )
+            except asyncio.TimeoutError as exc:
+                if not task.done():
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await task
+                return page_num, receipt_bbox, exc
+            except (OcrBackgroundJobCancelled, asyncio.CancelledError):
+                raise
+            except BaseException as exc:
+                return page_num, receipt_bbox, exc
+
+        wrappers = [
+            asyncio.create_task(_await_crop(pn, bbox, task))
+            for pn, bbox, task in crop_jobs
+        ]
+        poll_crops: asyncio.Task[None] | None = None
+        if background_job_id and async_tasks:
+            poll_crops = asyncio.create_task(
+                _poll_cancel_tasks(async_tasks, job_id=background_job_id),
+            )
+        try:
+            for finished in asyncio.as_completed(wrappers):
+                receipt_index, bbox, outcome = await finished
+                if isinstance(outcome, asyncio.CancelledError):
+                    if background_job_id and background_job_cancelled(background_job_id):
+                        raise OcrBackgroundJobCancelled()
+                    raise outcome
+                if isinstance(outcome, OcrBackgroundJobCancelled):
+                    raise outcome
+                page = public_page_for_crop_outcome(
+                    outcome,
+                    pdf_page_num=pdf_page_num,
+                    receipt_index=receipt_index,
+                    receipt_bbox=bbox,
+                    parent_image_size=parent_wh_for_stub,
+                    vlm_mode=vlm_mode,
+                    seg_source=seg_source or "opencv",
+                )
+                if isinstance(outcome, TimeoutError):
+                    crop_errors += 1
+                    logger.warning(
+                        "   [AP] Multi-receipt crop %s/%s timed out after %.1fs",
+                        receipt_index,
+                        n_crops,
+                        crop_timeout_s,
+                    )
+                elif page.get("status") == "error":
+                    crop_errors += 1
+                    logger.error(
+                        "   [AP] Multi-receipt crop %s/%s failed: %s",
+                        receipt_index,
+                        n_crops,
+                        outcome,
+                    )
+                all_pages_results.append(page)
+                await _persist_one_crop_page(
+                    page=page,
+                    filename=filename,
+                    trace_id=trace_id,
+                    processing_mode=processing_mode,
+                    background_job_id=background_job_id,
+                    provider=ocr_provider_name,
+                )
+        finally:
+            for wrapper in wrappers:
+                if not wrapper.done():
+                    wrapper.cancel()
+            if poll_crops is not None:
+                poll_crops.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await poll_crops
+        crop_errors += len(skipped_rows)
+        all_pages_results.sort(key=lambda row: row.get("receipt_index", 0))
+        batch_rows: list[Any] = []
         for p in all_pages_results:
             if p.get("status") == "error":
                 continue

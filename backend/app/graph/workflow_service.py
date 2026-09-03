@@ -34,6 +34,7 @@ from app.graph.graph_utils import (
     vlm_node_params,
     vlm_settings,
 )
+from app.graph.ocr_partial_merge import merge_partial_ocr_summary
 from app.graph.vlm_call_budget import (
     can_make_vlm_call,
     record_vlm_call,
@@ -562,7 +563,11 @@ def apply_partial_ocr_to_running_file(
     result_json: dict[str, Any],
 ) -> None:
     """Stamp mid-flight OCR pages onto a still-running file and refresh ocr_by_file."""
-    running_file.result_summary_json = result_json
+    prior = running_file.result_summary_json
+    running_file.result_summary_json = merge_partial_ocr_summary(
+        prior if isinstance(prior, dict) else None,
+        result_json,
+    )
     merged = _merge_run_files_ocr(run_files)
     _apply_vlm_ocr_states(run, run_files, merged)
 

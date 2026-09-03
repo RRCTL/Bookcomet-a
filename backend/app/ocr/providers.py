@@ -14,6 +14,7 @@ from app.core.config import (
     resolve_settings_vlm_model,
     settings,
 )
+from app.ocr.crop_timeout import resolve_vlm_http_max_retries
 
 
 def _normalize_ocr_base_url(base_url: str) -> str:
@@ -246,7 +247,7 @@ class DeepSeekOcrProvider(OcrProvider):
         profiles = dedup_profiles
 
         import json as _json
-        _max_retries = 3
+        _max_retries = resolve_vlm_http_max_retries(options)
         _retryable = (
             requests.exceptions.ConnectionError,
             requests.exceptions.Timeout,

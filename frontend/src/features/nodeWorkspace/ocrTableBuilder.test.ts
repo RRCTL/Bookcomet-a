@@ -177,6 +177,36 @@ describe('rowsFromOcrPayload', () => {
     expect(prov.receipt_bbox_pixels).toEqual({ x: 5, y: 6, w: 40, h: 50 })
   })
 
+  it('includes a synthetic timeout tsv_row', () => {
+    const rows = rowsFromOcrPayload({
+      pages: [
+        {
+          page: 6,
+          receipt_index: 2,
+          receipt_instance_id: 'p6-r02',
+          status: 'error',
+          error_code: 'VLM_CROP_TIMEOUT',
+          receipt_bbox: { x: 1, y: 2, w: 10, h: 12 },
+          ai_enhanced: {
+            tsv_rows: [
+              {
+                voucher_no: 'P6-R2',
+                amount: '',
+                memo: '[OCR timeout]',
+                needs_review: true,
+                validation_flags: ['ocr_timeout'],
+              },
+            ],
+          },
+        },
+      ],
+    })
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.voucher_no).toBe('P6-R2')
+    expect(rows[0]?.memo).toBe('[OCR timeout]')
+    expect(rows[0]?.validation_flags).toContain('ocr_timeout')
+  })
+
   it('stamps receipt_instance_id from the page object', () => {
     const rows = rowsFromOcrPayload({
       pages: [

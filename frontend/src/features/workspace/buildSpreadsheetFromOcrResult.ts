@@ -496,9 +496,14 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
   if (usePerPageIteration) {
     for (const pageData of pages) {
       if (pageData?.status === 'error') {
+        const enhanced = pageData?.ai_enhanced
+        const tsvRows = enhanced && typeof enhanced === 'object' ? (enhanced as { tsv_rows?: unknown }).tsv_rows : null
+        const hasStubRows = Array.isArray(tsvRows) && tsvRows.some((row) => row && typeof row === 'object')
+        if (!hasStubRows) {
         const pageLabel =
           pageData.receipt_index != null ? `P${pageData.page}-R${pageData.receipt_index}` : `P${pageData.page}`
         const errTail = String(pageData.error_detail || 'Unknown error').slice(0, 500)
+        const timeoutMemo = pageData.error_code === 'VLM_CROP_TIMEOUT'
         const errorPageCtx: PageCropContext = {
           page: pageData.page,
           receipt_index: pageData.receipt_index,
@@ -519,7 +524,7 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
           payee: '',
           bank: '',
           category: '',
-          memo: `[OCR failed] ${errTail}`,
+          memo: `${timeoutMemo ? '[OCR timeout]' : '[OCR failed]'} ${errTail}`,
           confidence: 'N/A',
           file_position: `${fileName} ${pageLabel}`,
           ocr_background_job_id: ocrBackgroundJobId || '',
@@ -533,6 +538,7 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
         })
         rowIndex++
         continue
+        }
       }
       const fields = pageData?.ai_enhanced || pageData?.extracted_fields || {}
       const pageLabel =
