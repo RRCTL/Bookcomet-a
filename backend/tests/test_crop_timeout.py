@@ -35,7 +35,7 @@ def test_resolve_crop_timeout_default_chain(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.delenv("AP_CROP_OCR_TIMEOUT_S", raising=False)
     monkeypatch.delenv("VLM_READ_TIMEOUT", raising=False)
     monkeypatch.delenv("VLM_TIMEOUT", raising=False)
-    assert resolve_ap_crop_ocr_timeout_s() == 120.0
+    assert resolve_ap_crop_ocr_timeout_s() == 240.0
 
 
 def test_resolve_http_max_retries_options_and_env(monkeypatch: pytest.MonkeyPatch) -> None:

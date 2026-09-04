@@ -11,7 +11,7 @@ from app.services.extraction_validation import attach_receipt_region_provenance
 OCR_TIMEOUT_MEMO = "[OCR timeout]"
 VLM_CROP_TIMEOUT_CODE = "VLM_CROP_TIMEOUT"
 OCR_TIMEOUT_FLAG = "ocr_timeout"
-_DEFAULT_CROP_TIMEOUT_S = 120.0
+_DEFAULT_CROP_TIMEOUT_S = 240.0
 
 
 def _positive_float(raw: str) -> float | None:
@@ -22,7 +22,7 @@ def _positive_float(raw: str) -> float | None:
 
 
 def resolve_ap_crop_ocr_timeout_s() -> float:
-    """AP_CROP_OCR_TIMEOUT_S, else VLM_READ_TIMEOUT → VLM_TIMEOUT → 120."""
+    """AP_CROP_OCR_TIMEOUT_S, else VLM_READ_TIMEOUT → VLM_TIMEOUT → 240."""
     override = (os.getenv("AP_CROP_OCR_TIMEOUT_S") or "").strip()
     if override:
         parsed = _positive_float(override)
