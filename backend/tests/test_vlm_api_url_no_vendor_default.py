@@ -35,10 +35,13 @@ def test_sync_does_not_inject_vendor_vlm_url(monkeypatch: pytest.MonkeyPatch) ->
     _clear_gateway_urls(monkeypatch)
     monkeypatch.setenv("VLM_BASE_URL", "")
     monkeypatch.setenv("LLM_BASE_URL", "")
+    monkeypatch.setenv("AI_ENHANCE_BASE_URL", "")
     _sync_settings_from_env()
     assert settings.vlm_api_base == ""
+    assert settings.ai_enhance_api_base == ""
     assert (os.getenv("VLM_BASE_URL") or "") == ""
     assert _VENDOR_DEFAULT not in (settings.vlm_api_base, os.getenv("VLM_BASE_URL") or "")
+    assert _VENDOR_DEFAULT not in (settings.ai_enhance_api_base or "")
 
 
 def test_runtime_module_no_longer_injects_vlm_base_url() -> None:

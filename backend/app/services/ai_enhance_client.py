@@ -55,10 +55,22 @@ class AiEnhanceClient:
         if not self._api_key.startswith("sk-"):
             logger.warning("API Key format may be incorrect (should start with 'sk-')")
 
-        resolved_base = (base_url or settings.ai_enhance_api_base).rstrip("/")
+        resolved_base = (
+            base_url
+            or os.getenv("AI_ENHANCE_BASE_URL")
+            or os.getenv("LLM_BASE_URL")
+            or os.getenv("VLM_BASE_URL")
+            or settings.ai_enhance_api_base
+            or ""
+        ).strip()
+        if not resolved_base:
+            raise ValueError(
+                "AI enhancement API URL missing. Set AI_ENHANCE_BASE_URL "
+                "(or VLM_BASE_URL) in Settings → API."
+            )
         if not resolved_base.startswith("https://"):
             raise ValueError("Base URL must use HTTPS for security")
-        self._base_url = resolved_base
+        self._base_url = resolved_base.rstrip("/")
 
         # Prefer live env (tests / runtime overrides) over import-time Settings snapshot.
         self._default_model = (
@@ -69,7 +81,7 @@ class AiEnhanceClient:
             or ""
         ).strip()
         if not self._default_model:
-            raise ValueError("AI enhancement model missing. Set AI_ENHANCE_MODEL in .env")
+            raise ValueError("AI enhancement model missing. Set AI_ENHANCE_MODEL in Settings → API.")
 
         logger.info(
             f"[LLM {self._default_model}] Service initialized (API Key: {'*' * 8}{self._api_key[-4:]}, "
@@ -123,8 +135,10 @@ class AiEnhanceClient:
 
         for attempt in range(1, max_retries + 2):
             try:
+                from app.core.gateway_settings import openai_chat_completions_url
+
                 response = requests.post(
-                    f"{self._base_url}/v1/chat/completions",
+                    openai_chat_completions_url(self._base_url),
                     headers={
                         "Authorization": f"Bearer {self._api_key}",
                         "Content-Type": "application/json"

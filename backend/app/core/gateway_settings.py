@@ -25,6 +25,40 @@ from app.core.config import (
 logger = logging.getLogger(__name__)
 
 
+def normalize_openai_base_url(url: str) -> str:
+    """Normalize an OpenAI-compatible API base (no vendor default).
+
+    Empty stays empty. Non-empty bases are stripped and ensured to end with ``/v1``
+    so callers can append ``/chat/completions`` or ``/models`` safely.
+    """
+    bu = (url or "").strip().rstrip("/")
+    if not bu:
+        return ""
+    if not bu.endswith("/v1"):
+        bu = f"{bu}/v1"
+    return bu
+
+
+def openai_chat_completions_url(base: str) -> str:
+    """Build ``…/v1/chat/completions`` whether ``base`` already ends with ``/v1`` or not."""
+    bu = (base or "").strip().rstrip("/")
+    if not bu:
+        raise ValueError("Gateway API URL is empty. Configure it in Settings → API.")
+    if bu.endswith("/v1"):
+        return f"{bu}/chat/completions"
+    return f"{bu}/v1/chat/completions"
+
+
+def openai_models_url(base: str) -> str:
+    """Build ``…/v1/models`` whether ``base`` already ends with ``/v1`` or not."""
+    bu = (base or "").strip().rstrip("/")
+    if not bu:
+        raise ValueError("Gateway API URL is empty. Configure it in Settings → API.")
+    if bu.endswith("/v1"):
+        return f"{bu}/models"
+    return f"{bu}/v1/models"
+
+
 def validate_gateway_url(url: str, *, purpose: str = "gateway") -> str:
     """Reject non-http(s) schemes and, outside APP_ENV=local, private/link-local targets.
 
@@ -176,7 +210,7 @@ def _sync_settings_from_env() -> None:
         os.getenv("AI_ENHANCE_BASE_URL")
         or os.getenv("LLM_BASE_URL")
         or os.getenv("VLM_BASE_URL")
-        or "https://www.dmxapi.cn"
+        or ""
     )
     settings.ai_enhance_model = (
         (os.getenv("AI_ENHANCE_MODEL") or os.getenv("LLM_MODEL") or "").strip()
@@ -281,13 +315,8 @@ def probe_gateway(
 
     url = validate_gateway_url(url, purpose="probe")
 
-    base = url.rstrip("/")
-    if base.endswith("/v1"):
-        models_url = f"{base}/models"
-        chat_url = f"{base}/chat/completions"
-    else:
-        models_url = f"{base}/v1/models"
-        chat_url = f"{base}/v1/chat/completions"
+    models_url = openai_models_url(url)
+    chat_url = openai_chat_completions_url(url)
 
     headers = {"Authorization": f"Bearer {key}"}
     try:

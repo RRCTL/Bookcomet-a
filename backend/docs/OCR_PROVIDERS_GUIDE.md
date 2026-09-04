@@ -26,16 +26,18 @@ This document explains how to install, configure, and compare different OCR prov
 
 ## Installation Instructions
 
-### DeepSeek OCR (DMXAPI)
+### DeepSeek OCR (OpenAI-compatible VLM)
 
-Set in `backend/.env`:
+Configure via **Settings → API → VLM** (preferred), or set in `backend/.env`:
 ```env
 OCR_PROVIDER=DeepSeek-OCR
-DEEPSEEK_OCR_API_KEY=sk-xxx
-DEEPSEEK_OCR_BASE_URL=https://www.dmxapi.cn
-DEEPSEEK_OCR_MODEL=DeepSeek-OCR
-DEEPSEEK_OCR_PROMPT=<image>\nFree OCR.
+VLM_API_KEY=sk-xxx
+VLM_BASE_URL=https://example.com/api
+VLM_MODEL=your-vlm-model-id
+VLM_PROMPT=<image>\nFree OCR.
 ```
+
+Do not hardcode a vendor host in the repo. Use your gateway URL from Settings.
 
 ---
 
@@ -89,7 +91,7 @@ Upload an image at http://localhost:5173
 ### 1. Test DeepSeek OCR (Cloud)
 ```env
 OCR_PROVIDER=DeepSeek-OCR
-DEEPSEEK_OCR_BASE_URL=https://www.dmxapi.cn/v1
+VLM_BASE_URL=https://example.com/api
 ```
 Upload image → Note accuracy and speed
 
@@ -144,8 +146,8 @@ Consider using an **ensemble approach**:
 - Or set in Python: `pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'`
 
 ### DeepSeek OCR: API errors
-- Check `DEEPSEEK_OCR_API_KEY`
-- Verify `DEEPSEEK_OCR_BASE_URL=https://www.dmxapi.cn/v1`
+- Check `VLM_API_KEY` (Settings → API → VLM)
+- Verify `VLM_BASE_URL` (with or without trailing `/v1`; clients normalize once)
 - Retry with a smaller image or lower resolution
 
 ### EasyOCR: Slow first run

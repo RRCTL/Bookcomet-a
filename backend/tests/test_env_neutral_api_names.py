@@ -99,6 +99,8 @@ def test_provider_transport_uses_vlm_names(monkeypatch: pytest.MonkeyPatch):
 def test_ai_enhance_key_preferred_for_ai_enhance_client(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("AI_ENHANCE_API_KEY", "enhance-key")
     monkeypatch.setenv("LLM_API_KEY", "llm-key")
+    monkeypatch.setenv("AI_ENHANCE_BASE_URL", "https://example.com")
+    monkeypatch.setenv("AI_ENHANCE_MODEL", "test-model")
     from app.services.ai_enhance_client import AiEnhanceClient
 
     svc = AiEnhanceClient()
@@ -108,6 +110,8 @@ def test_ai_enhance_key_preferred_for_ai_enhance_client(monkeypatch: pytest.Monk
 def test_ai_enhance_client_falls_back_to_llm_api_key(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("AI_ENHANCE_API_KEY", raising=False)
     monkeypatch.setenv("LLM_API_KEY", "llm-key")
+    monkeypatch.setenv("LLM_BASE_URL", "https://example.com")
+    monkeypatch.setenv("AI_ENHANCE_MODEL", "test-model")
     from app.services.ai_enhance_client import AiEnhanceClient
 
     svc = AiEnhanceClient()
@@ -118,6 +122,7 @@ def test_ai_enhance_client_falls_back_to_vlm_api_key(monkeypatch: pytest.MonkeyP
     monkeypatch.delenv("AI_ENHANCE_API_KEY", raising=False)
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.setenv("VLM_API_KEY", "vlm-key")
+    monkeypatch.setenv("VLM_BASE_URL", "https://example.com")
     monkeypatch.setenv("AI_ENHANCE_MODEL", "test-model")
     from app.services.ai_enhance_client import AiEnhanceClient
 
@@ -127,6 +132,7 @@ def test_ai_enhance_client_falls_back_to_vlm_api_key(monkeypatch: pytest.MonkeyP
 
 def test_ai_enhance_client_accepts_env_model_id(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("AI_ENHANCE_API_KEY", "sk-test-key")
+    monkeypatch.setenv("AI_ENHANCE_BASE_URL", "https://example.com")
     monkeypatch.setenv("AI_ENHANCE_MODEL", "qwen3.5-35b-a3b")
     from app.services.ai_enhance_client import AiEnhanceClient
 

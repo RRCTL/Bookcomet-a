@@ -34,12 +34,10 @@ def resolve_vlm_http_max_retries(ocr_options: dict | None = None) -> int:
 
 
 def _normalize_ocr_base_url(base_url: str) -> str:
-    bu = (base_url or "").strip().rstrip("/")
-    if not bu:
-        bu = "https://www.dmxapi.cn"
-    if not bu.endswith("/v1"):
-        bu = f"{bu}/v1"
-    return bu
+    """Normalize OCR/VLM base URL via shared gateway helper (no vendor default)."""
+    from app.core.gateway_settings import normalize_openai_base_url
+
+    return normalize_openai_base_url(base_url)
 
 
 def resolve_vlm_enable_thinking(ocr_options: dict | None = None) -> bool:
@@ -75,7 +73,7 @@ class DeepSeekOcrProvider(OcrProvider):
             else (
                 os.getenv("VLM_BASE_URL")
                 or os.getenv("LLM_BASE_URL")
-                or "https://www.dmxapi.cn"
+                or ""
             )
         )
         self._base_url = _normalize_ocr_base_url(raw_base)
@@ -106,6 +104,11 @@ class DeepSeekOcrProvider(OcrProvider):
         if not (self._api_key or "").strip():
             raise RuntimeError(
                 "VLM OCR API key missing. Set VLM_API_KEY (or LLM_API_KEY) "
+                "in backend/.env or Settings → API before running OCR."
+            )
+        if not (self._base_url or "").strip():
+            raise RuntimeError(
+                "VLM OCR API URL missing. Set VLM_BASE_URL "
                 "in backend/.env or Settings → API before running OCR."
             )
 
@@ -459,11 +462,17 @@ class OcrProviderRegistry:
                         "(OCR registry uses model id as key)."
                     )
                 eff_key = (bank_resolved.get("api_key") or "").strip()
-                eff_base = (bank_resolved.get("api_url") or "").strip() or "https://www.dmxapi.cn"
+                eff_base = (bank_resolved.get("api_url") or "").strip()
                 if not eff_key:
                     raise RuntimeError(
                         "BANK_CROSS_VLM_API_KEY or VLM_API_KEY is required "
                         "for cross-VLM when a separate gateway is configured."
+                    )
+                if not eff_base:
+                    raise RuntimeError(
+                        "BANK_CROSS_VLM_BASE_URL or VLM_BASE_URL is required "
+                        "for cross-VLM when a separate gateway is configured. "
+                        "Set it in Settings → API."
                     )
                 cross_provider = DeepSeekOcrProvider(api_key=eff_key, base_url=eff_base)
                 self._providers[cross_vlm_model] = cross_provider
@@ -479,11 +488,17 @@ class OcrProviderRegistry:
         if ap_cross_model:
             if ap_cross_key or ap_cross_base:
                 eff_key = (ap_resolved.get("api_key") or "").strip()
-                eff_base = (ap_resolved.get("api_url") or "").strip() or "https://www.dmxapi.cn"
+                eff_base = (ap_resolved.get("api_url") or "").strip()
                 if not eff_key:
                     raise RuntimeError(
                         "AP_CROSS_VLM_API_KEY or VLM_API_KEY is required "
                         "for AP cross-VLM when a separate gateway is configured."
+                    )
+                if not eff_base:
+                    raise RuntimeError(
+                        "AP_CROSS_VLM_BASE_URL or VLM_BASE_URL is required "
+                        "for AP cross-VLM when a separate gateway is configured. "
+                        "Set it in Settings → API."
                     )
                 self._providers[ap_cross_model] = DeepSeekOcrProvider(
                     api_key=eff_key, base_url=eff_base

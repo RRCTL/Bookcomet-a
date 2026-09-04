@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_company_id, get_current_user_id
+from app.core.gateway_settings import openai_chat_completions_url
 from app.core.config import settings
 from app.core.text_limits import (
     MAX_BANK_FIELD_CHARS,
@@ -49,7 +50,7 @@ router = APIRouter()
 
 _DEPLOY_API_KEY = os.getenv("LLM_API_KEY") or os.getenv("DEPLOY_API_KEY", "")
 _DEPLOY_BASE_URL = (
-    os.getenv("LLM_BASE_URL") or os.getenv("DEPLOY_BASE_URL") or "https://www.dmxapi.cn"
+    os.getenv("LLM_BASE_URL") or os.getenv("DEPLOY_BASE_URL") or os.getenv("VLM_BASE_URL") or ""
 ).rstrip("/")
 
 
@@ -333,7 +334,7 @@ def _ai_enhance_manual(raw_md: str, answers: WizardAnswers, existing_md: str = "
     )
     try:
         resp = requests.post(
-            f"{_DEPLOY_BASE_URL}/v1/chat/completions",
+            openai_chat_completions_url(_DEPLOY_BASE_URL),
             headers={
                 "Authorization": f"Bearer {_DEPLOY_API_KEY}",
                 "Content-Type": "application/json",

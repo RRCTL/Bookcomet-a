@@ -17,7 +17,7 @@ try:
     print("")
     print("Note: PaddleOCR is deprecated in this project.")
     print("Recommended OCR_PROVIDER=qwen-vl-ocr-latest (or easy/tesseract if local OCR).")
-    print("DMXAPI OCR base: https://www.dmxapi.cn")
+    print("Configure the VLM gateway URL in Settings → API (no vendor default).")
 except Exception as e:
     print(f"[ERROR] Error downloading models: {e}")
     print("Try running this script again, or check your internet connection")
