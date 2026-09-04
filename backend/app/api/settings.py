@@ -20,7 +20,7 @@ router = APIRouter()
 class AISettingsRequest(BaseModel):
     ai_enhance_api_key: str
     ai_enhance_use_reasoner: bool = False
-    ai_enhance_api_base: str = "https://www.dmxapi.cn"
+    ai_enhance_api_base: str = ""
 
 
 class EnvSetting(BaseModel):

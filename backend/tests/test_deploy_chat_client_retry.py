@@ -9,6 +9,7 @@ from app.services.ai_chat_client import DeployChatClient
 
 def test_complete_retries_connection_error(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_BASE_URL", "https://example.com")
     monkeypatch.setenv("LLM_MAX_RETRIES", "2")
     monkeypatch.setenv("LLM_RETRY_BACKOFF", "0")
     client = DeployChatClient()
@@ -27,6 +28,7 @@ def test_complete_retries_connection_error(monkeypatch: pytest.MonkeyPatch):
 
 def test_complete_does_not_retry_auth_error(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_BASE_URL", "https://example.com")
     monkeypatch.setenv("LLM_MAX_RETRIES", "2")
     client = DeployChatClient()
     resp = MagicMock()

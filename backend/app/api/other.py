@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_company_id, get_current_user
+from app.core.gateway_settings import openai_chat_completions_url
 from app.core.config import settings
 from app.database import get_db
 from app.services.abuse_guard import (
@@ -49,7 +50,7 @@ router = APIRouter(prefix="/api/other")
 
 _DEPLOY_API_KEY = os.getenv("LLM_API_KEY") or os.getenv("DEPLOY_API_KEY", "")
 _DEPLOY_BASE_URL = (
-    os.getenv("LLM_BASE_URL") or os.getenv("DEPLOY_BASE_URL") or "https://www.dmxapi.cn"
+    os.getenv("LLM_BASE_URL") or os.getenv("DEPLOY_BASE_URL") or os.getenv("VLM_BASE_URL") or ""
 ).rstrip("/")
 
 
@@ -122,7 +123,7 @@ def _call_extraction_llm(ocr_text: str, system_prompt: str) -> tuple[dict, dict]
         "temperature": 0.1,
     }
     resp = requests.post(
-        f"{_DEPLOY_BASE_URL}/v1/chat/completions",
+        openai_chat_completions_url(_DEPLOY_BASE_URL),
         headers={
             "Authorization": f"Bearer {_DEPLOY_API_KEY}",
             "Content-Type": "application/json",

@@ -9,6 +9,7 @@ import requests
 @pytest.mark.asyncio
 async def test_http_max_retries_one_does_not_loop_timeouts(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("VLM_API_KEY", "unit-test-key")
+    monkeypatch.setenv("VLM_BASE_URL", "https://example.com/api")
     monkeypatch.setenv("VLM_MODEL", "unit-vlm")
     monkeypatch.setenv("VLM_READ_TIMEOUT", "1")
     from PIL import Image
@@ -38,6 +39,7 @@ async def test_http_max_retries_one_does_not_loop_timeouts(monkeypatch, tmp_path
 @pytest.mark.asyncio
 async def test_http_max_retries_default_tries_three(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("VLM_API_KEY", "unit-test-key")
+    monkeypatch.setenv("VLM_BASE_URL", "https://example.com/api")
     monkeypatch.setenv("VLM_MODEL", "unit-vlm")
     monkeypatch.delenv("VLM_HTTP_MAX_RETRIES", raising=False)
     from PIL import Image

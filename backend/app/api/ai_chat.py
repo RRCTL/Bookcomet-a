@@ -132,7 +132,7 @@ def _normalize_coa_row(row: Any) -> dict[str, Any] | None:
 
 _DEPLOY_API_KEY = os.getenv("LLM_API_KEY") or os.getenv("DEPLOY_API_KEY", "")
 _DEPLOY_BASE_URL = (
-    os.getenv("LLM_BASE_URL") or os.getenv("DEPLOY_BASE_URL") or "https://www.dmxapi.cn"
+    os.getenv("LLM_BASE_URL") or os.getenv("DEPLOY_BASE_URL") or os.getenv("VLM_BASE_URL") or ""
 ).rstrip("/")
 _DEPLOY_CONNECT_TIMEOUT = float(os.getenv("DEPLOY_API_CONNECT_TIMEOUT", "15"))
 _DEPLOY_READ_TIMEOUT = float(os.getenv("DEPLOY_API_READ_TIMEOUT", "300"))

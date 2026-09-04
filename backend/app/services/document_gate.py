@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 import requests
 
 from app.core.config import settings, resolved_gate_llm_model
+from app.core.gateway_settings import openai_chat_completions_url
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -129,7 +130,7 @@ def _llm_classify(ocr_text: str) -> str:
     """
     api_key = os.getenv("LLM_API_KEY") or os.getenv("DEPLOY_API_KEY", "")
     base_url = (
-        os.getenv("LLM_BASE_URL") or os.getenv("DEPLOY_BASE_URL") or "https://www.dmxapi.cn"
+        os.getenv("LLM_BASE_URL") or os.getenv("DEPLOY_BASE_URL") or os.getenv("VLM_BASE_URL") or ""
     ).rstrip("/")
     model = resolved_gate_llm_model(settings)
 
@@ -157,7 +158,7 @@ def _llm_classify(ocr_text: str) -> str:
     }
     try:
         resp = requests.post(
-            f"{base_url}/v1/chat/completions",
+            openai_chat_completions_url(base_url),
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",

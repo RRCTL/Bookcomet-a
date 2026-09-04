@@ -52,7 +52,7 @@ def get_ocr_service() -> OcrService:
 def _llm_deploy_creds() -> tuple[str, str]:
     api_key = os.getenv("LLM_API_KEY") or os.getenv("DEPLOY_API_KEY", "")
     base_url = (
-        os.getenv("LLM_BASE_URL") or os.getenv("DEPLOY_BASE_URL") or "https://www.dmxapi.cn"
+        os.getenv("LLM_BASE_URL") or os.getenv("DEPLOY_BASE_URL") or os.getenv("VLM_BASE_URL") or ""
     ).rstrip("/")
     return api_key, base_url
 

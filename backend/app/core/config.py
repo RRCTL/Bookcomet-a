@@ -130,7 +130,7 @@ class Settings:
         os.getenv("AI_ENHANCE_BASE_URL")
         or os.getenv("LLM_BASE_URL")
         or os.getenv("VLM_BASE_URL")
-        or "https://www.dmxapi.cn"
+        or ""
     )
     ai_enhance_model: str = (
         (os.getenv("AI_ENHANCE_MODEL") or os.getenv("LLM_MODEL") or "").strip()

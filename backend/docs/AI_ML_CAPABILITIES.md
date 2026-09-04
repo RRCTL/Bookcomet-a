@@ -102,16 +102,17 @@ POST /ocr/ai-enhanced
 
 ### **Step 2: Configure Backend**
 
-Edit `backend/.env`:
+Edit `backend/.env` or use **Settings → API**:
 ```env
-# Enable AI Post-Processing
-DEEPSEEK_API_KEY=sk-your-key-here
-DEEPSEEK_API_BASE=https://www.dmxapi.cn
-DEEPSEEK_MODEL=DeepSeek-V3.2-Thinking
+# Prefer Settings → API (VLM / AI Enhance). Example placeholders only:
+VLM_API_KEY=sk-your-key-here
+VLM_BASE_URL=https://example.com/api
+AI_ENHANCE_API_KEY=sk-your-key-here
+AI_ENHANCE_BASE_URL=https://example.com/api
+AI_ENHANCE_MODEL=your-chat-model-id
 
-# OCR Provider
+# OCR Provider alias (gateway registry key)
 OCR_PROVIDER=qwen-vl-ocr-latest  # or easy, tesseract
-DEEPSEEK_OCR_BASE_URL=https://www.dmxapi.cn/v1
 ```
 
 ### **Step 3: Restart Backend**
