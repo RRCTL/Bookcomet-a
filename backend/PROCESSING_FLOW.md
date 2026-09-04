@@ -110,6 +110,8 @@ For **`processing_mode in ("AR", "AP")`**, Step 4 uses **`_extract_ar_ap_ai_fiel
 | `AP_VLM_LAYOUT_CROP_ENABLED` | Enable VLM bounding-box multi-receipt detection |
 | `AP_VLM_LAYOUT_CONFIDENCE_MIN`, `AP_VLM_LAYOUT_THUMB_MAX_SIDE`, `AP_VLM_LAYOUT_BOX_PAD_PCT`, `AP_VLM_LAYOUT_MAX_RETRIES` | Layout JSON validation / retries |
 | `AP_CROP_OCR_CONCURRENCY`, `AP_CROP_OCR_IMAGE_MAX_SIDE`, `AP_CROP_OCR_JPEG_QUALITY` | Multi-crop OCR |
+| `AP_CROP_OCR_TIMEOUT_S` | Per-crop OCR deadline (seconds). Empty uses `VLM_READ_TIMEOUT` → `VLM_TIMEOUT` → `240` |
+| `VLM_HTTP_MAX_RETRIES` | HTTP attempts per upload profile on Timeout/ConnectionError. Empty = 3. Crop/receipt OCR passes 1 via `ocr_options` |
 | `AP_CROP_MIN_WIDTH_PX`, `AP_CROP_MIN_HEIGHT_PX`, `AP_CROP_MIN_AREA_PX`, `AP_CROP_MIN_ASPECT_RATIO`, `AP_CROP_MAX_ASPECT_RATIO` | Crop preflight guards before OCR |
 | `AP_SEG_MULTI_MIN_REGION_AREA_FRAC`, `AP_SEG_MULTI_MAX_DOMINANCE`, `AP_SEG_MIN_GAP_FRAC`, `AP_SEG_FRAGMENT_REL_AREA_MAX`, `AP_SEG_SINGLE_MERGE_PAD_FRAC` | AP anti-over-split evidence gate / single-collapse behavior |
 | `AP_LAYOUT_MAX_PAGE_CONCURRENCY`, `OCR_SCENARIO_D_MAX_CONSECUTIVE_FAILURES`, `OCR_SCENARIO_D_MAX_FAILURE_RATIO`, `OCR_SCENARIO_D_FAILURE_RATIO_MIN_SAMPLES` | Scenario D queue scheduling / early termination |

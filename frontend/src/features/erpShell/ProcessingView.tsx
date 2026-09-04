@@ -1385,8 +1385,8 @@ export function ProcessingView() {
           {activeRun ? (
             <div className="erp-proc-output-scroll">
               {outputRowCount === 0 ? (
-                <div className="erp-empty">
-                  {extracting ? 'Processing files... rows appear as each file finishes.' : 'No extracted rows yet.'}
+                <div className={extracting ? 'erp-empty erp-empty--compact' : 'erp-empty'}>
+                  {extracting ? 'Processing…' : 'No extracted rows yet.'}
                 </div>
               ) : isAsset ? (
                 <OtherTable records={assetRecords} readOnly={outputReadOnly} />

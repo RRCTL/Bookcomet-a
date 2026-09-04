@@ -17,7 +17,12 @@ import {
   imageQualityChipStyle,
   readImageQuality,
 } from '../utils/imageQualityUi'
-import { buildReceiptCropRequest, rowCanShowReceiptCropPreview, type CropPreviewFile } from '../utils/imageQualityCrop'
+import {
+  buildReceiptCropRequest,
+  rowCanShowReceiptCropPreview,
+  rowHasReceiptCropRegion,
+  type CropPreviewFile,
+} from '../utils/imageQualityCrop'
 import { taskApi } from '../services/api'
 import { formatBankSourceFile } from '../utils/bankSourceFile'
 
@@ -224,8 +229,8 @@ export function ARAPReview({
   reconState,
   onUnlock,
   isProcessing = false,
-  completedFiles = 0,
-  totalFiles = 0,
+  completedFiles: _completedFiles = 0,
+  totalFiles: _totalFiles = 0,
   glPostedLedgerLockKeys,
   glVoucherNoByGroupId = {},
   onRetryOcrPage,
@@ -670,18 +675,6 @@ export function ARAPReview({
         )}
         <div style={S.rowCount}>{rows.length} transactions</div>
       </div>
-
-      {/* ── Processing banner ── */}
-      {isProcessing && (
-        <div style={S.processingBanner}>
-          <span style={S.processingDot} />
-          <span>
-            OCR is still processing
-            {totalFiles > 0 && ` (${completedFiles} / ${totalFiles} files done)`}
-            ; the table will keep updating...
-          </span>
-        </div>
-      )}
 
       {/* ── Table ── */}
       <div style={S.tableContainer}>
@@ -1295,7 +1288,11 @@ export function ARAPReview({
             <div style={{ fontSize: 13, fontWeight: 600 }}>
               {selectedDetailRow.iq.present ? 'Receipt image quality' : 'Receipt preview'}
               <span style={{ marginLeft: 8, fontWeight: 400, color: '#6b7280' }}>
-                {selectedDetailRow.iq.present ? selectedDetailRow.iq.uiLabel : 'Target crop'}
+                {selectedDetailRow.iq.present
+                  ? selectedDetailRow.iq.uiLabel
+                  : rowHasReceiptCropRegion(selectedDetailRow.row as Record<string, unknown>)
+                    ? 'Target crop'
+                    : 'Source page · crop unresolved'}
                 {selectedDetailRow.row.source_file
                   ? ` · ${String(selectedDetailRow.row.source_file)}`
                   : ''}

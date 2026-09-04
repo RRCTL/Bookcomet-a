@@ -103,8 +103,18 @@ function stampImageQualityOnRows(
   const bbox = asBox(pageObj.receipt_bbox)
   const page = Number(pageObj.page)
   const receiptIndex = Number(pageObj.receipt_index)
+  const instanceId = String(pageObj.receipt_instance_id ?? '').trim()
+  const segMode = String(pageObj.segmentation_mode ?? '').trim()
+  const cropStatus = String(pageObj.crop_status ?? '').trim()
   const hasIq = Boolean(pageIq && typeof pageIq === 'object' && !Array.isArray(pageIq))
-  if (!hasIq && !bbox && !(Number.isFinite(receiptIndex) && receiptIndex >= 1)) return rows
+  if (
+    !hasIq &&
+    !bbox &&
+    !(Number.isFinite(receiptIndex) && receiptIndex >= 1) &&
+    !instanceId
+  ) {
+    return rows
+  }
   for (const row of rows) {
     const prov =
       row.extraction_provenance && typeof row.extraction_provenance === 'object'
@@ -118,6 +128,15 @@ function stampImageQualityOnRows(
     }
     if (Number.isFinite(receiptIndex) && receiptIndex >= 1 && prov.receipt_index == null) {
       prov.receipt_index = receiptIndex
+    }
+    if (instanceId && prov.receipt_instance_id == null) {
+      prov.receipt_instance_id = instanceId
+    }
+    if (segMode && prov.segmentation_mode == null) {
+      prov.segmentation_mode = segMode
+    }
+    if (cropStatus && prov.crop_status == null) {
+      prov.crop_status = cropStatus
     }
     if (bbox && !asBox(prov.receipt_bbox_pixels) && !asBox(prov.receipt_region_norm)) {
       prov.receipt_bbox_pixels = bbox
@@ -150,7 +169,7 @@ export function rowsFromOcrPayload(payload: Record<string, unknown>): Record<str
 function ocrByFileFromRunFiles(run: WorkflowRun): Record<string, Record<string, unknown>[]> {
   const out: Record<string, Record<string, unknown>[]> = {}
   for (const file of run.files) {
-    if (file.file_status !== 'ok') continue
+    if (!['ok', 'running', 'warning'].includes(file.file_status)) continue
     const payload = file.result_summary_json
     if (!payload || typeof payload !== 'object') continue
     const rows = rowsFromOcrPayload(payload)

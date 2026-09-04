@@ -628,6 +628,10 @@ def attach_receipt_region_provenance(
     receipt_bbox: Mapping[str, int] | None,
     pdf_page_num: int,
     parent_image_size: tuple[int, int] | None,
+    segmentation_mode: str | None = None,
+    segmentation_source: str | None = None,
+    crop_status: str | None = None,
+    receipt_instance_id: str | None = None,
 ) -> MutableMapping[str, Any]:
     """
     Store coarse region for audit / future click-to-highlight. bbox is pixel x,y,w,h on parent image.
@@ -635,6 +639,8 @@ def attach_receipt_region_provenance(
     prev = row.get("extraction_provenance")
     prov: dict[str, Any] = dict(prev) if isinstance(prev, dict) else {}
     prov["source_pdf_page"] = pdf_page_num
+    if receipt_bbox:
+        prov["receipt_bbox_pixels"] = dict(receipt_bbox)
     if receipt_bbox and parent_image_size:
         try:
             x = int(receipt_bbox.get("x", 0))
@@ -651,8 +657,14 @@ def attach_receipt_region_provenance(
                 }
         except Exception:
             pass
-    elif receipt_bbox:
-        prov["receipt_bbox_pixels"] = dict(receipt_bbox)
+    if segmentation_mode:
+        prov["segmentation_mode"] = segmentation_mode
+    if segmentation_source:
+        prov["segmentation_source"] = segmentation_source
+    if crop_status:
+        prov["crop_status"] = crop_status
+    if receipt_instance_id:
+        prov["receipt_instance_id"] = receipt_instance_id
     row["extraction_provenance"] = prov
     return row
 

@@ -48,12 +48,10 @@ class OcrService:
             provider.set_model(model)
 
         def _is_retryable_primary_error(exc: BaseException) -> bool:
+            # Empty content is usually a model/routing miss, not a blip.
+            # Retrying burns another VLM_READ_TIMEOUT (often minutes) with no gain.
             msg = str(exc).upper()
-            return (
-                "OCR_EMPTY_CONTENT" in msg
-                or "OCR_HTTP_429" in msg
-                or "TOO MANY REQUESTS" in msg
-            )
+            return "OCR_HTTP_429" in msg or "TOO MANY REQUESTS" in msg
 
         def _provider_fingerprint(name: str, p: object) -> tuple[str, str, str]:
             return (

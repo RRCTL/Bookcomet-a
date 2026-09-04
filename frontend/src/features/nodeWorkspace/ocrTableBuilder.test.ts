@@ -113,6 +113,19 @@ describe('getOcrByFileFromRun', () => {
     expect(Object.keys(ocr)).toEqual(['workflow'])
     expect(ocr.workflow).toHaveLength(1)
   })
+
+  it('reads result_summary_json from a still-running file', () => {
+    const row = { amount: '12.0', payee: 'Live Page', date: '2022-01-08' }
+    const run = makeRun({})
+    run.run_status = 'executing'
+    run.files[0]!.file_status = 'running'
+    run.files[0]!.result_summary_json = {
+      pages: [{ page: 1, ai_enhanced: { tsv_rows: [row] } }],
+    }
+    const ocr = getOcrByFileFromRun(run)
+    expect(Object.keys(ocr)).toEqual(['file-a'])
+    expect(ocr['file-a']?.[0]?.payee).toBe('Live Page')
+  })
 })
 
 describe('rowsFromOcrPayload', () => {
@@ -162,6 +175,57 @@ describe('rowsFromOcrPayload', () => {
     }
     expect(prov.receipt_index).toBe(3)
     expect(prov.receipt_bbox_pixels).toEqual({ x: 5, y: 6, w: 40, h: 50 })
+  })
+
+  it('includes a synthetic timeout tsv_row', () => {
+    const rows = rowsFromOcrPayload({
+      pages: [
+        {
+          page: 6,
+          receipt_index: 2,
+          receipt_instance_id: 'p6-r02',
+          status: 'error',
+          error_code: 'VLM_CROP_TIMEOUT',
+          receipt_bbox: { x: 1, y: 2, w: 10, h: 12 },
+          ai_enhanced: {
+            tsv_rows: [
+              {
+                voucher_no: 'P6-R2',
+                amount: '',
+                memo: '[OCR timeout]',
+                needs_review: true,
+                validation_flags: ['ocr_timeout'],
+              },
+            ],
+          },
+        },
+      ],
+    })
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.voucher_no).toBe('P6-R2')
+    expect(rows[0]?.memo).toBe('[OCR timeout]')
+    expect(rows[0]?.validation_flags).toContain('ocr_timeout')
+  })
+
+  it('stamps receipt_instance_id from the page object', () => {
+    const rows = rowsFromOcrPayload({
+      pages: [
+        {
+          page: 2,
+          receipt_index: 1,
+          receipt_instance_id: 'p2-r01',
+          segmentation_mode: 'vlm_detect',
+          receipt_bbox: { x: 1, y: 2, w: 10, h: 12 },
+          ai_enhanced: { tsv_rows: [{ amount: '2', payee: 'Synthetic' }] },
+        },
+      ],
+    })
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.extraction_provenance).toMatchObject({
+      receipt_instance_id: 'p2-r01',
+      segmentation_mode: 'vlm_detect',
+      receipt_bbox_pixels: { x: 1, y: 2, w: 10, h: 12 },
+    })
   })
 })
 

@@ -7,6 +7,7 @@ import json
 from typing import Any
 
 from fastapi import WebSocket
+from starlette.websockets import WebSocketState
 
 
 class WorkflowEventHub:
@@ -15,7 +16,10 @@ class WorkflowEventHub:
         self._lock = asyncio.Lock()
 
     async def connect(self, run_id: str, ws: WebSocket) -> None:
-        await ws.accept()
+        # workflow_run_ws already accepted (auth + run lookup). A second
+        # accept() raises on Starlette 1.x and kills the live event channel.
+        if getattr(ws, "client_state", None) != WebSocketState.CONNECTED:
+            await ws.accept()
         async with self._lock:
             self._rooms.setdefault(run_id, set()).add(ws)
 

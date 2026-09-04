@@ -58,6 +58,9 @@ export type PageCropContext = {
   receipt_index?: unknown
   receipt_bbox?: unknown
   image_quality?: unknown
+  receipt_instance_id?: unknown
+  segmentation_mode?: unknown
+  crop_status?: unknown
 }
 
 function asPlainObject(v: unknown): Record<string, unknown> | null {
@@ -88,6 +91,18 @@ export function mergePageCropIntoProvenance(
   const idx = Number(pageCtx?.receipt_index)
   if (Number.isFinite(idx) && idx >= 1 && next.receipt_index == null) {
     next.receipt_index = idx
+  }
+  const instanceId = String(pageCtx?.receipt_instance_id ?? '').trim()
+  if (instanceId && next.receipt_instance_id == null) {
+    next.receipt_instance_id = instanceId
+  }
+  const segMode = String(pageCtx?.segmentation_mode ?? '').trim()
+  if (segMode && next.segmentation_mode == null) {
+    next.segmentation_mode = segMode
+  }
+  const cropStatus = String(pageCtx?.crop_status ?? '').trim()
+  if (cropStatus && next.crop_status == null) {
+    next.crop_status = cropStatus
   }
   const hasRegion =
     asPlainObject(next.receipt_region_norm) != null || asPixelBox(next.receipt_bbox_pixels) != null
@@ -481,9 +496,23 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
   if (usePerPageIteration) {
     for (const pageData of pages) {
       if (pageData?.status === 'error') {
+        const enhanced = pageData?.ai_enhanced
+        const tsvRows = enhanced && typeof enhanced === 'object' ? (enhanced as { tsv_rows?: unknown }).tsv_rows : null
+        const hasStubRows = Array.isArray(tsvRows) && tsvRows.some((row) => row && typeof row === 'object')
+        if (!hasStubRows) {
         const pageLabel =
           pageData.receipt_index != null ? `P${pageData.page}-R${pageData.receipt_index}` : `P${pageData.page}`
         const errTail = String(pageData.error_detail || 'Unknown error').slice(0, 500)
+        const timeoutMemo = pageData.error_code === 'VLM_CROP_TIMEOUT'
+        const errorPageCtx: PageCropContext = {
+          page: pageData.page,
+          receipt_index: pageData.receipt_index,
+          receipt_bbox: pageData.receipt_bbox,
+          image_quality: pageData.image_quality,
+          receipt_instance_id: pageData.receipt_instance_id,
+          segmentation_mode: pageData.segmentation_mode,
+          crop_status: pageData.crop_status,
+        }
         spreadsheetData.push({
           id: `${fileId}-page${pageData.page}-err${pageData.receipt_index ?? 0}`,
           voucher_no: '',
@@ -495,7 +524,7 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
           payee: '',
           bank: '',
           category: '',
-          memo: `[OCR failed] ${errTail}`,
+          memo: `${timeoutMemo ? '[OCR timeout]' : '[OCR failed]'} ${errTail}`,
           confidence: 'N/A',
           file_position: `${fileName} ${pageLabel}`,
           ocr_background_job_id: ocrBackgroundJobId || '',
@@ -505,9 +534,11 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
           vendor_tax_id: '',
           tax_amount: '',
           payment_status: '',
+          ...provenanceSpreadsheetExtras({}, errorPageCtx),
         })
         rowIndex++
         continue
+        }
       }
       const fields = pageData?.ai_enhanced || pageData?.extracted_fields || {}
       const pageLabel =
@@ -522,6 +553,9 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
           receipt_index: pageData.receipt_index,
           receipt_bbox: pageData.receipt_bbox,
           image_quality: pageData.image_quality,
+          receipt_instance_id: pageData.receipt_instance_id,
+          segmentation_mode: pageData.segmentation_mode,
+          crop_status: pageData.crop_status,
         },
       )
     }

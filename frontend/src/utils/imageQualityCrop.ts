@@ -102,14 +102,18 @@ export function rowLooksLikeMvduReceipt(row: Record<string, unknown>): boolean {
 }
 
 /**
- * Process Live output: Preview on every receipt row when the run has uploaded files.
- * Crop uses row region/bbox when present; otherwise the linked page (full page).
+ * Process Live output: Target crop only when the row has a stored receipt box.
+ * Full-page fallback is not a verified crop.
  */
 export function rowCanShowReceiptCropPreview(
   row: Record<string, unknown>,
   files: CropPreviewFile[],
 ): boolean {
-  return files.length > 0 && resolveCropTaskFileId(row, files) != null
+  return (
+    rowHasReceiptCropRegion(row) &&
+    files.length > 0 &&
+    resolveCropTaskFileId(row, files) != null
+  )
 }
 
 export function buildReceiptCropRequest(
