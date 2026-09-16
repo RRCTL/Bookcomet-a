@@ -75,10 +75,13 @@ from app.ocr.crop_timeout import (
 )
 from app.ocr.vlm_layout_detect import (
     VLM_RECEIPT_DETECT_PROMPT,
+    build_vlm_detect_repair_prompt,
     is_vlm_detection_backend,
+    needs_vlm_detect_repair,
     parse_vlm_detect_regions,
     receipt_instance_id,
     resolve_ap_detection_backend,
+    safe_parse_json,
     vlm_split_review_payload,
 )
 from app.services.ap_vlm_cross_merge import (
@@ -397,9 +400,10 @@ try:
 except ValueError:
     AP_VLM_LAYOUT_CONFIDENCE_MIN = 0.75
 try:
-    AP_VLM_LAYOUT_THUMB_MAX_SIDE = int(os.getenv("AP_VLM_LAYOUT_THUMB_MAX_SIDE", "800"))
+    AP_VLM_LAYOUT_THUMB_MAX_SIDE = int(os.getenv("AP_VLM_LAYOUT_THUMB_MAX_SIDE", "1600"))
 except ValueError:
-    AP_VLM_LAYOUT_THUMB_MAX_SIDE = 800
+    AP_VLM_LAYOUT_THUMB_MAX_SIDE = 1600
+AP_VLM_LAYOUT_THUMB_MAX_SIDE = max(400, min(AP_VLM_LAYOUT_THUMB_MAX_SIDE, 4096))
 try:
     AP_VLM_LAYOUT_BOX_PAD_PCT = float(os.getenv("AP_VLM_LAYOUT_BOX_PAD_PCT", "0.02"))
 except ValueError:
@@ -449,6 +453,10 @@ try:
     AP_VLM_LAYOUT_MAX_RETRIES = max(0, int(os.getenv("AP_VLM_LAYOUT_MAX_RETRIES", "1")))
 except ValueError:
     AP_VLM_LAYOUT_MAX_RETRIES = 1
+try:
+    AP_VLM_DETECT_MAX_TOKENS = max(1024, int(os.getenv("AP_VLM_DETECT_MAX_TOKENS", "4096")))
+except ValueError:
+    AP_VLM_DETECT_MAX_TOKENS = 4096
 try:
     AP_STITCH_UPLOAD_MIN_SHORT_EDGE = max(1, int(os.getenv("AP_STITCH_UPLOAD_MIN_SHORT_EDGE", "480")))
 except ValueError:
@@ -2538,11 +2546,11 @@ async def _ap_vlm_layout_try_receipt_regions(
 ) -> list[dict[str, int]] | None:
     """
     Settings VLM layout: thumbnail + JSON boxes. Returns pixel regions or None.
-    When vlm_only=True: one Detect call, multi-schema parse, no OpenCV fallback.
+    When vlm_only=True: Detect + one optional self-repair; no OpenCV fallback.
     Model is Settings VLM (ocr_model_override); empty model → no Detect.
     """
     thumb_path: str | None = None
-    max_attempts = 1 if vlm_only else (1 + AP_VLM_LAYOUT_MAX_RETRIES)
+    max_attempts = 2 if vlm_only else (1 + AP_VLM_LAYOUT_MAX_RETRIES)
     expected = normalize_expected_receipt_count(expected_receipt_count)
     try:
         thumb_path, _tw, _th, full_w, full_h = _write_ap_layout_thumbnail(
@@ -2554,11 +2562,17 @@ async def _ap_vlm_layout_try_receipt_regions(
             return None
 
         obj: dict | None = None
+        previous_detect_json = ""
+        best_vlm_regions: list[dict[str, int]] | None = None
         for attempt in range(max_attempts):
             _raise_if_bg_job_cancelled(background_job_id)
-            use_repair = (not vlm_only) and attempt > 0
+            use_repair = attempt > 0
             if vlm_only:
-                prompt = VLM_RECEIPT_DETECT_PROMPT
+                prompt = (
+                    build_vlm_detect_repair_prompt(previous_detect_json)
+                    if use_repair
+                    else VLM_RECEIPT_DETECT_PROMPT
+                )
             elif use_repair:
                 prompt = AP_VLM_LAYOUT_DETECTION_PROMPT_REPAIR
             else:
@@ -2586,14 +2600,16 @@ async def _ap_vlm_layout_try_receipt_regions(
                 "[AP layout] attempt=%s/%s prompt=%s max_retries_env=%s expected_count=%s vlm_only=%s",
                 attempt + 1,
                 max_attempts,
-                "vlm_detect" if vlm_only else ("repair" if use_repair else "initial"),
+                "vlm_detect_repair" if vlm_only and use_repair else (
+                    "vlm_detect" if vlm_only else ("repair" if use_repair else "initial")
+                ),
                 AP_VLM_LAYOUT_MAX_RETRIES,
                 expected,
                 vlm_only,
             )
             ocr_options: dict[str, Any] = {"temperature": 0.0}
             if vlm_only:
-                ocr_options["max_tokens"] = 1024
+                ocr_options["max_tokens"] = AP_VLM_DETECT_MAX_TOKENS
             result = await _ocr_service.recognize(
                 thumb_path,
                 provider_name=ocr_provider_name,
@@ -2614,7 +2630,27 @@ async def _ap_vlm_layout_try_receipt_regions(
                     full_h=full_h,
                     pad_pct=AP_VLM_LAYOUT_BOX_PAD_PCT,
                 )
-                if not regions:
+                if regions and (
+                    best_vlm_regions is None or len(regions) > len(best_vlm_regions)
+                ):
+                    best_vlm_regions = regions
+                parsed = safe_parse_json(raw_text)
+                should_repair = (not use_repair) and needs_vlm_detect_repair(
+                    raw_text=raw_text,
+                    regions=regions,
+                    full_w=full_w,
+                    full_h=full_h,
+                    parsed=parsed,
+                )
+                if should_repair:
+                    previous_detect_json = raw_text
+                    logger.info(
+                        "[AP layout] Detect self-repair: boxes=%s declared_count=%s",
+                        len(regions),
+                        parsed.get("count") if isinstance(parsed, dict) else None,
+                    )
+                    continue
+                if not best_vlm_regions:
                     logger.warning(
                         "[AP layout] Settings VLM Detect returned no usable boxes (attempt %s/%s).",
                         attempt + 1,
@@ -2623,9 +2659,9 @@ async def _ap_vlm_layout_try_receipt_regions(
                     return None
                 logger.info(
                     "[AP layout] Using Settings VLM Detect boxes: regions=%s opencv_calls=0",
-                    len(regions),
+                    len(best_vlm_regions),
                 )
-                return regions
+                return best_vlm_regions
 
             obj = _parse_json_object_from_vlm_layout(raw_text)
             if not obj:

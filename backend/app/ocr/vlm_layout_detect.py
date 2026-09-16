@@ -14,14 +14,41 @@ from typing import Any
 
 # Prompt asks for JSON boxes. Parser accepts bbox_2d, x_min/xmin, and {x,y,w,h}
 # in 0-1 or 0-1000. Model id is never set here — caller uses Settings VLM.
-VLM_RECEIPT_DETECT_PROMPT = """Provide bounding box coordinates for every separate physical receipt in this image.
-Report strictly in JSON format as a list of objects. Each object must include a
-'label' and a box using one of: 'bbox_2d' [xmin, ymin, xmax, ymax],
-x_min/y_min/x_max/y_max, or x/y/w/h.
+# Count is the model's own tally — never a hardcoded N (no 3×3 / 9).
+VLM_RECEIPT_DETECT_PROMPT = """Look at this full page. First count every physically separate receipt or slip
+you can see, including copies of the same vendor in a grid, collage, or
+side-by-side scan. Then return one box per slip.
+
+Rules:
+- One box per physically separate slip. Same layout or vendor still counts separately.
+- Touching edges, equal size, or a regular grid must stay separate boxes. Do not merge neighbors.
+- Do not invent empty slips, background, blank cells, logos alone, or torn fragments.
+- count must equal the number of objects you return.
+
+Report strictly as JSON:
+{"count": <integer you observe>, "receipts": [
+  {"label": "receipt", "bbox_2d": [xmin, ymin, xmax, ymax]}
+]}
+Each object may use 'bbox_2d' [xmin, ymin, xmax, ymax], x_min/y_min/x_max/y_max, or x/y/w/h.
 Coordinates may be 0-1 (normalized) or 0-1000.
-Include only complete receipt documents. Do not return background, blank cells,
-logos alone, or receipt fragments.
 """
+
+VLM_RECEIPT_DETECT_REPAIR_PROMPT = """Your previous Detect JSON does not list one box per distinct physical slip
+(count and boxes disagree, the list looks truncated, or some boxes look merged).
+
+Previous JSON:
+{previous}
+
+Look at the page again. Re-count every physically separate slip (including
+same-vendor copies in a grid or collage). Return the full corrected object:
+{{"count": <integer you observe>, "receipts": [ ... one object per slip ... ]}}
+Do not invent empty slips. Do not merge adjacent slips. Do not omit slips
+missing from the previous list. Coordinates 0-1 or 0-1000.
+"""
+
+# Soft cap for a declared Detect count (page-level, not a product N).
+_MAX_DECLARED_DETECT_COUNT = 48
+_MERGE_AREA_RATIO = 2.4
 
 _LIST_KEYS = ("objects", "detections", "bboxes", "boxes", "results", "receipts")
 _BBOX_KEYS = ("bbox_2d", "bbox", "box", "bounding_box", "xyxy")
@@ -191,6 +218,75 @@ def drop_duplicate_norm_boxes(boxes: list[dict[str, float]]) -> list[dict[str, f
             continue
         kept.append(box)
     return kept
+
+
+def extract_declared_detect_count(parsed: Any) -> int | None:
+    """Read the model's own slip count from Detect JSON. None if absent/invalid."""
+    if not isinstance(parsed, dict) or "count" not in parsed:
+        return None
+    try:
+        n = int(parsed["count"])
+    except (TypeError, ValueError):
+        return None
+    if n < 2 or n > _MAX_DECLARED_DETECT_COUNT:
+        return None
+    return n
+
+
+def looks_truncated_detect_json(raw_text: str) -> bool:
+    """True when Detect text is empty, unparseable, or has unmatched brackets."""
+    if not raw_text or not str(raw_text).strip():
+        return True
+    cleaned = re.sub(r"```(?:json)?", "", str(raw_text), flags=re.IGNORECASE).strip()
+    if safe_parse_json(raw_text) is None:
+        return True
+    opens = cleaned.count("[") + cleaned.count("{")
+    closes = cleaned.count("]") + cleaned.count("}")
+    return opens > closes
+
+
+def looks_merged_detect_boxes(
+    regions: list[dict[str, int]],
+    *,
+    full_w: int,
+    full_h: int,
+) -> bool:
+    """True when one box is much larger than its siblings (likely a merge)."""
+    if len(regions) < 2 or full_w < 1 or full_h < 1:
+        return False
+    areas = [max(1, int(r.get("w", 0)) * int(r.get("h", 0))) for r in regions]
+    median = sorted(areas)[len(areas) // 2]
+    if median <= 0:
+        return False
+    return max(areas) >= _MERGE_AREA_RATIO * median
+
+
+def needs_vlm_detect_repair(
+    *,
+    raw_text: str,
+    regions: list[dict[str, int]],
+    full_w: int,
+    full_h: int,
+    parsed: Any = None,
+) -> bool:
+    """N-agnostic repair gate: self-count mismatch, truncated JSON, or one merged box."""
+    if looks_truncated_detect_json(raw_text):
+        return True
+    if parsed is None:
+        parsed = safe_parse_json(raw_text)
+    declared = extract_declared_detect_count(parsed)
+    if declared is not None and declared > len(regions):
+        return True
+    if looks_merged_detect_boxes(regions, full_w=full_w, full_h=full_h):
+        return True
+    return False
+
+
+def build_vlm_detect_repair_prompt(previous_json: str) -> str:
+    prev = (previous_json or "").strip()
+    if len(prev) > 4000:
+        prev = prev[:4000] + "…"
+    return VLM_RECEIPT_DETECT_REPAIR_PROMPT.format(previous=prev or "(empty)")
 
 
 def parse_vlm_detect_regions(
