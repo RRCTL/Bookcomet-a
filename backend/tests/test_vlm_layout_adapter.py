@@ -6,10 +6,15 @@ import pytest
 
 from app.ocr.interfaces import OcrResult
 from app.ocr.vlm_layout_detect import (
+    VLM_RECEIPT_DETECT_PROMPT,
+    build_vlm_detect_repair_prompt,
+    extract_declared_detect_count,
     is_vlm_detection_backend,
+    needs_vlm_detect_repair,
     parse_vlm_detect_regions,
     receipt_instance_id,
     resolve_ap_detection_backend,
+    safe_parse_json,
     vlm_split_review_payload,
 )
 from app.api import ocr
@@ -54,6 +59,55 @@ def test_vlm_valid_boxes_objects_wrapper() -> None:
     )
     regions = parse_vlm_detect_regions(raw, full_w=500, full_h=500, pad_pct=0.0)
     assert len(regions) == 2
+
+
+def test_detect_prompt_is_n_agnostic_anti_merge() -> None:
+    text = VLM_RECEIPT_DETECT_PROMPT.lower()
+    assert "hardcode" not in text
+    assert "3x3" not in text and "3×3" not in VLM_RECEIPT_DETECT_PROMPT
+    assert "do not merge" in text
+    assert '"count"' in VLM_RECEIPT_DETECT_PROMPT or '"count":' in VLM_RECEIPT_DETECT_PROMPT
+
+
+def test_extract_declared_detect_count() -> None:
+    assert extract_declared_detect_count({"count": 9, "receipts": []}) == 9
+    assert extract_declared_detect_count({"count": 1}) is None
+    assert extract_declared_detect_count([{"bbox_2d": [0, 0, 1, 1]}]) is None
+
+
+def test_needs_repair_when_declared_count_exceeds_boxes() -> None:
+    raw = '{"count":9,"receipts":[{"x":0.0,"y":0.0,"w":0.3,"h":0.3},{"x":0.4,"y":0.0,"w":0.3,"h":0.3}]}'
+    regions = parse_vlm_detect_regions(raw, full_w=1000, full_h=1000, pad_pct=0.0)
+    assert len(regions) == 2
+    assert needs_vlm_detect_repair(
+        raw_text=raw,
+        regions=regions,
+        full_w=1000,
+        full_h=1000,
+        parsed=safe_parse_json(raw),
+    )
+
+
+def test_no_repair_when_count_matches_boxes() -> None:
+    raw = (
+        '{"count":2,"receipts":['
+        '{"x":0.1,"y":0.1,"w":0.3,"h":0.4},'
+        '{"x":0.5,"y":0.1,"w":0.3,"h":0.4}]}'
+    )
+    regions = parse_vlm_detect_regions(raw, full_w=1000, full_h=1000, pad_pct=0.0)
+    assert needs_vlm_detect_repair(
+        raw_text=raw,
+        regions=regions,
+        full_w=1000,
+        full_h=1000,
+        parsed=safe_parse_json(raw),
+    ) is False
+
+
+def test_repair_prompt_embeds_previous_json() -> None:
+    prompt = build_vlm_detect_repair_prompt('{"count":9,"receipts":[]}')
+    assert '{"count":9,"receipts":[]}' in prompt
+    assert "Re-count" in prompt
 
 
 def test_vlm_valid_boxes_legacy_xywh() -> None:
@@ -592,6 +646,99 @@ async def test_detect_uses_settings_model_not_baked_id(monkeypatch, tmp_path) ->
     assert regions
     assert seen["model"] == "settings-vlm"
     assert "qwen" not in seen["model"].lower()
+
+
+@pytest.mark.asyncio
+async def test_vlm_detect_repairs_when_self_count_exceeds_boxes(monkeypatch, tmp_path) -> None:
+    """N-agnostic: model-declared count > boxes triggers one repair; no hardcoded N."""
+    from PIL import Image
+
+    page_png = tmp_path / "synthetic_repair.png"
+    Image.new("RGB", (80, 80), (250, 250, 250)).save(page_png)
+
+    first = (
+        '{"count":9,"receipts":['
+        + ",".join(
+            f'{{"label":"receipt","bbox_2d":[{x},{y},{x + 80},{y + 80}]}}'
+            for x, y in ((10, 10), (120, 10), (230, 10), (10, 120), (120, 120), (230, 120))
+        )
+        + "]}"
+    )
+    cells = [(x, y) for y in (10, 120, 230) for x in (10, 120, 230)]
+    second = (
+        '{"count":9,"receipts":['
+        + ",".join(
+            f'{{"label":"receipt","bbox_2d":[{x},{y},{x + 80},{y + 80}]}}' for x, y in cells
+        )
+        + "]}"
+    )
+    calls: list[str] = []
+
+    class _FakeOcr:
+        async def recognize(self, _path, **kwargs):
+            prompt = str(kwargs.get("prompt_override") or "")
+            calls.append(prompt)
+            text = first if len(calls) == 1 else second
+            return OcrResult(text=text, lines=[], metadata={})
+
+    monkeypatch.setattr(ocr, "_ocr_service", _FakeOcr())
+    monkeypatch.setattr(
+        ocr,
+        "_write_ap_layout_thumbnail",
+        lambda *_a, **_k: (str(page_png), 80, 80, 1000, 1000),
+    )
+
+    regions = await ocr._ap_vlm_layout_try_receipt_regions(
+        str(page_png),
+        ocr_provider_name="vlm",
+        ocr_model_override="settings-vlm",
+        vlm_only=True,
+    )
+    assert regions is not None
+    assert len(regions) == 9
+    assert len(calls) == 2
+    assert "Do not merge" in calls[0] or "do not merge" in calls[0].lower()
+    assert "Previous JSON" in calls[1]
+
+
+@pytest.mark.asyncio
+async def test_vlm_detect_skips_repair_when_count_matches(monkeypatch, tmp_path) -> None:
+    from PIL import Image
+
+    page_png = tmp_path / "synthetic_ok.png"
+    Image.new("RGB", (80, 80), (250, 250, 250)).save(page_png)
+    called = {"n": 0}
+
+    class _FakeOcr:
+        async def recognize(self, *_a, **_k):
+            called["n"] += 1
+            return OcrResult(
+                text=(
+                    '{"count":2,"receipts":['
+                    '{"label":"receipt","bbox_2d":[10,10,200,400]},'
+                    '{"label":"receipt","bbox_2d":[250,10,440,400]}'
+                    "]}"
+                ),
+                lines=[],
+                metadata={},
+            )
+
+    monkeypatch.setattr(ocr, "_ocr_service", _FakeOcr())
+    monkeypatch.setattr(
+        ocr,
+        "_write_ap_layout_thumbnail",
+        lambda *_a, **_k: (str(page_png), 80, 80, 500, 500),
+    )
+
+    regions = await ocr._ap_vlm_layout_try_receipt_regions(
+        str(page_png),
+        ocr_provider_name="vlm",
+        ocr_model_override="settings-vlm",
+        vlm_only=True,
+    )
+    assert regions is not None
+    assert len(regions) == 2
+    assert called["n"] == 1
 
 
 @pytest.mark.asyncio
