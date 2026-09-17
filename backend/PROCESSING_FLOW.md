@@ -67,15 +67,14 @@ The live workspace pipeline runs through **`ocr_test_core`** in `backend/app/api
 
 ### Multi-receipt on one page: regions and cutting (`_run_ap_multi_receipt_ocr_from_image`)
 
-**1) Build region list**
+**1) Build region list (Settings VLM Detect; no OpenCV crop fallback)**
 
-- If **`processing_mode == "AP"`** and **`AP_VLM_LAYOUT_CROP_ENABLED`**: **`_ap_vlm_layout_try_receipt_regions`**
-  - Thumbnail (`AP_VLM_LAYOUT_THUMB_MAX_SIDE`), VLM returns JSON: **`confidence`**, **`count`**, **`receipts: [{x,y,w,h}]`** normalized to **[0,1]** per **`AP_VLM_LAYOUT_DETECTION_PROMPT`**.
-  - **`_validate_layout_json`**: min confidence, **≥ 2** boxes, geometry, **`count` == len(receipts)**. Maps to full-resolution pixels with **`AP_VLM_LAYOUT_BOX_PAD_PCT`**.
-  - On failure → fallback.
-- **Else:** **`_detect_receipt_regions_v2`** (Canny, column/row dominant-gap grid, density filter), with fallbacks to contour-based **`_detect_receipt_regions`** and **`_detect_receipt_regions_pil`**.
-- Balanced split-evidence gate applies before multi-crop OCR on AP pages: weakly separated / fragment-heavy candidates are collapsed back to one region.
-- If **≤ 1** region: without **`confirmed`** return **`None`**; with user confirm run **`_force_split_receipt_regions`** (multi-gap or bisect long axis).
+- AP/AR crop boxes come from **`_ap_vlm_layout_try_receipt_regions`** (`vlm_only=True`) using Settings VLM and **`VLM_RECEIPT_DETECT_PROMPT`**.
+  - Thumbnail longest side defaults to **`AP_VLM_LAYOUT_THUMB_MAX_SIDE=1600`**. Detect JSON token budget is **`AP_VLM_DETECT_MAX_TOKENS=4096`**.
+  - Model returns **`{count, receipts}`** (or a box list). `count` is the **model’s own** slip tally — not a hardcoded N (no 3×3 / 9).
+  - Parser accepts `bbox_2d`, corner keys, or `{x,y,w,h}` in 0–1 or 0–1000; maps to full-resolution pixels with **`AP_VLM_LAYOUT_BOX_PAD_PCT`**.
+  - **One self-repair Detect** (`vlm_detect_repair`) if the first pass looks incomplete: declared `count` > parsed boxes, truncated JSON, or one box much larger than siblings. At most two Detect calls; keep the denser valid set. Repair does not invent a fixed slip count.
+  - Empty / unusable Detect → **`needs_split_review`** (`vlm_split_review_payload`). OpenCV / force-split are **not** retried on this live path.
 
 **2) Cut and process each region**
 
@@ -107,8 +106,9 @@ For **`processing_mode in ("AR", "AP")`**, Step 4 uses **`_extract_ar_ap_ai_fiel
 | Variable | Role |
 |----------|------|
 | `AP_VLM_MODEL` / `AP_MULTI_RECEIPT_OCR_MODEL` | Main VLM id for AP |
-| `AP_VLM_LAYOUT_CROP_ENABLED` | Enable VLM bounding-box multi-receipt detection |
-| `AP_VLM_LAYOUT_CONFIDENCE_MIN`, `AP_VLM_LAYOUT_THUMB_MAX_SIDE`, `AP_VLM_LAYOUT_BOX_PAD_PCT`, `AP_VLM_LAYOUT_MAX_RETRIES` | Layout JSON validation / retries |
+| `AP_VLM_LAYOUT_CROP_ENABLED` | Legacy layout flag; AP/AR crop uses Settings VLM Detect regardless |
+| `AP_VLM_LAYOUT_CONFIDENCE_MIN`, `AP_VLM_LAYOUT_THUMB_MAX_SIDE` (default 1600), `AP_VLM_LAYOUT_BOX_PAD_PCT`, `AP_VLM_LAYOUT_MAX_RETRIES` | Layout thumb / pad / legacy JSON retries |
+| `AP_VLM_DETECT_MAX_TOKENS` | Detect JSON token budget (default 4096) so collage box lists are less likely to truncate |
 | `AP_CROP_OCR_CONCURRENCY`, `AP_CROP_OCR_IMAGE_MAX_SIDE`, `AP_CROP_OCR_JPEG_QUALITY` | Multi-crop OCR |
 | `AP_CROP_OCR_TIMEOUT_S` | Per-crop OCR deadline (seconds). Empty uses `VLM_READ_TIMEOUT` → `VLM_TIMEOUT` → `240` |
 | `VLM_HTTP_MAX_RETRIES` | HTTP attempts per upload profile on Timeout/ConnectionError. Empty = 3. Crop/receipt OCR passes 1 via `ocr_options` |
