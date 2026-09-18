@@ -14,7 +14,7 @@
     "generate:api-types": "openapi-typescript src/services/openapi.json -o src/services/api-contract.d.ts"
   },
   "dependencies": {
-    "@xyflow/react": "^12.11.3",
+    "@xyflow/react": "^12.11.5",
     "axios": "^1.19.0",
     "framer-motion": "~12.34.1",
     "react": "^19.2.8",
