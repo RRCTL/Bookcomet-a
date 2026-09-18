@@ -9,6 +9,9 @@ updates:
       # PaddleOCR 3.x is a large OCR stack jump; stay on 2.x until planned.
       - dependency-name: "paddleocr"
         update-types: ["version-update:semver-major"]
+      # PaddleOCR 2.x requires numpy<2.0. A floor bump to 2.x (#97) cannot install.
+      - dependency-name: "numpy"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: npm
     directory: /frontend
