@@ -10,7 +10,7 @@ visualdl
 opencv-contrib-python
 
 # Image processing
-opencv-python>=4.10.0
+opencv-python>=5.0.0.93
 Pillow>=12.3.0
 # Keep a low floor. PaddleOCR 2.8–2.9 require numpy<2.0; #97's >=2.5.2 floor blocked those.
 numpy>=1.21
