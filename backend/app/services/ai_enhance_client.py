@@ -9,6 +9,7 @@ import time
 import re
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import requests
 
@@ -68,7 +69,8 @@ class AiEnhanceClient:
                 "AI enhancement API URL missing. Set AI_ENHANCE_BASE_URL "
                 "(or VLM_BASE_URL) in Settings → API."
             )
-        if not resolved_base.startswith("https://"):
+        parsed = urlparse(resolved_base)
+        if parsed.scheme != "https" or not parsed.netloc:
             raise ValueError("Base URL must use HTTPS for security")
         self._base_url = resolved_base.rstrip("/")
 
@@ -84,8 +86,10 @@ class AiEnhanceClient:
             raise ValueError("AI enhancement model missing. Set AI_ENHANCE_MODEL in Settings → API.")
 
         logger.info(
-            f"[LLM {self._default_model}] Service initialized (API Key: {'*' * 8}{self._api_key[-4:]}, "
-            f"Base URL: {self._base_url}, Default Model: {self._default_model})"
+            "[LLM %s] Service initialized (API key redacted, Base URL: %s, Default Model: %s)",
+            self._default_model,
+            self._base_url,
+            self._default_model,
         )
 
     def chat_completions(
