@@ -37,6 +37,10 @@ Stable IDs for security work. Prefer these over informal “phase” names in PR
 | SEC-PUB-003 | Public MVP | Optional `UPLOADS_ENCRYPTION_KEY` wrap for local upload files | This PR |
 | SEC-PUB-004 | Public MVP | Clean-install record, dependency exceptions, SBOM workflow, demo dataset | This PR |
 | SEC-PUB-005 | Public MVP | GitHub preflight: full-ref history + Actions/LFS/release scan; admin-only security/branch rows | This PR |
+| SEC-SUPPLY-002 | Supply chain | Pin patched npm transitives: minimatch 3.1.4, js-yaml 4.3.2, @humanfs/node 0.16.8, ajv 6.14.0 | This PR |
+| SEC-CODE-014 | Code | Contain load/delete/read/PDF paths under uploads or temp (CodeQL path-injection) | This PR |
+| SEC-CODE-015 | Code | Linear email validation instead of a quantified regex (CodeQL ReDoS) | This PR |
+| SEC-CODE-016 | Code | Stop logging API-key suffixes and test-user passwords | This PR |
 
 ## Former phase map
 

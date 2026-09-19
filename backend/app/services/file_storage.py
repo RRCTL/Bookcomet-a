@@ -45,6 +45,29 @@ def _safe_path_segment(value: str, *, field_name: str) -> str:
     return cleaned
 
 
+def resolve_path_under_root(root: str | Path, candidate: str | Path) -> Path:
+    """Resolve *candidate* and require it stay inside *root*.
+
+    Used as the CodeQL path-injection sanitizer for load/delete/read/write.
+    """
+    raw = Path(candidate)
+    if any(part == ".." for part in raw.parts):
+        raise ValueError("Storage path escapes configured directory")
+    root_resolved = Path(root).resolve()
+    resolved = raw.resolve()
+    root_prefix = str(root_resolved)
+    resolved_s = str(resolved)
+    if resolved_s != root_prefix and not resolved_s.startswith(root_prefix + os.sep):
+        raise ValueError("Storage path escapes configured directory")
+    if not resolved.is_relative_to(root_resolved):
+        raise ValueError("Storage path escapes configured directory")
+    return resolved
+
+
+def uploads_root() -> Path:
+    return Path(os.getenv("UPLOADS_DIR", "./uploads"))
+
+
 def assert_upload_size(data: bytes, *, max_upload_size_mb: int | None = None) -> None:
     """Raise ValueError when payload exceeds MAX_UPLOAD_SIZE_MB."""
     limit_mb = max_upload_size_mb
@@ -163,11 +186,16 @@ def unwrap_stored_bytes(data: bytes) -> bytes:
 
 def read_stored_bytes(storage_path: str | Path) -> bytes:
     """Read on-disk upload bytes, decrypting when the BCENC1 prefix is present."""
-    return unwrap_stored_bytes(Path(storage_path).read_bytes())
+    path = resolve_path_under_root(uploads_root(), storage_path)
+    return unwrap_stored_bytes(path.read_bytes())
 
 
 def write_bytes_atomic(dest: Path, data: bytes) -> None:
     """Write bytes via temp file + os.replace to avoid partial reads."""
+    dest = Path(dest)
+    if any(part == ".." for part in dest.parts):
+        raise ValueError("Invalid destination path")
+    dest = dest.resolve()
     dest.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=dest.parent, prefix=".tmp_", suffix=dest.suffix)
     try:
@@ -230,12 +258,9 @@ class LocalDiskStorage:
         if not norm_ext.startswith("."):
             norm_ext = f".{norm_ext}" if norm_ext else ""
         assert_file_type(f"{file_uuid}{norm_ext}", data)
-        dest = self._root / company_id / task_id / f"{file_uuid}{norm_ext}"
-        # Ensure resolved path stays under uploads root (defense in depth).
-        resolved = dest.resolve()
-        root_resolved = self._root.resolve()
-        if not resolved.is_relative_to(root_resolved):
-            raise ValueError("Storage path escapes uploads directory")
+        dest = resolve_path_under_root(
+            self._root, self._root / company_id / task_id / f"{file_uuid}{norm_ext}"
+        )
         write_bytes_atomic(dest, wrap_stored_bytes(data))
         logger.debug("[FileStorage] Saved %d bytes → %s", len(data), dest)
         return str(dest)
@@ -248,17 +273,20 @@ class LocalDiskStorage:
         if not norm_ext.startswith("."):
             norm_ext = f".{norm_ext}" if norm_ext else ""
         assert_file_type(f"input{norm_ext}", data)
-        dest = self._root / "background_jobs" / job_id / f"input{norm_ext}"
+        dest = resolve_path_under_root(
+            self._root, self._root / "background_jobs" / job_id / f"input{norm_ext}"
+        )
         write_bytes_atomic(dest, wrap_stored_bytes(data))
         return str(dest)
 
     def load_path(self, storage_path: str) -> Path:
-        return Path(storage_path)
+        return resolve_path_under_root(self._root, storage_path)
 
     def delete(self, storage_path: str) -> None:
         try:
-            Path(storage_path).unlink(missing_ok=True)
-            logger.debug("[FileStorage] Deleted %s", storage_path)
+            path = resolve_path_under_root(self._root, storage_path)
+            path.unlink(missing_ok=True)
+            logger.debug("[FileStorage] Deleted %s", path)
         except Exception as exc:
             logger.warning("[FileStorage] Could not delete %s: %s", storage_path, exc)
 
