@@ -37,6 +37,7 @@ Stable IDs for security work. Prefer these over informal “phase” names in PR
 | SEC-PUB-003 | Public MVP | Optional `UPLOADS_ENCRYPTION_KEY` wrap for local upload files | This PR |
 | SEC-PUB-004 | Public MVP | Clean-install record, dependency exceptions, SBOM workflow, demo dataset | This PR |
 | SEC-PUB-005 | Public MVP | GitHub preflight: full-ref history + Actions/LFS/release scan; admin-only security/branch rows | This PR |
+| SEC-SUPPLY-002 | Supply chain | Pin patched npm transitives: minimatch 3.1.4, js-yaml 4.3.2, @humanfs/node 0.16.8, ajv 6.14.0 | This PR |
 
 ## Former phase map
 
