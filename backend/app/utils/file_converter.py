@@ -3,11 +3,29 @@ import io
 import logging
 import math
 import os
+import tempfile
 from PIL import Image
 from typing import List, Dict, Any, Tuple
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def _resolved_pdf_path(pdf_path: str) -> str:
+    """Require a real file under uploads or the process temp dir."""
+    raw = Path(pdf_path)
+    if not pdf_path or any(part == ".." for part in raw.parts):
+        raise ValueError("PDF path must be a file without parent segments")
+    resolved = raw.resolve()
+    if not resolved.is_file():
+        raise ValueError("PDF path is not a readable file")
+    allowed_roots = (
+        Path(os.getenv("UPLOADS_DIR", "./uploads")).resolve(),
+        Path(tempfile.gettempdir()).resolve(),
+    )
+    if not any(resolved.is_relative_to(root) for root in allowed_roots):
+        raise ValueError("PDF path is outside the allowed directories")
+    return str(resolved)
 
 
 def _pil_open_pixel_budget() -> int:
@@ -85,6 +103,7 @@ def convert_pdf_to_images_list(pdf_path: str, target_format: str = 'PNG') -> Lis
     Raises:
         Exception: If PDF conversion fails
     """
+    pdf_path = _resolved_pdf_path(pdf_path)
     try:
         import fitz  # PyMuPDF
         
@@ -125,8 +144,6 @@ def convert_pdf_to_images_list(pdf_path: str, target_format: str = 'PNG') -> Lis
                 if img.mode not in ['RGB', 'RGBA']:
                     img = img.convert('RGBA')
             
-            # Save to temporary file
-            import tempfile
             with tempfile.NamedTemporaryFile(delete=False, suffix=f'_page{page_num+1}.{file_ext}', mode='wb') as tmp_img:
                 if target_format.upper() == 'PNG':
                     img.save(tmp_img, format='PNG', optimize=True)
@@ -158,6 +175,7 @@ def convert_pdf_to_images_list(pdf_path: str, target_format: str = 'PNG') -> Lis
 
 def pdf_document_page_count(pdf_path: str) -> int:
     """Return PDF page count; raises if unreadable."""
+    pdf_path = _resolved_pdf_path(pdf_path)
     try:
         import fitz  # PyMuPDF
     except ImportError:
@@ -177,17 +195,17 @@ def convert_one_pdf_page_to_temp_png(pdf_path: str, page_number_one_based: int) 
     Rasterize a single PDF page to a temp PNG. Caller must unlink the path when done.
     page_number_one_based: 1 .. page_count
     """
+    if page_number_one_based < 1:
+        raise ValueError("page_number_one_based must be >= 1")
+    pdf_path = _resolved_pdf_path(pdf_path)
     try:
         import fitz  # PyMuPDF
-        import tempfile
     except ImportError:
         raise Exception(
             "PyMuPDF (fitz) library is not installed. "
             "Please install it: pip install PyMuPDF"
         ) from None
 
-    if page_number_one_based < 1:
-        raise ValueError("page_number_one_based must be >= 1")
     pdf_document = fitz.open(pdf_path)
     try:
         n = pdf_document.page_count

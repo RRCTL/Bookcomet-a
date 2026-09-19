@@ -1,4 +1,6 @@
 """Neutral gateway env names (VLM_* / LLM_* / AI_ENHANCE_*) for AI clients."""
+from urllib.parse import urlparse
+
 import pytest
 
 
@@ -21,7 +23,9 @@ def test_provider_prefers_vlm_api_key(monkeypatch: pytest.MonkeyPatch):
 
     p = DeepSeekOcrProvider()
     assert p._api_key == "new-key"
-    assert p._base_url.startswith("https://new.example.com")
+    parsed = urlparse(p._base_url)
+    assert parsed.scheme == "https"
+    assert parsed.netloc == "new.example.com"
 
 
 def test_provider_falls_back_to_llm_api_key(monkeypatch: pytest.MonkeyPatch):
