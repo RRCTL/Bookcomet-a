@@ -19,6 +19,7 @@ from app.core.text_limits import (
 )
 from app.database import get_db
 from app.models.company_context import CompanyProfile
+from app.services.company_fx import merge_fx_settings, reporting_currency_from_settings
 
 router = APIRouter()
 
@@ -144,12 +145,9 @@ async def upsert_company_profile(
     profile.company_name_keywords = sanitized_keywords
     existing_settings = profile.custom_settings if isinstance(profile.custom_settings, dict) else {}
     incoming_settings = payload.custom_settings if isinstance(payload.custom_settings, dict) else {}
-    merged_settings = {
-        **existing_settings,
-        **incoming_settings,
-        "company_name": profile.company_name,
-        "company_name_keywords": sanitized_keywords,
-    }
+    merged_settings = merge_fx_settings(existing_settings, incoming_settings)
+    merged_settings["company_name"] = profile.company_name
+    merged_settings["company_name_keywords"] = sanitized_keywords
     profile.custom_settings = merged_settings
 
     db.commit()
@@ -165,7 +163,7 @@ def _build_profile_md(profile: CompanyProfile, company_id: str) -> str:
     basis = profile.accounting_basis or "Not specified"
     fy = profile.fiscal_year_end or "Not specified"
     custom = profile.custom_settings if isinstance(profile.custom_settings, dict) else {}
-    currency = custom.get("currency", "HKD")
+    currency = reporting_currency_from_settings(custom) or "Not set"
     business_desc = custom.get("business_description", "")
     bank_names = custom.get("bank_names", "")
 

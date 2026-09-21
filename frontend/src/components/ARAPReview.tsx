@@ -25,6 +25,7 @@ import {
 } from '../utils/imageQualityCrop'
 import { taskApi } from '../services/api'
 import { formatBankSourceFile } from '../utils/bankSourceFile'
+import { formatCurrencyAmount, parseFxNumber } from '../utils/fxCurrency'
 
 const EMPTY_LOCK_KEYS: ReadonlySet<string> = new Set()
 
@@ -100,6 +101,8 @@ interface Props {
     companyId?: string | null
     files: CropPreviewFile[]
   } | null
+  hideReceiptCurrency?: boolean
+  onCompanyAmountClick?: (row: ARAPTransaction) => void
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -243,6 +246,8 @@ export function ARAPReview({
   canApprove = false,
   approveBusy = false,
   cropPreview = null,
+  hideReceiptCurrency = false,
+  onCompanyAmountClick,
 }: Props) {
   const [rows, setRows] = useState<Row[]>(() =>
     transactions.map((t, i) => ({ ...normalizeARAPRow(t, filename), _id: i }))
@@ -695,7 +700,8 @@ export function ARAPReview({
                   <th style={{ ...S.th, textAlign: 'right', minWidth: 100 }}>Debit</th>
                   <th style={{ ...S.th, textAlign: 'right', minWidth: 100 }}>Credit</th>
                   <th style={{ ...S.th, textAlign: 'right', minWidth: 90 }}>Tax</th>
-                  <th style={{ ...S.th, width: 55 }}>Cur</th>
+                  {!hideReceiptCurrency && <th style={{ ...S.th, width: 90 }}>Receipt</th>}
+                  <th style={{ ...S.th, width: 110 }}>Company</th>
                   <th style={{ ...S.th, minWidth: 130 }}>Account Code</th>
                   <th style={{ ...S.th, minWidth: 90 }}>Category</th>
                   <th style={{ ...S.th, minWidth: 200 }}>Description</th>
@@ -710,7 +716,8 @@ export function ARAPReview({
                   <th style={{ ...S.th, width: 70 }}>Type</th>
                   <th style={{ ...S.th, textAlign: 'right', minWidth: 100 }}>Debit</th>
                   <th style={{ ...S.th, textAlign: 'right', minWidth: 100 }}>Credit</th>
-                  <th style={{ ...S.th, width: 55 }}>Cur</th>
+                  {!hideReceiptCurrency && <th style={{ ...S.th, width: 90 }}>Receipt</th>}
+                  <th style={{ ...S.th, width: 110 }}>Company</th>
                   <th style={{ ...S.th, minWidth: 110 }}>Payer</th>
                   <th style={{ ...S.th, minWidth: 110 }}>Payee</th>
                   <th style={{ ...S.th, minWidth: 90 }}>Bank</th>
@@ -929,14 +936,29 @@ export function ARAPReview({
                           <span style={{ fontSize: 10, color: '#64748b' }}>{fmtAmt(row.tax_amount)}</span>
                         )}
                       </td>
-                      <td style={S.td}>
-                        <input
-                          style={{ ...S.input, width: 46 }}
-                          value={row.currency ?? 'HKD'}
-                          disabled={glPosted || readOnly}
-                          onChange={e => updateField(row._id, 'currency', e.target.value)}
-                          onClick={e => e.stopPropagation()}
-                        />
+                      {!hideReceiptCurrency && (
+                        <td style={S.td}>
+                          {formatCurrencyAmount(String(row.currency ?? ''), parseFxNumber(row.amount))}
+                        </td>
+                      )}
+                      <td
+                        style={{
+                          ...S.td,
+                          background: parseFxNumber(row.company_amount) == null ? '#f3f4f6' : undefined,
+                          cursor: onCompanyAmountClick && !glPosted && !readOnly ? 'pointer' : undefined,
+                        }}
+                        onClick={e => {
+                          e.stopPropagation()
+                          if (!glPosted && !readOnly) onCompanyAmountClick?.(row)
+                        }}
+                      >
+                        {parseFxNumber(row.company_amount) != null
+                          ? `${formatCurrencyAmount(String(row.company_currency ?? ''), parseFxNumber(row.company_amount))}${
+                              hideReceiptCurrency && row.currency && row.currency !== row.company_currency
+                                ? ` · ${row.currency}`
+                                : ''
+                            }`
+                          : '—'}
                       </td>
                     </>
                   ) : (
@@ -1015,14 +1037,29 @@ export function ARAPReview({
                         )}
                       </td>
 
-                      <td style={S.td}>
-                        <input
-                          style={{ ...S.input, width: 46 }}
-                          value={row.currency ?? 'HKD'}
-                          disabled={glPosted || readOnly}
-                          onChange={e => updateField(row._id, 'currency', e.target.value)}
-                          onClick={e => e.stopPropagation()}
-                        />
+                      {!hideReceiptCurrency && (
+                        <td style={S.td}>
+                          {formatCurrencyAmount(String(row.currency ?? ''), parseFxNumber(row.amount))}
+                        </td>
+                      )}
+                      <td
+                        style={{
+                          ...S.td,
+                          background: parseFxNumber(row.company_amount) == null ? '#f3f4f6' : undefined,
+                          cursor: onCompanyAmountClick && !glPosted && !readOnly ? 'pointer' : undefined,
+                        }}
+                        onClick={e => {
+                          e.stopPropagation()
+                          if (!glPosted && !readOnly) onCompanyAmountClick?.(row)
+                        }}
+                      >
+                        {parseFxNumber(row.company_amount) != null
+                          ? `${formatCurrencyAmount(String(row.company_currency ?? ''), parseFxNumber(row.company_amount))}${
+                              hideReceiptCurrency && row.currency && row.currency !== row.company_currency
+                                ? ` · ${row.currency}`
+                                : ''
+                            }`
+                          : '—'}
                       </td>
 
                       <td style={S.td}>

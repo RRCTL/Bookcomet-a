@@ -21,6 +21,9 @@ export interface BankTransaction {
   bank_date: string
   amount: number
   currency: string
+  company_currency?: string | null
+  company_amount?: number | null
+  exchange_rate?: number | null
   description_raw: string
   description_norm: string
   account_category?: string
@@ -40,6 +43,10 @@ export interface LedgerTransaction {
   book_date: string
   amount: number
   currency: string
+  company_currency?: string | null
+  company_amount?: number | null
+  company_tax_amount?: number | null
+  exchange_rate?: number | null
   counterparty: string
   account_category?: string
   reference?: string

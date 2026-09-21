@@ -45,6 +45,20 @@ function resolveBatchPayloads(
 import { ARAPReview, type ARAPTransaction } from '../../components/ARAPReview'
 import { BankStatementReview, type BankTransaction } from '../../components/BankStatementReview'
 import { OtherTable } from '../../components/OtherTable'
+import { CompanyFxToolbar } from '../../components/CompanyFxToolbar'
+import { ExchangeRateDialog } from '../../components/ExchangeRateDialog'
+import {
+  applySavedRateToRow,
+  fxPairKey,
+  fxRatesFromSettings,
+  hydrateRowsForCompany,
+  normalizeCurrencyCode,
+  parseFxNumber,
+  receiptAmountFromBankRow,
+  reportingCurrencyFromSettings,
+  rowReadyForBooks,
+  sameCurrency,
+} from '../../utils/fxCurrency'
 import type { OtherRow } from '../../types/other'
 import { api } from '../../services/api'
 import { assetSourceLabel, filesByIdFromRun } from '../../utils/rowSourceLabel'
@@ -353,6 +367,11 @@ export function ProcessingView() {
   const [payloads, setPayloads] = useState<Record<string, Record<string, unknown>>>({})
   const [assetRecords, setAssetRecords] = useState<OtherRow[]>([])
   const [editedRows, setEditedRows] = useState<ARAPTransaction[] | BankTransaction[] | null>(null)
+  const [reportingCurrency, setReportingCurrency] = useState('')
+  const [fxRates, setFxRates] = useState<Record<string, number>>({})
+  const [tableCompanyCurrency, setTableCompanyCurrency] = useState('')
+  const [hideReceiptCurrency, setHideReceiptCurrency] = useState(false)
+  const [rateDialog, setRateDialog] = useState<{ from: string; to: string; amount: number | null; printed: number | null } | null>(null)
   const [applyingTemplate, setApplyingTemplate] = useState(false)
   const [templateChoice, setTemplateChoice] = useState('')
   const [menuRunId, setMenuRunId] = useState<string | null>(null)
@@ -924,7 +943,63 @@ export function ProcessingView() {
 
   useEffect(() => {
     setEditedRows(null)
+    setTableCompanyCurrency('')
+    setRateDialog(null)
   }, [activeRunId])
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const profile = await api.getCompanyProfile()
+        if (cancelled) return
+        const reporting = reportingCurrencyFromSettings(profile.custom_settings)
+        setReportingCurrency(reporting)
+        setFxRates(fxRatesFromSettings(profile.custom_settings))
+        if (reporting) setTableCompanyCurrency(reporting)
+      } catch {
+        /* profile optional */
+      }
+    })()
+    return () => { cancelled = true }
+  }, [companyId, activeRunId])
+
+  const effectiveCompanyCurrency = reportingCurrency || tableCompanyCurrency
+
+  const fxSourceRows = isBank ? displayBankRows : displayArapRows
+  const fxReady = useMemo(
+    () =>
+      fxSourceRows.length === 0 ||
+      fxSourceRows.every(row =>
+        rowReadyForBooks(
+          isBank
+            ? { ...row, amount: receiptAmountFromBankRow(row as Record<string, unknown>) }
+            : row,
+          effectiveCompanyCurrency,
+        ),
+      ),
+    [fxSourceRows, isBank, effectiveCompanyCurrency],
+  )
+
+  useEffect(() => {
+    if (!effectiveCompanyCurrency || fxSourceRows.length === 0) return
+    const hydrated = hydrateRowsForCompany(
+      fxSourceRows.map(row =>
+        isBank ? { ...row, amount: receiptAmountFromBankRow(row as Record<string, unknown>) } : row,
+      ),
+      effectiveCompanyCurrency,
+      fxRates,
+    )
+    const changed = hydrated.some((row, i) => {
+      const prev = fxSourceRows[i] as Record<string, unknown>
+      return (
+        row.company_amount !== prev.company_amount ||
+        row.company_currency !== prev.company_currency ||
+        row.exchange_rate !== prev.exchange_rate
+      )
+    })
+    if (changed) setEditedRows(hydrated as ARAPTransaction[] | BankTransaction[])
+  }, [effectiveCompanyCurrency, fxRates, arapRows, bankRows, isBank])
 
   const modeTemplates = useMemo(
     () => sortPaletteTemplates(templates.filter(t => t.processing_mode === activeRun?.processing_mode)),
@@ -1012,11 +1087,61 @@ export function ProcessingView() {
   const reVlmLocked = Boolean(activeRun && runHasLockedApprovedTable(activeRun))
   const reVlmLockedTitle =
     'Approved and loaded into modules — Re-VLM is disabled to avoid conflicting updates.'
+  const applyPairRate = async (rate: number, printedAmount?: number) => {
+    if (!rateDialog || !effectiveCompanyCurrency) return
+    const pair = fxPairKey(rateDialog.from, rateDialog.to)
+    const nextRates = { ...fxRates, [pair]: rate }
+    try {
+      const profile = await api.getCompanyProfile()
+      await api.upsertCompanyProfile({
+        industry: profile.industry,
+        accounting_basis: profile.accounting_basis,
+        fiscal_year_end: profile.fiscal_year_end,
+        company_name: profile.company_name,
+        company_name_keywords: profile.company_name_keywords,
+        custom_settings: { ...profile.custom_settings, fx_rates: nextRates },
+      })
+    } catch {
+      /* keep local rate even if profile save fails */
+    }
+    setFxRates(nextRates)
+    const applyRow = <T extends Record<string, unknown>>(row: T): T => {
+      const receipt = normalizeCurrencyCode(String(row.currency ?? ''))
+      if (receipt !== rateDialog.from) return row
+      const working = isBank ? { ...row, amount: receiptAmountFromBankRow(row) } : row
+      if (printedAmount != null && parseFxNumber(working.amount) != null) {
+        return applySavedRateToRow(
+          { ...working, printed_company_amount: printedAmount },
+          effectiveCompanyCurrency,
+          rate,
+          { keepPrinted: true },
+        ) as T
+      }
+      return applySavedRateToRow(working, effectiveCompanyCurrency, rate, { keepPrinted: false }) as T
+    }
+    if (isBank) setEditedRows(((editedRows as BankTransaction[] | null) ?? bankRows).map(applyRow))
+    else setEditedRows(((editedRows as ARAPTransaction[] | null) ?? arapRows).map(applyRow))
+    setRateDialog(null)
+  }
+
+  const openRateDialog = (row: Record<string, unknown>) => {
+    const from = normalizeCurrencyCode(String(row.currency ?? ''))
+    const to = normalizeCurrencyCode(effectiveCompanyCurrency)
+    if (!from || !to || sameCurrency(from, to)) return
+    setRateDialog({
+      from,
+      to,
+      amount: isBank ? receiptAmountFromBankRow(row) : parseFxNumber(row.amount),
+      printed: parseFxNumber(row.printed_company_amount),
+    })
+  }
+
   const canApproveTable =
     Boolean(activeRun) &&
     !outputReadOnly &&
     !isRunning &&
     !anyNodeRunning &&
+    fxReady &&
     (awaitingReview || (outputRowCount > 0 && hasOcrDataOnRun(activeRun)))
   const completedFileCount = (activeRun?.files ?? []).filter(f =>
     ['ok', 'warning'].includes(f.file_status ?? ''),
@@ -1389,18 +1514,49 @@ export function ProcessingView() {
                   {extracting ? 'Processing…' : 'No extracted rows yet.'}
                 </div>
               ) : isAsset ? (
-                <OtherTable records={assetRecords} readOnly={outputReadOnly} />
+                <>
+                  <CompanyFxToolbar
+                    reportingCurrency={reportingCurrency}
+                    tableCurrency={tableCompanyCurrency}
+                    onTableCurrencyChange={setTableCompanyCurrency}
+                    hideReceiptCurrency={hideReceiptCurrency}
+                    onToggleReceiptCurrency={() => setHideReceiptCurrency(v => !v)}
+                    fxBlocked={!fxReady}
+                  />
+                  <OtherTable records={assetRecords} readOnly={outputReadOnly} hideReceiptCurrency={hideReceiptCurrency} />
+                </>
               ) : isBank ? (
-                <BankStatementReview
-                  transactions={displayBankRows}
-                  readOnly={outputReadOnly}
-                  onDataChange={outputReadOnly ? undefined : rows => setEditedRows(rows)}
-                  onApprove={() => void approve()}
-                  canApprove={canApproveTable}
-                  approveBusy={approving}
-                />
+                <>
+                  <CompanyFxToolbar
+                    reportingCurrency={reportingCurrency}
+                    tableCurrency={tableCompanyCurrency}
+                    onTableCurrencyChange={setTableCompanyCurrency}
+                    hideReceiptCurrency={hideReceiptCurrency}
+                    onToggleReceiptCurrency={() => setHideReceiptCurrency(v => !v)}
+                    fxBlocked={!fxReady}
+                  />
+                  <BankStatementReview
+                    transactions={displayBankRows}
+                    readOnly={outputReadOnly}
+                    onDataChange={outputReadOnly ? undefined : rows => setEditedRows(rows)}
+                    onApprove={() => void approve()}
+                    canApprove={canApproveTable}
+                    approveBusy={approving}
+                    hideReceiptCurrency={hideReceiptCurrency}
+                    onCompanyAmountClick={row => openRateDialog(row as Record<string, unknown>)}
+                  />
+                </>
               ) : (
-                <ARAPReview
+                <>
+                  <CompanyFxToolbar
+                    reportingCurrency={reportingCurrency}
+                    tableCurrency={tableCompanyCurrency}
+                    onTableCurrencyChange={setTableCompanyCurrency}
+                    hideReceiptCurrency={hideReceiptCurrency}
+                    onToggleReceiptCurrency={() => setHideReceiptCurrency(v => !v)}
+                    fxBlocked={!fxReady}
+                  />
+                  <ARAPReview
                   transactions={displayArapRows}
                   readOnly={outputReadOnly}
                   useApTableSchema={(activeRun.processing_mode ?? '').toUpperCase() === 'AP'}
@@ -1408,6 +1564,8 @@ export function ProcessingView() {
                   onApprove={() => void approve()}
                   canApprove={canApproveTable}
                   approveBusy={approving}
+                  hideReceiptCurrency={hideReceiptCurrency}
+                  onCompanyAmountClick={row => openRateDialog(row as Record<string, unknown>)}
                   isProcessing={tableProcessing}
                   completedFiles={completedFileCount}
                   totalFiles={totalFileCount}
@@ -1423,6 +1581,17 @@ export function ProcessingView() {
                         }
                       : null
                   }
+                />
+                </>
+              )}
+              {rateDialog && (
+                <ExchangeRateDialog
+                  from={rateDialog.from}
+                  to={rateDialog.to}
+                  sampleReceiptAmount={rateDialog.amount}
+                  printedCompanyAmount={rateDialog.printed}
+                  onApply={(rate, printed) => void applyPairRate(rate, printed)}
+                  onClose={() => setRateDialog(null)}
                 />
               )}
             </div>

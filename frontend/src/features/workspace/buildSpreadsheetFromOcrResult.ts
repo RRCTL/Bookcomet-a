@@ -53,6 +53,25 @@ function apTableSpreadsheetExtras(
   }
 }
 
+function fxSpreadsheetExtras(source: Record<string, any>, fieldsFallback?: Record<string, any>): Record<string, string> {
+  const fb = fieldsFallback && typeof fieldsFallback === 'object' ? fieldsFallback : undefined
+  const printed =
+    getFieldValue(source, ['printed_company_amount', 'company_amount']) ||
+    (fb ? getFieldValue(fb, ['printed_company_amount', 'company_amount']) : '')
+  const companyCcy =
+    getFieldValue(source, ['company_currency', 'printed_company_currency']) ||
+    (fb ? getFieldValue(fb, ['company_currency', 'printed_company_currency']) : '')
+  const rate = getFieldValue(source, ['exchange_rate']) || (fb ? getFieldValue(fb, ['exchange_rate']) : '')
+  const extras: Record<string, string> = {}
+  if (printed) {
+    extras.printed_company_amount = printed
+    extras.company_amount = printed
+  }
+  if (companyCcy) extras.company_currency = companyCcy
+  if (rate) extras.exchange_rate = rate
+  return extras
+}
+
 export type PageCropContext = {
   page?: unknown
   receipt_index?: unknown
@@ -274,6 +293,7 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
           confidence: formatConfidenceDisplay(getFieldValue(row, ['confidence', '信心度']) || pageConfidence),
           file_position: resolveSpreadsheetFilePosition(row, fileName, filePosition),
           ...apTableSpreadsheetExtras(row),
+          ...fxSpreadsheetExtras(row),
           ...provenanceSpreadsheetExtras(row, pageCtx),
         })
         rowIndex++
@@ -346,6 +366,7 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
           ),
           file_position: resolveSpreadsheetFilePosition(receipt, fileName, filePosition),
           ...apTableSpreadsheetExtras(receipt, fields),
+          ...fxSpreadsheetExtras(receipt, fields),
           ...provenanceSpreadsheetExtras(receipt, pageCtx),
         })
         rowIndex++
@@ -418,6 +439,7 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
           ),
           file_position: resolveSpreadsheetFilePosition(receipt, fileName, filePosition),
           ...apTableSpreadsheetExtras(receipt, fields),
+          ...fxSpreadsheetExtras(receipt, fields),
           ...provenanceSpreadsheetExtras(receipt, pageCtx),
         })
         rowIndex++
@@ -478,6 +500,7 @@ export function buildSpreadsheetRowsFromOcrResult(args: {
       confidence: formatConfidenceDisplay(getFieldValue(fields, ['confidence']) || pageConfidence),
       file_position: resolveSpreadsheetFilePosition(fields, fileName, filePosition),
       ...apTableSpreadsheetExtras(fields),
+      ...fxSpreadsheetExtras(fields),
       ...provenanceSpreadsheetExtras(fields, pageCtx),
     })
     rowIndex++
@@ -610,6 +633,19 @@ export function spreadsheetRowsToArapTransactions(rows: SpreadsheetRow[], taskPr
       vendor_tax_id: String(r.vendor_tax_id ?? ''),
       tax_amount: taxNum,
       payment_status: String(r.payment_status ?? ''),
+      company_currency: String(r.company_currency ?? ''),
+      company_amount: r.company_amount != null && String(r.company_amount).trim() !== ''
+        ? parseFloat(String(r.company_amount).replace(/,/g, '')) || null
+        : null,
+      company_tax_amount: r.company_tax_amount != null && String(r.company_tax_amount).trim() !== ''
+        ? parseFloat(String(r.company_tax_amount).replace(/,/g, '')) || null
+        : null,
+      exchange_rate: r.exchange_rate != null && String(r.exchange_rate).trim() !== ''
+        ? parseFloat(String(r.exchange_rate).replace(/,/g, '')) || null
+        : null,
+      printed_company_amount: r.printed_company_amount != null && String(r.printed_company_amount).trim() !== ''
+        ? parseFloat(String(r.printed_company_amount).replace(/,/g, '')) || null
+        : null,
       ...(r.extraction_provenance && typeof r.extraction_provenance === 'object'
         ? { extraction_provenance: r.extraction_provenance as Record<string, unknown> }
         : {}),

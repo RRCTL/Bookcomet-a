@@ -114,11 +114,36 @@ def _ledger_dr_credit(lt: LedgerTransaction, amt: float) -> tuple[float, float]:
     return abs_amt, 0.0
 
 
+def _book_amount(txn: Any) -> float:
+    """Prefer company_amount for GL posting; keep the receipt amount's sign."""
+    company = getattr(txn, "company_amount", None)
+    raw = float(getattr(txn, "amount", 0) or 0)
+    if company is None:
+        return raw
+    mag = abs(float(company))
+    if raw < 0:
+        return -mag
+    return mag
+
+
+def _fx_memo_suffix(txn: Any) -> str:
+    receipt = getattr(txn, "currency", None)
+    company = getattr(txn, "company_currency", None)
+    rate = getattr(txn, "exchange_rate", None)
+    raw = getattr(txn, "amount", None)
+    if receipt and company and receipt != company:
+        bits = [f"{receipt} {raw}"]
+        if rate is not None:
+            bits.append(f"rate {rate}")
+        return " [" + "; ".join(bits) + "]"
+    return ""
+
+
 def _ledger_line_dict(db: Session, company_id: str, lt: LedgerTransaction) -> dict[str, Any]:
     """One GL line dict from a ledger transaction (debit/credit per AR vs AP)."""
     code = _resolve_code(db, company_id, lt.account_category, _ledger_default_code(lt))
-    debit, credit = _ledger_dr_credit(lt, float(lt.amount or 0))
-    memo = (lt.reference or lt.doc_id or "")[:200]
+    debit, credit = _ledger_dr_credit(lt, _book_amount(lt))
+    memo = ((lt.reference or lt.doc_id or "") + _fx_memo_suffix(lt))[:200]
     return {
         "account_code": code,
         "debit": debit,
@@ -138,8 +163,8 @@ def _ledger_clearing_line_dict(
 ) -> dict[str, Any]:
     """Ledger leg for bank↔ledger RECON clear: opposite of bank net; CoA code unchanged."""
     code = _resolve_code(db, company_id, lt.account_category, _ledger_default_code(lt))
-    abs_amt = abs(float(lt.amount or 0))
-    memo = (lt.reference or lt.doc_id or "")[:200]
+    abs_amt = abs(_book_amount(lt))
+    memo = ((lt.reference or lt.doc_id or "") + _fx_memo_suffix(lt))[:200]
     if bank_net_debit:
         debit, credit = 0.0, abs_amt
     else:
@@ -202,12 +227,16 @@ def resolve_txns_currency(
     bank_txns: list[BankTransaction],
     ledger_txns: list[LedgerTransaction],
 ) -> str:
-    """One journal = one currency. Raises if linked txns disagree."""
+    """One journal = one company currency. Raises if linked txns disagree."""
+    from app.services.company_fx import company_amount_for_match
+
     currencies: set[str] = set()
     for t in bank_txns:
-        currencies.add(_norm_currency(t.currency))
+        ccy, _ = company_amount_for_match(t)
+        currencies.add(ccy or _norm_currency(t.currency))
     for t in ledger_txns:
-        currencies.add(_norm_currency(t.currency))
+        ccy, _ = company_amount_for_match(t)
+        currencies.add(ccy or _norm_currency(t.currency))
     if not currencies:
         return "HKD"
     if len(currencies) > 1:
@@ -385,7 +414,7 @@ def _build_lines_for_group(
     # GL-only: cash line + auto-1999 (offset code stays on bank.account_category until approve).
     if (group.match_cardinality or "").strip() == "GL:1" and banks_only and len(bank_txns) == 1:
         bt = bank_txns[0]
-        amt = float(bt.amount or 0)
+        amt = _book_amount(bt)
         # Group stores abs total; recover magnitude if bank amount was wiped after match.
         if abs(amt) < 1e-9:
             fallback = abs(float(getattr(group, "total_bank_amount", 0) or 0))
@@ -420,8 +449,8 @@ def _build_lines_for_group(
         # Same-side bank: inter-bank transfer
         for i, bt in enumerate(bank_txns):
             code = _resolve_code(db, company_id, bt.account_category, _DEFAULT_BANK_CODE)
-            amt = float(bt.amount or 0)
-            memo = (bt.reference or "")[:200]
+            amt = _book_amount(bt)
+            memo = ((bt.reference or "") + _fx_memo_suffix(bt))[:200]
             if amt >= 0:
                 lines.append({"account_code": code, "debit": abs(amt), "credit": 0.0, "memo": memo, "bank_txn_id": bt.id, "ledger_txn_id": None})
             else:
@@ -436,8 +465,8 @@ def _build_lines_for_group(
     # Cross-mode bank ↔ ledger (or one-sided fall-through for single bank/ledger)
     for bt in bank_txns:
         code = _resolve_code(db, company_id, bt.account_category, _DEFAULT_BANK_CODE)
-        amt = float(bt.amount or 0)
-        memo = (bt.reference or "")[:200]
+        amt = _book_amount(bt)
+        memo = ((bt.reference or "") + _fx_memo_suffix(bt))[:200]
         if amt >= 0:
             lines.append({"account_code": code, "debit": abs(amt), "credit": 0.0, "memo": memo, "bank_txn_id": bt.id, "ledger_txn_id": None})
         else:

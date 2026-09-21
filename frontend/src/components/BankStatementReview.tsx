@@ -7,6 +7,7 @@ import { formatMatchedIdForDisplay } from '../utils/reconMatchedSpreadsheet'
 import { BANK_ACCOUNT_TYPES_VALID, coalesceBankAccountTypeRows, normalizeBankAccountType } from '../utils/bankAccountTypeCoalesce'
 import { formatBankSourceFile, bankSourceFileStem } from '../utils/bankSourceFile'
 import { coaNameMapFromOptionLabels } from '../utils/coaDisplay'
+import { formatCurrencyAmount, parseFxNumber, receiptAmountFromBankRow } from '../utils/fxCurrency'
 
 const EMPTY_LOCK_KEYS: ReadonlySet<string> = new Set()
 
@@ -67,6 +68,8 @@ interface Props {
   onApprove?: () => void
   canApprove?: boolean
   approveBusy?: boolean
+  hideReceiptCurrency?: boolean
+  onCompanyAmountClick?: (row: BankTransaction) => void
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -224,6 +227,8 @@ export function BankStatementReview({
   onApprove,
   canApprove = false,
   approveBusy = false,
+  hideReceiptCurrency = false,
+  onCompanyAmountClick,
 }: Props) {
   const prepareRows = useCallback(
     (source: BankTransaction[]) => {
@@ -501,9 +506,11 @@ export function BankStatementReview({
               <th style={S.th}>Date</th>
               <th style={S.th}>Account type</th>
               <th style={S.th}>Account no.</th>
-              <th style={{ ...S.th, textAlign: 'right' }}>Deposit (HKD)</th>
-              <th style={{ ...S.th, textAlign: 'right' }}>Withdrawal (HKD)</th>
-              <th style={{ ...S.th, textAlign: 'right' }}>Balance (HKD)</th>
+              <th style={{ ...S.th, textAlign: 'right' }}>Deposit</th>
+              <th style={{ ...S.th, textAlign: 'right' }}>Withdrawal</th>
+              <th style={{ ...S.th, textAlign: 'right' }}>Balance</th>
+              {!hideReceiptCurrency && <th style={{ ...S.th, width: 90 }}>Receipt</th>}
+              <th style={{ ...S.th, width: 110 }}>Company</th>
               <th style={{ ...S.th, minWidth: 130 }}>GL code</th>
               <th style={{ ...S.th, minWidth: 110 }}>Category</th>
               <th style={{ ...S.th, minWidth: 72, textAlign: 'center' }}>AR review</th>
@@ -694,6 +701,30 @@ export function BankStatementReview({
                         )}
                       </>
                     )}
+                  </td>
+                  {!hideReceiptCurrency && (
+                    <td style={S.td}>
+                      {formatCurrencyAmount(String(row.currency ?? ''), receiptAmountFromBankRow(row as Record<string, unknown>))}
+                    </td>
+                  )}
+                  <td
+                    style={{
+                      ...S.td,
+                      background: parseFxNumber(row.company_amount) == null ? '#f3f4f6' : undefined,
+                      cursor: onCompanyAmountClick && !glPosted && !readOnly ? 'pointer' : undefined,
+                    }}
+                    onClick={e => {
+                      e.stopPropagation()
+                      if (!glPosted && !readOnly) onCompanyAmountClick?.(row)
+                    }}
+                  >
+                    {parseFxNumber(row.company_amount) != null
+                      ? `${formatCurrencyAmount(String(row.company_currency ?? ''), parseFxNumber(row.company_amount))}${
+                          hideReceiptCurrency && row.currency && row.currency !== row.company_currency
+                            ? ` · ${row.currency}`
+                            : ''
+                        }`
+                      : '—'}
                   </td>
 
                   {/* GL code — full company CoA */}

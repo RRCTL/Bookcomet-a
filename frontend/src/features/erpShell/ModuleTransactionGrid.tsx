@@ -28,6 +28,7 @@ import {
   validCoaCode,
 } from '../../utils/coaDisplay'
 import { csvSampleForMode } from '../workspace/parseArapCsv'
+import { formatCurrencyAmount, parseFxNumber, receiptAmountFromBankRow } from '../../utils/fxCurrency'
 import { parseModuleCsvTransactions, type ModuleCsvMode } from './parseModuleCsv'
 
 type Props = { module: ModuleDef }
@@ -57,7 +58,8 @@ const COLS_BY_MODE: Record<string, FieldCol[]> = {
     { key: 'debit', header: 'Debit', field: 'debit', type: 'num', numeric: true },
     { key: 'credit', header: 'Credit', field: 'credit', type: 'num', numeric: true },
     { key: 'tax_amount', header: 'Tax', field: 'tax_amount', type: 'num', numeric: true },
-    { key: 'currency', header: 'Cur', field: 'currency', type: 'text' },
+    { key: 'currency', header: 'Receipt', field: 'currency', type: 'text' },
+    { key: 'company_currency', header: 'Company', field: 'company_currency', type: 'text' },
     { key: 'account_code', header: 'Account', field: 'account_code', type: 'text' },
     { key: 'category', header: 'Category', field: 'category', type: 'text', readOnly: true },
     { key: 'payment_status', header: 'Payment', field: 'payment_status', type: 'text' },
@@ -67,7 +69,8 @@ const COLS_BY_MODE: Record<string, FieldCol[]> = {
     { key: 'date', header: 'Date', field: 'date', type: 'date' },
     { key: 'debit', header: 'Debit', field: 'debit', type: 'num', numeric: true },
     { key: 'credit', header: 'Credit', field: 'credit', type: 'num', numeric: true },
-    { key: 'currency', header: 'Cur', field: 'currency', type: 'text' },
+    { key: 'currency', header: 'Receipt', field: 'currency', type: 'text' },
+    { key: 'company_currency', header: 'Company', field: 'company_currency', type: 'text' },
     { key: 'payer', header: 'Payer', field: 'payer', type: 'text' },
     { key: 'payee', header: 'Payee', field: 'payee', type: 'text' },
     { key: 'bank', header: 'Bank', field: 'bank', type: 'text' },
@@ -83,7 +86,8 @@ const COLS_BY_MODE: Record<string, FieldCol[]> = {
     { key: 'withdrawal', header: 'Withdrawal', field: 'withdrawal', type: 'num', numeric: true },
     { key: 'deposit', header: 'Deposit', field: 'deposit', type: 'num', numeric: true },
     { key: 'balance', header: 'Balance', field: 'balance', type: 'num', numeric: true },
-    { key: 'currency', header: 'Cur', field: 'currency', type: 'text' },
+    { key: 'currency', header: 'Receipt', field: 'currency', type: 'text' },
+    { key: 'company_currency', header: 'Company', field: 'company_currency', type: 'text' },
     { key: 'account_code', header: 'GL code', field: 'account_code', type: 'text' },
     { key: 'category', header: 'Category', field: 'category', type: 'text', readOnly: true },
   ],
@@ -137,6 +141,16 @@ function cellValue(
   if (col.field === 'category' && coaCodes && nameByCode) {
     const code = validCoaCode(row.tx.account_code, coaCodes)
     return code ? nameByCode.get(code) || '' : ''
+  }
+  if (col.field === 'currency') {
+    const amt = parseFxNumber(row.tx.amount) ?? receiptAmountFromBankRow(row.tx)
+    return formatCurrencyAmount(String(row.tx.currency ?? ''), amt)
+  }
+  if (col.field === 'company_currency') {
+    const amt = parseFxNumber(row.tx.company_amount)
+    return amt != null
+      ? formatCurrencyAmount(String(row.tx.company_currency ?? ''), amt)
+      : String(row.tx.company_currency ?? '')
   }
   const v = row.tx[col.field] ?? (col.fallbackField ? row.tx[col.fallbackField] : undefined)
   return v == null ? '' : String(v)

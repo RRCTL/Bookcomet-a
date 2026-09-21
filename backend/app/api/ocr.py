@@ -33,6 +33,7 @@ from app.models.company_context import CompanyProfile
 from app.models.compliance import OcrCompletionEvent
 from app.models.background_job import BackgroundJob
 from app.models.rule_memory import CompanyRuleMemory
+from app.services.company_fx import normalize_currency_code
 
 # Only document OCR modes load rule memory into the VLM/deterministic OCR pipeline.
 _OCR_RULE_MEMORY_MODES = frozenset({"AR", "AP", "BANK", "OTHER"})
@@ -968,6 +969,8 @@ JSON schema to return:
   "tax_amount": "number or null",
   "subtotal_amount": "number or null",
   "currency": "string or null",
+  "printed_company_amount": "number or null — second-currency total printed on the slip (e.g. HKD equivalent). null if only one currency is shown",
+  "printed_company_currency": "3-letter ISO code for printed_company_amount, or null",
   "payment_method": "string or null",
   "confidence": "number (0-100)"
 }}
@@ -978,7 +981,7 @@ AP_STRUCTURED_CROSS_VERIFY_SUPPLEMENT = """
 
 Verifier pass — multilingual and currency (overrides HK-only defaults above for this request):
 - The slip may be in any language or mixed languages. Do not assume Hong Kong or HKD from context alone.
-- Set "currency" to a 3-letter ISO 4217 code when evidence supports it: printed codes (HKD, USD, JPY, EUR, GBP, CNY, TWD, …),
+- Set "currency" to a 3-letter ISO 4217 code when evidence supports it: printed codes (HKD, USD, JPY, EUR, GBP, CNY, TWD, …). Map JYP to JPY.
   symbols near totals (HK$, US$, NT$, €, £, ¥ with Japanese or regional context), or tax labels
   (e.g. Japanese 消費税 / 内消費税 / 税込 → JPY; EU VAT / TVA / IVA / MWST patterns → local currency such as EUR).
 - Use null for "currency" only when evidence is missing or contradictory — do not use null as a substitute for HKD on clearly foreign slips.
@@ -1611,17 +1614,18 @@ def _normalise_ap_row_with_regex(row: dict[str, str], ocr_text: str) -> dict[str
                 if m3:
                     date = f"{m3.group(1)}-{int(m3.group(2)):02d}-{int(m3.group(3)):02d}"
 
-    # Currency: normalise HK$ → HKD, default HKD
-    currency_raw = _prefer_ai("currency")
-    currency = "HKD"
-    if currency_raw:
-        currency = currency_raw.upper().replace("HK$", "HKD").strip() or "HKD"
+    currency = normalize_currency_code(_prefer_ai("currency"))
+    printed_amt = _prefer_ai("printed_company_amount")
+    printed_ccy = normalize_currency_code(_prefer_ai("printed_company_currency"))
 
     return {
         "voucher_no":       _prefer_ai("voucher_no"),
         "transaction_type": "AP",
         "amount":           amount,
         "currency":         currency,
+        "printed_company_amount": printed_amt,
+        "company_amount": printed_amt,
+        "company_currency": printed_ccy,
         "date":             date,
         "payer":            _prefer_ai("payer"),
         "payee":            _prefer_ai("payee"),
@@ -1699,10 +1703,7 @@ def _normalise_cheque_row_with_regex(
                 m3 = re.match(r"^(20\d{2})[/\-](\d{1,2})[/\-](\d{1,2})$", date_raw)
                 if m3:
                     date = f"{m3.group(1)}-{int(m3.group(2)):02d}-{int(m3.group(3)):02d}"
-    cur_raw = _prefer_ai("currency")
-    currency = "HKD"
-    if cur_raw:
-        currency = cur_raw.upper().replace("HK$", "HKD").strip() or "HKD"
+    currency = normalize_currency_code(_prefer_ai("currency"))
     memo = _prefer_ai("memo")
     if not memo:
         memo = ocr_text[:120].strip()
@@ -1798,14 +1799,19 @@ async def _extract_ap_ai_fields_for_page(
             # Map JSON fields to internal TSV row format
             _cur_raw = json_obj.get("currency")
             if cross_verify:
-                _cs = "" if _cur_raw is None else str(_cur_raw).strip()
+                _cs = "" if _cur_raw is None else normalize_currency_code(str(_cur_raw))
             else:
-                _cs = str(_cur_raw or "HKD").strip() or "HKD"
+                _cs = normalize_currency_code(str(_cur_raw) if _cur_raw is not None else "")
+            _printed = json_obj.get("printed_company_amount")
+            _printed_ccy = normalize_currency_code(str(json_obj.get("printed_company_currency") or ""))
             raw_row = {
                 "voucher_no":       str(json_obj.get("receipt_id") or ""),
                 "transaction_type": processing_mode,
                 "amount":           str(json_obj.get("total_amount") or ""),
                 "currency":         _cs,
+                "printed_company_amount": str(_printed) if _printed not in (None, "") else "",
+                "company_amount": str(_printed) if _printed not in (None, "") else "",
+                "company_currency": _printed_ccy,
                 "date":             str(json_obj.get("transaction_date") or ""),
                 "payer":            "",
                 "payee":            str(json_obj.get("merchant_name") or ""),
@@ -5142,8 +5148,11 @@ def _load_profile_summary_for_ocr(db: Session, company_id: str) -> str:
         if profile.industry:
             parts.append(f"Industry: {profile.industry}")
         custom = profile.custom_settings if isinstance(profile.custom_settings, dict) else {}
-        currency = custom.get("currency", "HKD")
-        parts.append(f"Currency: {currency}")
+        from app.services.company_fx import reporting_currency_from_settings
+
+        currency = reporting_currency_from_settings(custom)
+        if currency:
+            parts.append(f"Reporting currency: {currency}")
         return " | ".join(parts) if parts else ""
     except Exception:
         return ""
