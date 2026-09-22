@@ -8,6 +8,9 @@ export type OtherRow = {
   loan_reference?: string
   principal_amount?: string
   currency?: string
+  company_currency?: string
+  company_amount?: string | number
+  exchange_rate?: string | number
   interest_rate_pct?: string
   tenor_months?: string
   monthly_installment?: string

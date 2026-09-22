@@ -10,6 +10,7 @@
  */
 import { useState, useRef, useCallback } from 'react'
 import type { OtherRow } from '../types/other'
+import { formatCurrencyAmount, parseFxNumber } from '../utils/fxCurrency'
 import { api } from '../services/api'
 import './OtherTable.css'
 
@@ -17,6 +18,7 @@ type Props = {
   records: OtherRow[]
   onRecordChange?: (recordId: string, updated: OtherRow) => void
   readOnly?: boolean
+  hideReceiptCurrency?: boolean
 }
 
 // ── Column definitions ────────────────────────────────────────────────────────
@@ -26,7 +28,8 @@ const LOAN_COLUMNS: { key: keyof OtherRow; label: string; width?: number }[] = [
   { key: 'lender_name', label: 'Lender', width: 160 },
   { key: 'loan_reference', label: 'Reference', width: 120 },
   { key: 'principal_amount', label: 'Principal', width: 110 },
-  { key: 'currency', label: 'Ccy', width: 55 },
+  { key: 'currency', label: 'Receipt', width: 90 },
+  { key: 'company_amount', label: 'Company', width: 110 },
   { key: 'interest_rate_pct', label: 'Rate (%)', width: 80 },
   { key: 'tenor_months', label: 'Tenor (M)', width: 80 },
   { key: 'monthly_installment', label: 'Monthly Inst.', width: 110 },
@@ -42,7 +45,8 @@ const ASSET_COLUMNS: { key: keyof OtherRow; label: string; width?: number }[] = 
   { key: 'asset_name', label: 'Asset Name', width: 180 },
   { key: 'asset_type', label: 'Type', width: 90 },
   { key: 'purchase_amount', label: 'Purchase Amt', width: 120 },
-  { key: 'currency', label: 'Ccy', width: 55 },
+  { key: 'currency', label: 'Receipt', width: 90 },
+  { key: 'company_amount', label: 'Company', width: 110 },
   { key: 'acquisition_date', label: 'Acq. Date', width: 100 },
   { key: 'vendor', label: 'Vendor', width: 140 },
   { key: 'useful_life_months', label: 'Life (M)', width: 75 },
@@ -95,7 +99,7 @@ type DepreciationScheduleData = {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function OtherTable({ records, onRecordChange, readOnly = false }: Props) {
+export function OtherTable({ records, onRecordChange, readOnly = false, hideReceiptCurrency = false }: Props) {
   const [editingCell, setEditingCell] = useState<{ recordId: string; field: string } | null>(null)
   const [editValue, setEditValue] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
@@ -177,6 +181,18 @@ export function OtherTable({ records, onRecordChange, readOnly = false }: Props)
               if (e.key === 'Escape') setEditingCell(null)
             }}
           />
+        ) : field === 'currency' ? (
+          <span className="alt-cell-text">
+            {formatCurrencyAmount(String(row.currency ?? ''), parseFxNumber(row.principal_amount ?? row.purchase_amount))}
+          </span>
+        ) : field === 'company_amount' ? (
+          <span className="alt-cell-text">
+            {parseFxNumber(row.company_amount) != null
+              ? `${formatCurrencyAmount(String(row.company_currency ?? ''), parseFxNumber(row.company_amount))}${
+                  hideReceiptCurrency && row.currency && row.currency !== row.company_currency ? ` · ${row.currency}` : ''
+                }`
+              : '—'}
+          </span>
         ) : (
           <span className="alt-cell-text">{value == null ? '' : String(value)}</span>
         )}
@@ -204,7 +220,7 @@ export function OtherTable({ records, onRecordChange, readOnly = false }: Props)
           <table className="alt-table">
             <thead>
               <tr>
-                {columns.map(c => (
+                {columns.filter(c => !hideReceiptCurrency || c.key !== 'currency').map(c => (
                   <th key={c.key as string} style={{ width: c.width ? `${c.width}px` : undefined }}>
                     {c.label}
                   </th>
@@ -216,7 +232,7 @@ export function OtherTable({ records, onRecordChange, readOnly = false }: Props)
               {rows.map(row => (
                 <>
                   <tr key={row.id} className="alt-row">
-                    {columns.map(c => renderCell(row, c.key as string, c.width))}
+                    {columns.filter(c => !hideReceiptCurrency || c.key !== 'currency').map(c => renderCell(row, c.key as string, c.width))}
                     {typeLabel === 'fixed_asset' && (
                       <td style={{ padding: '0.25rem 0.5rem' }}>
                         <button

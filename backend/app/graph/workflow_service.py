@@ -2147,6 +2147,26 @@ class WorkflowService:
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
 
+        from app.services.company_fx import row_ready_for_books
+
+        mode = (run.processing_mode or "").upper()
+        review_rows = (
+            approved_payload.get("bankTransactions")
+            if mode == "BANK"
+            else approved_payload.get("arapTransactions")
+        )
+        if isinstance(review_rows, list):
+            pending = [
+                row
+                for row in review_rows
+                if isinstance(row, dict) and not row_ready_for_books(row)
+            ]
+            if pending:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Set company currency amounts for every row before approving.",
+                )
+
         states = dict(run.node_states_json) if isinstance(run.node_states_json, dict) else {}
         states["approved_payload"] = approved_payload
         states["skip_coa"] = skip_coa
@@ -2206,6 +2226,10 @@ class WorkflowService:
                         transaction_type=row.get("transaction_type"),
                         amount=row.get("amount"),
                         currency=row.get("currency"),
+                        company_currency=row.get("company_currency"),
+                        company_amount=row.get("company_amount"),
+                        company_tax_amount=row.get("company_tax_amount"),
+                        exchange_rate=row.get("exchange_rate"),
                         date=row.get("date"),
                         payer=row.get("payer"),
                         payee=row.get("payee"),

@@ -51,6 +51,10 @@ class LedgerImportRow(BaseModel):
     transaction_type: Optional[str] = None
     amount: Optional[str | float] = None
     currency: Optional[str] = None
+    company_currency: Optional[str] = None
+    company_amount: Optional[str | float] = None
+    company_tax_amount: Optional[str | float] = None
+    exchange_rate: Optional[str | float] = None
     date: Optional[str] = None
     payer: Optional[str] = None
     payee: Optional[str] = None
@@ -71,6 +75,9 @@ class BankImportRow(BaseModel):
     date: Optional[str] = None
     amount: Optional[str | float] = None
     currency: Optional[str] = None
+    company_currency: Optional[str] = None
+    company_amount: Optional[str | float] = None
+    exchange_rate: Optional[str | float] = None
     account_id: Optional[str] = None
     description: Optional[str] = None
     reference: Optional[str] = None
@@ -464,6 +471,29 @@ def _parse_amount(value: object) -> float | None:
         return None
 
 
+def _company_fx_kwargs(row: object) -> dict:
+    company_currency = getattr(row, "company_currency", None)
+    return {
+        "company_currency": (str(company_currency).strip().upper() or None) if company_currency else None,
+        "company_amount": _parse_amount(getattr(row, "company_amount", None)),
+        "exchange_rate": _parse_amount(getattr(row, "exchange_rate", None)),
+        **(
+            {"company_tax_amount": _parse_amount(getattr(row, "company_tax_amount", None))}
+            if hasattr(row, "company_tax_amount")
+            else {}
+        ),
+    }
+
+
+def _company_fx_payload(txn) -> dict:
+    return {
+        "company_currency": getattr(txn, "company_currency", None),
+        "company_amount": getattr(txn, "company_amount", None),
+        "company_tax_amount": getattr(txn, "company_tax_amount", None),
+        "exchange_rate": getattr(txn, "exchange_rate", None),
+    }
+
+
 def _normalize_ledger_amount_dr_cr(
     amount: float,
     *,
@@ -546,6 +576,8 @@ async def import_ledger_transactions(
             existing.dr_cr = dr_cr
             existing.doc_type = row.transaction_type or existing.doc_type or "receipt"
             existing.currency = row.currency or existing.currency or "HKD"
+            for key, val in _company_fx_kwargs(row).items():
+                setattr(existing, key, val if val is not None else getattr(existing, key, None))
             existing.counterparty = counterparty
             if row.category is not None:
                 existing.account_category = row.category
@@ -561,6 +593,7 @@ async def import_ledger_transactions(
                     "amount": float(existing.amount),
                     "dr_cr": existing.dr_cr,
                     "currency": existing.currency,
+                    **_company_fx_payload(existing),
                     "date": row.date,
                     "memo": row.memo,
                     "category": existing.account_category,
@@ -579,6 +612,7 @@ async def import_ledger_transactions(
             book_date=book_date,
             amount=amount_mag,
             currency=row.currency or "HKD",
+            **_company_fx_kwargs(row),
             counterparty=counterparty,
             account_category=row.category,
             # Prefer voucher/id for Reference; memo is often OCR noise.
@@ -598,6 +632,7 @@ async def import_ledger_transactions(
                 "amount": amount_mag,
                 "dr_cr": dr_cr,
                 "currency": row.currency or "HKD",
+                **_company_fx_kwargs(row),
                 "date": row.date,
                 "memo": row.memo,
                 "category": row.category,
@@ -664,6 +699,7 @@ async def import_bank_transactions(
                     "reference": existing.reference,
                     "amount": float(existing.amount),
                     "currency": existing.currency,
+                    **_company_fx_payload(existing),
                     "date": row.date,
                     "import_batch_id": existing.import_batch_id,
                 }
@@ -678,6 +714,7 @@ async def import_bank_transactions(
             bank_date=bank_date,
             amount=amount,
             currency=row.currency or "HKD",
+            **{k: v for k, v in _company_fx_kwargs(row).items() if k != "company_tax_amount"},
             description_raw=str(description),
             description_norm=str(description).lower(),
             account_category=row.account_category,
@@ -694,6 +731,7 @@ async def import_bank_transactions(
                 "reference": bank_txn.reference,
                 "amount": amount,
                 "currency": row.currency or "HKD",
+                **{k: v for k, v in _company_fx_kwargs(row).items() if k != "company_tax_amount"},
                 "date": row.date,
                 "import_batch_id": batch_id,
             }
@@ -732,6 +770,7 @@ async def get_bank_transactions(
                 "bank_date": t.bank_date.isoformat() if t.bank_date else None,
                 "amount": float(t.amount),
                 "currency": t.currency,
+                **_company_fx_payload(t),
                 "description_raw": t.description_raw,
                 "description_norm": t.description_norm,
                 "account_category": t.account_category,
@@ -765,6 +804,7 @@ async def get_ledger_transactions(
                 "book_date": t.book_date.isoformat() if t.book_date else None,
                 "amount": float(t.amount),
                 "currency": t.currency,
+                **_company_fx_payload(t),
                 "counterparty": t.counterparty,
                 "account_category": t.account_category,
                 "reference": t.reference,

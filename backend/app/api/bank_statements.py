@@ -266,6 +266,9 @@ def _persist_bank_transactions(
         generated_voucher_no = f"BR-{date_key}-{voucher_seq_by_date[date_key]:03d}"
         reference = generated_voucher_no
         currency = txn.get("幣別") or txn.get("currency") or "HKD"
+        company_currency = txn.get("company_currency")
+        company_amount = _parse_amount(txn.get("company_amount")) if txn.get("company_amount") not in (None, "") else None
+        exchange_rate = _parse_amount(txn.get("exchange_rate")) if txn.get("exchange_rate") not in (None, "") else None
         account_category = txn.get("categorise") or txn.get("分類") or txn.get("category") or txn.get("account_category")
 
         bank_txn = BankTransaction(
@@ -275,6 +278,9 @@ def _persist_bank_transactions(
             bank_date=bank_date,
             amount=amount,
             currency=currency,
+            company_currency=str(company_currency).strip().upper() if company_currency else None,
+            company_amount=company_amount,
+            exchange_rate=exchange_rate,
             description_raw=str(description),
             description_norm=str(description).lower(),
             account_category=str(account_category).strip() if account_category else None,
