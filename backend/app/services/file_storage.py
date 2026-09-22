@@ -48,20 +48,20 @@ def _safe_path_segment(value: str, *, field_name: str) -> str:
 def resolve_path_under_root(root: str | Path, candidate: str | Path) -> Path:
     """Resolve *candidate* and require it stay inside *root*.
 
-    Used as the CodeQL path-injection sanitizer for load/delete/read/write.
+    Uses os.path.realpath + commonpath so CodeQL models this as a path sanitizer.
     """
     raw = Path(candidate)
     if any(part == ".." for part in raw.parts):
         raise ValueError("Storage path escapes configured directory")
-    root_resolved = Path(root).resolve()
-    resolved = raw.resolve()
-    root_prefix = str(root_resolved)
-    resolved_s = str(resolved)
-    if resolved_s != root_prefix and not resolved_s.startswith(root_prefix + os.sep):
+    base = os.path.realpath(os.fspath(root))
+    target = os.path.realpath(os.fspath(candidate))
+    try:
+        shared = os.path.commonpath([base, target])
+    except ValueError as exc:
+        raise ValueError("Storage path escapes configured directory") from exc
+    if shared != base:
         raise ValueError("Storage path escapes configured directory")
-    if not resolved.is_relative_to(root_resolved):
-        raise ValueError("Storage path escapes configured directory")
-    return resolved
+    return Path(target)
 
 
 def uploads_root() -> Path:
@@ -190,12 +190,15 @@ def read_stored_bytes(storage_path: str | Path) -> bytes:
     return unwrap_stored_bytes(path.read_bytes())
 
 
-def write_bytes_atomic(dest: Path, data: bytes) -> None:
+def write_bytes_atomic(dest: Path, data: bytes, *, root: str | Path | None = None) -> None:
     """Write bytes via temp file + os.replace to avoid partial reads."""
     dest = Path(dest)
     if any(part == ".." for part in dest.parts):
         raise ValueError("Invalid destination path")
-    dest = dest.resolve()
+    if root is not None:
+        dest = resolve_path_under_root(root, dest)
+    else:
+        dest = Path(os.path.realpath(os.fspath(dest)))
     dest.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=dest.parent, prefix=".tmp_", suffix=dest.suffix)
     try:
@@ -261,7 +264,7 @@ class LocalDiskStorage:
         dest = resolve_path_under_root(
             self._root, self._root / company_id / task_id / f"{file_uuid}{norm_ext}"
         )
-        write_bytes_atomic(dest, wrap_stored_bytes(data))
+        write_bytes_atomic(dest, wrap_stored_bytes(data), root=self._root)
         logger.debug("[FileStorage] Saved %d bytes → %s", len(data), dest)
         return str(dest)
 
@@ -276,7 +279,7 @@ class LocalDiskStorage:
         dest = resolve_path_under_root(
             self._root, self._root / "background_jobs" / job_id / f"input{norm_ext}"
         )
-        write_bytes_atomic(dest, wrap_stored_bytes(data))
+        write_bytes_atomic(dest, wrap_stored_bytes(data), root=self._root)
         return str(dest)
 
     def load_path(self, storage_path: str) -> Path:

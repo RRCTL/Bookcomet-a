@@ -76,3 +76,15 @@ def test_write_bytes_atomic_rejects_parent_segments(tmp_path):
         raise AssertionError("expected parent segments to fail")
     except ValueError as exc:
         assert "Invalid destination path" in str(exc)
+
+
+def test_resolve_path_under_root_rejects_absolute_outside(tmp_path):
+    from app.services.file_storage import resolve_path_under_root
+
+    outside = tmp_path.parent / "abs-escape.bin"
+    outside.write_bytes(b"secret")
+    try:
+        resolve_path_under_root(tmp_path, outside)
+        raise AssertionError("expected absolute path outside root to fail")
+    except ValueError as exc:
+        assert "escapes" in str(exc)

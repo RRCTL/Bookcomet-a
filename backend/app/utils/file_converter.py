@@ -13,19 +13,22 @@ logger = logging.getLogger(__name__)
 
 def _resolved_pdf_path(pdf_path: str) -> str:
     """Require a real file under uploads or the process temp dir."""
-    raw = Path(pdf_path)
-    if not pdf_path or any(part == ".." for part in raw.parts):
+    if not pdf_path or any(part == ".." for part in Path(pdf_path).parts):
         raise ValueError("PDF path must be a file without parent segments")
-    resolved = raw.resolve()
-    if not resolved.is_file():
+    target = os.path.realpath(pdf_path)
+    if not os.path.isfile(target):
         raise ValueError("PDF path is not a readable file")
     allowed_roots = (
-        Path(os.getenv("UPLOADS_DIR", "./uploads")).resolve(),
-        Path(tempfile.gettempdir()).resolve(),
+        os.path.realpath(os.getenv("UPLOADS_DIR", "./uploads")),
+        os.path.realpath(tempfile.gettempdir()),
     )
-    if not any(resolved.is_relative_to(root) for root in allowed_roots):
-        raise ValueError("PDF path is outside the allowed directories")
-    return str(resolved)
+    for root in allowed_roots:
+        try:
+            if os.path.commonpath([root, target]) == root:
+                return target
+        except ValueError:
+            continue
+    raise ValueError("PDF path is outside the allowed directories")
 
 
 def _pil_open_pixel_budget() -> int:
