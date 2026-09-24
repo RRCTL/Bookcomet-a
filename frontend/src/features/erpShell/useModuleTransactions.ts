@@ -661,11 +661,8 @@ export function useModuleTransactions(mode: string, companyId: string) {
           { fromModule: true },
         )
       }
+      await syncModulesToRecon(companyId)
       setDirty(new Set())
-      // Keep Reconciliation DB aligned with Books (add / edit / delete).
-      void syncModulesToRecon(companyId).catch(err =>
-        console.warn('[Books] recon sync after save failed:', err),
-      )
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Save failed.')
     } finally {
