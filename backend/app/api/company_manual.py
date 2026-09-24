@@ -793,8 +793,9 @@ async def generate_manual_from_wizard(
                     existing.updated_by_type = "wizard"
                 rule_memory_results[mode] = "generated"
             db.commit()
-        except Exception as exc:
-            rule_memory_results["error"] = str(exc)
+        except Exception:
+            logger.exception("company_manual rule memory generate failed")
+            rule_memory_results["error"] = "Could not generate rule memory"
 
     # 6. Create CoA entries from bank settings (always)
     coa_results: dict = {"bank_accounts_created": [], "error": None}
@@ -803,8 +804,9 @@ async def generate_manual_from_wizard(
             created_codes = _create_bank_coa_entries(db, company_id, answers.bank_settings)
             db.commit()
             coa_results["bank_accounts_created"] = created_codes
-    except Exception as exc:
-        coa_results["error"] = str(exc)
+    except Exception:
+        logger.exception("company_manual bank CoA create failed")
+        coa_results["error"] = "Could not create bank accounts"
 
     _elapsed = time.perf_counter() - _gen_t0
     logger.info(

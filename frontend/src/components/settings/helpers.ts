@@ -66,6 +66,11 @@ export function isAINew(companyId: string | null | undefined, mode: string, summ
   return new Date(summary.updated_at) > new Date(lastSeen)
 }
 
+/** Escape a value for a YAML double-quoted scalar (`\` first, then `"`). */
+export function escapeYamlDoubleQuoted(value: string): string {
+  return String(value ?? '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+}
+
 export function extractBehaviourPreview(md: string, maxLen = 110): string {
   const parts = md.split(/^##\s+AI Behaviour Instructions\s*$/im)
   if (parts.length < 2) return ''

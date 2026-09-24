@@ -367,5 +367,6 @@ async def test_api_settings(
             api_key=request.api_key,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        logger.exception("Gateway probe failed")
+        raise HTTPException(status_code=400, detail="Gateway probe failed") from exc
     return result
