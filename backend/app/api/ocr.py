@@ -5258,10 +5258,11 @@ async def ocr_debug(
             "opencv_read": "success" if img is not None else "failed",
             "image_shape": list(img.shape) if img is not None else None,
         }
-    except Exception as e:
+    except Exception:
+        logger.exception("ocr_debug failed")
         return {
             "status": "error",
-            "error": str(e),
+            "error": "Could not read uploaded image",
             "filename": file.filename,
             "content_type": file.content_type,
             "size_bytes": len(content),

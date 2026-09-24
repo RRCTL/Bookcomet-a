@@ -31,6 +31,11 @@ def _resolved_pdf_path(pdf_path: str) -> str:
     raise ValueError("PDF path is outside the allowed directories")
 
 
+def _assert_safe_pdf_path(pdf_path: str) -> Path:
+    """Resolve *pdf_path* and require it under uploads or the process temp dir."""
+    return Path(_resolved_pdf_path(pdf_path))
+
+
 def _pil_open_pixel_budget() -> int:
     """Max width*height Pillow allows before DecompressionBombError (pixels > 2 * MAX_IMAGE_PIXELS)."""
     raw = os.getenv("PDF_RENDER_MAX_PIXELS")
@@ -109,8 +114,7 @@ def convert_pdf_to_images_list(pdf_path: str, target_format: str = 'PNG') -> Lis
     pdf_path = _resolved_pdf_path(pdf_path)
     try:
         import fitz  # PyMuPDF
-        
-        # Open PDF file
+
         pdf_document = fitz.open(pdf_path)
         
         if pdf_document.page_count == 0:
