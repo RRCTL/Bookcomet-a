@@ -752,7 +752,10 @@ async def ap_cross_verify(
 
     async with long_running_db_work_slot():
         for tf in task_files:
-            storage_path = Path(tf.storage_path)
+            try:
+                storage_path = storage.load_path(tf.storage_path)
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail=f"File missing on disk: {tf.id}") from exc
             if not storage_path.is_file():
                 raise HTTPException(status_code=404, detail=f"File missing on disk: {tf.id}")
             content = read_stored_bytes(storage_path)
@@ -863,7 +866,10 @@ def download_file(
     if not task_file:
         raise HTTPException(status_code=404, detail="File not found")
 
-    storage_path = Path(task_file.storage_path)
+    try:
+        storage_path = storage.load_path(task_file.storage_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="File not found on disk") from exc
     if not storage_path.exists():
         raise HTTPException(status_code=404, detail="File not found on disk")
 
@@ -918,7 +924,10 @@ def receipt_crop_preview(
     if not task_file:
         raise HTTPException(status_code=404, detail="File not found")
 
-    storage_path = Path(task_file.storage_path)
+    try:
+        storage_path = storage.load_path(task_file.storage_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="File not found on disk") from exc
     if not storage_path.exists():
         raise HTTPException(status_code=404, detail="File not found on disk")
 
@@ -973,10 +982,7 @@ def delete_file(
 
     # Remove file bytes from disk
     if task_file.storage_path:
-        try:
-            Path(task_file.storage_path).unlink(missing_ok=True)
-        except Exception as exc:
-            logger.warning("[TaskFiles] Could not delete file from disk: %s", exc)
+        storage.delete(task_file.storage_path)
 
     task_file.deleted_at = _now()
     db.commit()
@@ -1110,10 +1116,7 @@ def hard_delete_task(
     files = db.query(TaskFile).filter(TaskFile.task_id == task_id).all()
     for f in files:
         if f.storage_path:
-            try:
-                Path(f.storage_path).unlink(missing_ok=True)
-            except Exception as exc:
-                logger.warning("[HardDelete] Could not remove file: %s", exc)
+            storage.delete(f.storage_path)
         f.deleted_at = _now()
 
     # Soft-delete the task
