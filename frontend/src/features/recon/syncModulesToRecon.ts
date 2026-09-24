@@ -12,12 +12,14 @@ import { coalesceBankAccountTypeRows } from '../../utils/bankAccountTypeCoalesce
 import {
   bankAmountFromModuleTx,
   bankReconDedupKey,
+  isModuleTxnLocked,
   ledgerAmountFromModuleTx,
   ledgerReconDedupKey,
   ledgerVoucherFromModuleTx,
   normalizeReconDate,
   selectKeepIdsForModuleSync,
 } from './moduleReconKeys'
+import { accountCategoryUpdatesForExistingRows } from './accountCategoryUpdates'
 
 const INCLUDED_STATUSES = new Set(['coa_running', 'completed', 'done', 'saved'])
 
@@ -272,6 +274,57 @@ export type SyncModulesToReconResult = {
   purgedLedger: number
 }
 
+async function persistExistingAccountCategories(
+  bankModule: ModuleBankRow[],
+  ledgerModule: ModuleLedgerRow[],
+  bankDb: BankTransaction[],
+  ledgerDb: LedgerTransaction[],
+): Promise<void> {
+  const bankUpdates = accountCategoryUpdatesForExistingRows({
+    source: 'bank',
+    moduleRows: bankModule.map(r => ({
+      key: r.key,
+      account_code: r.tx.account_code == null ? '' : String(r.tx.account_code),
+      locked: isModuleTxnLocked(r.tx),
+    })),
+    dbRows: bankDb.map(t => ({
+      id: t.id,
+      key: bankDbKey(t),
+      account_category: t.account_category,
+    })),
+  })
+  const ledgerUpdates = accountCategoryUpdatesForExistingRows({
+    source: 'ledger',
+    moduleRows: ledgerModule.map(r => ({
+      key: r.key,
+      account_code: r.tx.account_code == null ? '' : String(r.tx.account_code),
+      locked: isModuleTxnLocked(r.tx),
+    })),
+    dbRows: ledgerDb.map(t => ({
+      id: t.id,
+      key: ledgerDbKey(t),
+      account_category: t.account_category,
+    })),
+  })
+  const updates = [...bankUpdates, ...ledgerUpdates]
+  if (!updates.length) return
+
+  const lockRes = await reconciliationApi.checkPostedGlLocks({
+    items: updates.map(u => ({ source: u.source, txn_id: u.txn_id })),
+  })
+  const posted = new Set([
+    ...(lockRes.locked_bank_ids ?? []),
+    ...(lockRes.locked_ledger_ids ?? []),
+  ])
+  const persistable = updates.filter(u => !posted.has(u.txn_id))
+  if (!persistable.length) return
+
+  await reconciliationApi.bulkTxnAccountCategory({
+    updates: persistable,
+    rebuild_draft_journals: true,
+  })
+}
+
 type PoolWipeResult = { purged_bank: number; purged_ledger: number }
 
 /**
@@ -378,6 +431,8 @@ export async function syncModulesToRecon(companyId: string): Promise<SyncModules
     reconciliationApi.getBankTransactions() as Promise<BankTransaction[]>,
     reconciliationApi.getLedgerTransactions() as Promise<LedgerTransaction[]>,
   ])
+
+  await persistExistingAccountCategories(bankModule, ledgerModule, bankDb, ledgerDb)
 
   try {
     await writeMatchedIdToModules(companyId, bankModule, ledgerModule, bankDb, ledgerDb)

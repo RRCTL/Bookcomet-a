@@ -1125,11 +1125,18 @@ def posted_gl_locked_txn_ids(
     bank_txn_ids: set[str] | None = None,
     ledger_txn_ids: set[str] | None = None,
 ) -> tuple[set[str], set[str]]:
-    """Return (locked_bank_ids, locked_ledger_ids) whose match group has a POSTED primary voucher."""
+    """Return (locked_bank_ids, locked_ledger_ids) locked by a POSTED GL journal.
+
+    Locked when the txn's match group has a POSTED primary voucher, or when a
+    source=module_approve journal linked to the txn is POSTED.
+    """
     bank_req = {t for t in (bank_txn_ids or set()) if t}
     led_req = {t for t in (ledger_txn_ids or set()) if t}
     if not bank_req and not led_req:
         return set(), set()
+
+    locked_bank: set[str] = set()
+    locked_ledger: set[str] = set()
 
     conds = []
     if bank_req:
@@ -1144,33 +1151,41 @@ def posted_gl_locked_txn_ids(
         .all()
     )
     group_ids = {m.group_id for m in matches if m.group_id}
-    if not group_ids:
-        return set(), set()
-
-    posted_rows = (
-        db.query(GlJournal.reconciliation_group_id)
-        .filter(
-            GlJournal.company_id == company_id,
-            GlJournal.reconciliation_group_id.in_(group_ids),
-            GlJournal.status == GlJournalStatus.POSTED,
-            GlJournal.reversal_of_journal_id.is_(None),
+    if group_ids:
+        posted_rows = (
+            db.query(GlJournal.reconciliation_group_id)
+            .filter(
+                GlJournal.company_id == company_id,
+                GlJournal.reconciliation_group_id.in_(group_ids),
+                GlJournal.status == GlJournalStatus.POSTED,
+                GlJournal.reversal_of_journal_id.is_(None),
+            )
+            .distinct()
+            .all()
         )
-        .distinct()
-        .all()
-    )
-    posted_groups = {r[0] for r in posted_rows if r[0]}
-    if not posted_groups:
-        return set(), set()
+        posted_groups = {r[0] for r in posted_rows if r[0]}
+        for m in matches:
+            if m.group_id not in posted_groups:
+                continue
+            if m.bank_txn_id and m.bank_txn_id in bank_req:
+                locked_bank.add(m.bank_txn_id)
+            if m.ledger_txn_id and m.ledger_txn_id in led_req:
+                locked_ledger.add(m.ledger_txn_id)
 
-    locked_bank: set[str] = set()
-    locked_ledger: set[str] = set()
-    for m in matches:
-        if m.group_id not in posted_groups:
-            continue
-        if m.bank_txn_id and m.bank_txn_id in bank_req:
-            locked_bank.add(m.bank_txn_id)
-        if m.ledger_txn_id and m.ledger_txn_id in led_req:
-            locked_ledger.add(m.ledger_txn_id)
+    module_js = _module_journals_for_txn_ids(db, company_id, bank_req, led_req)
+    posted_module_ids = {j.id for j in module_js if j.status == GlJournalStatus.POSTED}
+    if posted_module_ids:
+        lines = (
+            db.query(GlJournalLine)
+            .filter(GlJournalLine.journal_id.in_(posted_module_ids))
+            .all()
+        )
+        for ln in lines:
+            if ln.bank_txn_id and ln.bank_txn_id in bank_req:
+                locked_bank.add(ln.bank_txn_id)
+            if ln.ledger_txn_id and ln.ledger_txn_id in led_req:
+                locked_ledger.add(ln.ledger_txn_id)
+
     return locked_bank, locked_ledger
 
 
@@ -1206,54 +1221,16 @@ def assert_account_category_updates_not_blocked_by_posted_gl(
     *,
     blocked_action: str = "change account code",
 ) -> None:
-    """Reject OCR/category (or other txn field) writes when the match group's primary voucher is POSTED."""
+    """Reject OCR/category writes when a POSTED recon or module_approve journal locks the txn."""
     if not tuples:
         return
     bank_req = {t[1] for t in tuples if t[0] == "bank" and t[1]}
     led_req = {t[1] for t in tuples if t[0] == "ledger" and t[1]}
-    if not bank_req and not led_req:
-        return
-
-    conds = []
-    if bank_req:
-        conds.append(ReconciliationMatch.bank_txn_id.in_(bank_req))
-    if led_req:
-        conds.append(ReconciliationMatch.ledger_txn_id.in_(led_req))
-    match_filter = conds[0] if len(conds) == 1 else or_(*conds)
-
-    matches = (
-        db.query(ReconciliationMatch)
-        .filter(ReconciliationMatch.company_id == company_id, match_filter)
-        .all()
+    locked_bank, locked_ledger = posted_gl_locked_txn_ids(
+        db, company_id, bank_req, led_req
     )
-    group_ids = {m.group_id for m in matches if m.group_id}
-    if not group_ids:
+    if not locked_bank and not locked_ledger:
         return
-
-    posted_rows = (
-        db.query(GlJournal.reconciliation_group_id)
-        .filter(
-            GlJournal.company_id == company_id,
-            GlJournal.reconciliation_group_id.in_(group_ids),
-            GlJournal.status == GlJournalStatus.POSTED,
-            GlJournal.reversal_of_journal_id.is_(None),
-        )
-        .distinct()
-        .all()
-    )
-    posted_groups = {r[0] for r in posted_rows if r[0]}
-    if not posted_groups:
-        return
-
-    locked_bank: set[str] = set()
-    locked_ledger: set[str] = set()
-    for m in matches:
-        if m.group_id not in posted_groups:
-            continue
-        if m.bank_txn_id:
-            locked_bank.add(m.bank_txn_id)
-        if m.ledger_txn_id:
-            locked_ledger.add(m.ledger_txn_id)
 
     blocked: list[str] = []
     for src, tid, _cat in tuples:
@@ -1268,8 +1245,8 @@ def assert_account_category_updates_not_blocked_by_posted_gl(
         preview = ", ".join(blocked[:8])
         more = f" (+{len(blocked) - 8} more)" if len(blocked) > 8 else ""
         raise ValueError(
-            f"Cannot {blocked_action}: GL is already posted for this match ({preview}{more}). "
-            "Unpost the journal in RECON to edit."
+            f"Cannot {blocked_action}: GL is already posted ({preview}{more}). "
+            "Unpost the journal to edit."
         )
 
 
