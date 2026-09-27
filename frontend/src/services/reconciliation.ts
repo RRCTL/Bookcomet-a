@@ -103,7 +103,12 @@ export const reconciliationApi = {
   async importBankTransactions(
     rows: Record<string, unknown>[],
     importBatchId?: string,
-  ): Promise<{ import_batch_id: string; stored_count: number; created_rows?: Array<Record<string, unknown>> }> {
+  ): Promise<{
+    import_batch_id: string
+    stored_count: number
+    updated_count?: number
+    created_rows?: Array<Record<string, unknown>>
+  }> {
     const response = await apiFetch('/reconciliation/bank-import', {
       method: 'POST',
       headers: {

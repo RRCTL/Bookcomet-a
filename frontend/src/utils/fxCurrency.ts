@@ -51,6 +51,46 @@ export function parseFxNumber(raw: unknown): number | null {
   return Number.isFinite(n) ? n : null
 }
 
+/** Draft for Books money inputs: empty, optional minus, digits, at most two decimals. */
+const MONEY_DRAFT_RE = /^-?\d*\.?\d{0,2}$/
+
+export function isMoneyDraft(raw: string): boolean {
+  return MONEY_DRAFT_RE.test(String(raw))
+}
+
+export function parseMoney2dp(raw: string): number | null {
+  const s = String(raw ?? '').trim()
+  if (!s || s === '-' || s === '.' || s === '-.') return null
+  const n = parseFxNumber(s)
+  return n == null ? null : quantizeMoney(n)
+}
+
+export type ManualFxPatch = {
+  currency?: string | null
+  amount?: number | null
+  company_currency?: string | null
+  company_amount?: number | null
+}
+
+/** Books-grid override: write code/amount only. Never apply the company rate book. */
+export function applyManualCompanyOverride<T extends FxRowLike>(row: T, patch: ManualFxPatch): T {
+  const next: T = { ...row }
+  if ('currency' in patch) next.currency = normalizeCurrencyCode(patch.currency)
+  if ('amount' in patch) next.amount = patch.amount
+  if ('company_currency' in patch) next.company_currency = normalizeCurrencyCode(patch.company_currency)
+  if ('company_amount' in patch) {
+    next.company_amount = patch.company_amount == null ? null : quantizeMoney(patch.company_amount)
+  }
+  const receiptAmt = parseFxNumber(next.amount)
+  const companyAmt = parseFxNumber(next.company_amount)
+  if (companyAmt == null || receiptAmt == null || receiptAmt === 0) {
+    next.exchange_rate = null
+  } else {
+    next.exchange_rate = impliedRateFromPrinted(receiptAmt, companyAmt)
+  }
+  return next
+}
+
 export function quantizeRate(rate: number): number {
   return Math.round(rate * 10000) / 10000
 }
