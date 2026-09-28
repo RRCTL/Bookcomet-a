@@ -18,6 +18,7 @@ import {
   ledgerVoucherFromModuleTx,
   normalizeReconDate,
   selectKeepIdsForModuleSync,
+  isReconMatchLockedStatus,
 } from './moduleReconKeys'
 import { accountCategoryUpdatesForExistingRows } from './accountCategoryUpdates'
 
@@ -379,27 +380,23 @@ export async function syncModulesToRecon(companyId: string): Promise<SyncModules
     moduleLedgerKeys,
   )
 
-  const { wipe, skipKeysFromAllDb } = await wipePoolForRebuild(keepBankIds, keepLedgerIds)
+  const { wipe } = await wipePoolForRebuild(keepBankIds, keepLedgerIds)
   const purgedBank = wipe.purged_bank ?? 0
   const purgedLedger = wipe.purged_ledger ?? 0
 
-  // After a successful wipe, skip only kept matched keys. If wipe APIs are unavailable,
-  // skip every existing DB key so we still import missing module rows.
-  const keepBankKeys = new Set(
-    skipKeysFromAllDb
-      ? bankDbBefore.map(bankDbKey)
-      : bankDbBefore.filter(t => keepBankIds.includes(t.id)).map(bankDbKey),
+  // Re-import unreconciled module rows so a later company_amount edit reaches Recon.
+  // Matched/partial rows keep their Recon FX until the user unmatches.
+  const matchedBankKeys = new Set(
+    bankDbBefore.filter(t => isReconMatchLockedStatus(t.status)).map(bankDbKey),
   )
-  const keepLedgerKeys = new Set(
-    skipKeysFromAllDb
-      ? ledgerDbBefore.map(ledgerDbKey)
-      : ledgerDbBefore.filter(t => keepLedgerIds.includes(t.id)).map(ledgerDbKey),
+  const matchedLedgerKeys = new Set(
+    ledgerDbBefore.filter(t => isReconMatchLockedStatus(t.status)).map(ledgerDbKey),
   )
 
   const seenBank = new Set<string>()
   const pendingBank = bankModule
     .filter(r => {
-      if (keepBankKeys.has(r.key) || seenBank.has(r.key)) return false
+      if (matchedBankKeys.has(r.key) || seenBank.has(r.key)) return false
       seenBank.add(r.key)
       return true
     })
@@ -408,13 +405,13 @@ export async function syncModulesToRecon(companyId: string): Promise<SyncModules
   let importedBank = 0
   if (pendingBank.length) {
     const res = await reconciliationApi.importBankTransactions(pendingBank)
-    importedBank = res.stored_count ?? 0
+    importedBank = (res.stored_count ?? 0) + (res.updated_count ?? 0)
   }
 
   const pendingByMode: Record<'AP' | 'AR', Record<string, unknown>[]> = { AP: [], AR: [] }
   const queuedLedger = new Set<string>()
   for (const row of ledgerModule) {
-    if (keepLedgerKeys.has(row.key)) continue
+    if (matchedLedgerKeys.has(row.key)) continue
     const qk = `${row.mode}|${row.key}`
     if (queuedLedger.has(qk)) continue
     queuedLedger.add(qk)

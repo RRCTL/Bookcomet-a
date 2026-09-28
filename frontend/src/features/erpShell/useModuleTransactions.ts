@@ -21,6 +21,11 @@ import { isModuleTxnLocked } from '../recon/moduleReconKeys'
 import { syncModulesToRecon } from '../recon/syncModulesToRecon'
 import { safeRandomUUID } from '../../utils/safeRandomUUID'
 import { reconciliationApi } from '../../services/reconciliation'
+import {
+  applyManualCompanyOverride,
+  parseFxNumber,
+  type ManualFxPatch,
+} from '../../utils/fxCurrency'
 
 type Tx = Record<string, any>
 
@@ -233,6 +238,9 @@ export function useModuleTransactions(mode: string, companyId: string) {
 
   const updateCell = useCallback(
     (key: string, field: string, value: unknown) => {
+      if (field === 'currency' || field === 'company_currency' || field === 'company_amount' || field === 'amount') {
+        return
+      }
       setRows(prev =>
         prev.map(r => {
           if (r.key !== key) return r
@@ -243,6 +251,31 @@ export function useModuleTransactions(mode: string, companyId: string) {
       )
     },
     [markDirty],
+  )
+
+  /** Manual FX override in Books. Does not apply the company rate book. */
+  const updateRowFx = useCallback(
+    (key: string, patch: ManualFxPatch) => {
+      setRows(prev =>
+        prev.map(r => {
+          if (r.key !== key) return r
+          if (isModuleTxnLocked(r.tx)) return r
+          markDirty(r.runId, r.batchId)
+          let nextTx: Tx = applyManualCompanyOverride(r.tx, patch)
+          if ('amount' in patch && isBank) {
+            const dep = parseFxNumber(r.tx.deposit)
+            const wit = parseFxNumber(r.tx.withdrawal)
+            if (dep != null && dep !== 0) {
+              nextTx = { ...nextTx, deposit: patch.amount }
+            } else if (wit != null && wit !== 0) {
+              nextTx = { ...nextTx, withdrawal: patch.amount }
+            }
+          }
+          return { ...r, tx: nextTx }
+        }),
+      )
+    },
+    [isBank, markDirty],
   )
 
   /** Set Account / GL code and keep Category (CoA name) in sync. */
@@ -680,6 +713,7 @@ export function useModuleTransactions(mode: string, companyId: string) {
     dirty,
     reload,
     updateCell,
+    updateRowFx,
     updateAccountCode,
     updateDebitCredit,
     updateBankAccountType,

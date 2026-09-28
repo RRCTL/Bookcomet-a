@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from app.api.reconciliation import _apply_company_fx_fields
 from app.services.company_fx import (
     apply_saved_rate_to_row,
     convert_receipt_to_company,
@@ -60,6 +61,27 @@ def test_c1_match_uses_company_amount_not_receipt_code():
     assert a1 == a2 == 94.98
     usd_books = SimpleNamespace(currency="JPY", amount=1900, company_currency="USD", company_amount=12.0)
     assert company_amount_for_match(usd_books)[0] == "USD"
+
+
+def test_apply_company_fx_fields_overwrites_and_clears():
+    existing = SimpleNamespace(
+        company_currency="HKD",
+        company_amount=85.0,
+        exchange_rate=0.05,
+        company_tax_amount=4.0,
+    )
+    _apply_company_fx_fields(
+        existing,
+        SimpleNamespace(company_currency="HKD", company_amount=80, exchange_rate=0.0471, company_tax_amount=4.0),
+    )
+    assert existing.company_amount == 80
+    assert existing.exchange_rate == 0.0471
+    _apply_company_fx_fields(
+        existing,
+        SimpleNamespace(company_currency="HKD", company_amount=None, exchange_rate=None, company_tax_amount=None),
+    )
+    assert existing.company_amount is None
+    assert existing.exchange_rate is None
 
 
 def test_merge_fx_settings_reporting_currency_empty_vs_set():

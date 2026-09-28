@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
+  applyManualCompanyOverride,
   applySavedRateToRow,
   convertReceiptToCompany,
+  foreignReceiptCurrencies,
   formatCurrencyAmount,
   fxPairKey,
   impliedRateFromPrinted,
+  isMoneyDraft,
   normalizeCurrencyCode,
+  parseMoney2dp,
+  rateDialogForPair,
   rowReadyForBooks,
   sameCurrency,
 } from './fxCurrency'
@@ -57,5 +62,74 @@ describe('fxCurrency', () => {
     expect(rowReadyForBooks({ currency: 'JPY', amount: 1900, company_currency: 'HKD', company_amount: 94.98 })).toBe(true)
     expect(rowReadyForBooks({ currency: 'HKD', amount: 100 }, 'HKD')).toBe(true)
     expect(rowReadyForBooks({ currency: 'JPY', amount: null }, 'HKD')).toBe(true)
+  })
+
+  it('isMoneyDraft allows empty, digits, and two decimals', () => {
+    expect(isMoneyDraft('')).toBe(true)
+    expect(isMoneyDraft('80')).toBe(true)
+    expect(isMoneyDraft('80.5')).toBe(true)
+    expect(isMoneyDraft('80.50')).toBe(true)
+    expect(isMoneyDraft('80.')).toBe(true)
+    expect(isMoneyDraft('-12.3')).toBe(true)
+    expect(isMoneyDraft('80.505')).toBe(false)
+    expect(isMoneyDraft('A32')).toBe(false)
+    expect(isMoneyDraft('32.0 3')).toBe(false)
+    expect(isMoneyDraft('HKD 85.00')).toBe(false)
+    expect(parseMoney2dp('')).toBeNull()
+    expect(parseMoney2dp('80.5')).toBe(80.5)
+    expect(parseMoney2dp('80')).toBe(80)
+  })
+
+  it('applyManualCompanyOverride keeps a typed amount and does not reapply the book rate', () => {
+    const row = applyManualCompanyOverride(
+      { currency: 'JPY', amount: 1700, company_currency: 'HKD', company_amount: 85, exchange_rate: 0.05 },
+      { company_amount: 80 },
+    )
+    expect(row.company_amount).toBe(80)
+    expect(row.company_currency).toBe('HKD')
+    expect(row.exchange_rate).toBe(impliedRateFromPrinted(1700, 80))
+    expect(row.exchange_rate).not.toBe(0.05)
+  })
+
+  it('applyManualCompanyOverride clears amount without restoring the previous number', () => {
+    const row = applyManualCompanyOverride(
+      { currency: 'JPY', amount: 1700, company_currency: 'HKD', company_amount: 85, exchange_rate: 0.05 },
+      { company_amount: null },
+    )
+    expect(row.company_amount).toBeNull()
+    expect(row.exchange_rate).toBeNull()
+    expect(row.company_currency).toBe('HKD')
+  })
+
+  it('foreignReceiptCurrencies queues one dialog per foreign code', () => {
+    expect(foreignReceiptCurrencies([{ currency: 'HKD' }, { currency: 'HKD' }], 'USD')).toEqual(['HKD'])
+    expect(
+      foreignReceiptCurrencies([{ currency: 'HKD' }, { currency: 'JPY' }, { currency: 'USD' }], 'USD'),
+    ).toEqual(['HKD', 'JPY'])
+    expect(foreignReceiptCurrencies([{ currency: 'USD' }, { currency: 'usd' }], 'USD')).toEqual([])
+    expect(foreignReceiptCurrencies([{ currency: '' }], 'USD')).toEqual([])
+  })
+
+  it('rateDialogForPair uses the first matching row sample', () => {
+    const dialog = rateDialogForPair(
+      [
+        { currency: 'JPY', amount: 1700, printed_company_amount: 12 },
+        { currency: 'HKD', amount: 20 },
+      ],
+      'HKD',
+      'USD',
+    )
+    expect(dialog).toEqual({ from: 'HKD', to: 'USD', amount: 20, printed: null })
+    expect(rateDialogForPair([{ currency: 'USD', amount: 10 }], 'USD', 'USD')).toBeNull()
+  })
+
+  it('applyManualCompanyOverride changes code only and leaves the amount', () => {
+    const row = applyManualCompanyOverride(
+      { currency: 'JPY', amount: 1700, company_currency: 'HKD', company_amount: 85, exchange_rate: 0.05 },
+      { company_currency: 'USD' },
+    )
+    expect(row.company_currency).toBe('USD')
+    expect(row.company_amount).toBe(85)
+    expect(row.exchange_rate).toBe(impliedRateFromPrinted(1700, 85))
   })
 })

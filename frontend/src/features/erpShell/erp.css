@@ -190,6 +190,9 @@
 .erp-cell-input:hover { border-color: var(--erp-border); }
 .erp-cell-input:focus { border-color: var(--erp-accent); background: #fff; }
 .erp-cell-input.num { text-align: right; font-variant-numeric: tabular-nums; }
+.erp-fx-cell { display: flex; align-items: center; gap: 4px; min-width: 148px; }
+.erp-fx-cell .erp-cell-select { width: 76px; min-width: 76px; flex: 0 0 auto; padding: 3px 4px; }
+.erp-fx-cell .erp-cell-input { flex: 1 1 64px; min-width: 56px; }
 /* Manual Add Row bank account — same native select styling as header .erp-field select. */
 .erp-cell-select {
   width: 100%;

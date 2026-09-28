@@ -485,6 +485,38 @@ def _company_fx_kwargs(row: object) -> dict:
     }
 
 
+def _apply_company_fx_fields(existing, row: object) -> None:
+    """Write Books FX onto an unreconciled Recon txn, including cleared (null) amounts."""
+    for key, val in _company_fx_kwargs(row).items():
+        if not hasattr(existing, key):
+            continue
+        setattr(existing, key, val)
+
+
+def _refresh_module_gl_draft(
+    db: Session,
+    company_id: str,
+    *,
+    bank_txn_id: str | None = None,
+    ledger_txn_id: str | None = None,
+) -> None:
+    from app.services import gl_journal_service as glsvc
+
+    rebuilt = glsvc.rebuild_module_approve_draft_for_txn(
+        db,
+        company_id,
+        bank_txn_id=bank_txn_id,
+        ledger_txn_id=ledger_txn_id,
+    )
+    if rebuilt is None:
+        glsvc.ensure_draft_for_txn(
+            db,
+            company_id,
+            bank_txn_id=bank_txn_id,
+            ledger_txn_id=ledger_txn_id,
+        )
+
+
 def _company_fx_payload(txn) -> dict:
     return {
         "company_currency": getattr(txn, "company_currency", None),
@@ -576,8 +608,7 @@ async def import_ledger_transactions(
             existing.dr_cr = dr_cr
             existing.doc_type = row.transaction_type or existing.doc_type or "receipt"
             existing.currency = row.currency or existing.currency or "HKD"
-            for key, val in _company_fx_kwargs(row).items():
-                setattr(existing, key, val if val is not None else getattr(existing, key, None))
+            _apply_company_fx_fields(existing, row)
             existing.counterparty = counterparty
             if row.category is not None:
                 existing.account_category = row.category
@@ -648,11 +679,9 @@ async def import_ledger_transactions(
         if not tid:
             continue
         try:
-            from app.services import gl_journal_service as glsvc
-
-            glsvc.ensure_draft_for_txn(db, company_id, ledger_txn_id=tid)
+            _refresh_module_gl_draft(db, company_id, ledger_txn_id=tid)
         except Exception:
-            logger.exception("GL ensure_draft_for_txn failed for ledger %s", tid)
+            logger.exception("GL draft refresh failed for ledger %s", tid)
 
     return {
         "import_batch_id": batch_id,
@@ -671,6 +700,7 @@ async def import_bank_transactions(
     """Import bank transactions from Books bank spreadsheet rows."""
     batch_id = payload.import_batch_id or str(uuid.uuid4())
     stored_count = 0
+    updated_count = 0
     created_rows: List[dict] = []
 
     for row in payload.rows:
@@ -692,6 +722,16 @@ async def import_bank_transactions(
             .first()
         )
         if existing:
+            existing.currency = row.currency or existing.currency or "HKD"
+            _apply_company_fx_fields(existing, row)
+            if row.description:
+                existing.description_raw = str(row.description)
+                existing.description_norm = str(row.description).lower()
+            if row.reference:
+                existing.reference = row.reference
+            if row.account_category is not None:
+                existing.account_category = row.account_category
+            updated_count += 1
             created_rows.append(
                 {
                     "id": existing.id,
@@ -702,6 +742,7 @@ async def import_bank_transactions(
                     **_company_fx_payload(existing),
                     "date": row.date,
                     "import_batch_id": existing.import_batch_id,
+                    "updated": True,
                 }
             )
             continue
@@ -737,7 +778,7 @@ async def import_bank_transactions(
             }
         )
 
-    if stored_count:
+    if stored_count or updated_count:
         db.commit()
 
     for row in created_rows:
@@ -745,13 +786,16 @@ async def import_bank_transactions(
         if not tid:
             continue
         try:
-            from app.services import gl_journal_service as glsvc
-
-            glsvc.ensure_draft_for_txn(db, company_id, bank_txn_id=tid)
+            _refresh_module_gl_draft(db, company_id, bank_txn_id=tid)
         except Exception:
-            logger.exception("GL ensure_draft_for_txn failed for bank %s", tid)
+            logger.exception("GL draft refresh failed for bank %s", tid)
 
-    return {"import_batch_id": batch_id, "stored_count": stored_count, "created_rows": created_rows}
+    return {
+        "import_batch_id": batch_id,
+        "stored_count": stored_count,
+        "updated_count": updated_count,
+        "created_rows": created_rows,
+    }
 
 
 @router.get("/bank-transactions")

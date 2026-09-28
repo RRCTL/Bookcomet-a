@@ -6,6 +6,12 @@ export function isModuleTxnLocked(tx: Record<string, unknown> | null | undefined
   return String(tx.matched_id ?? '').trim().length > 0
 }
 
+/** Matched/partial Recon rows keep their FX; unreconciled rows refresh from Books Save. */
+export function isReconMatchLockedStatus(status: string | null | undefined): boolean {
+  const st = String(status ?? '').toLowerCase()
+  return st === 'matched' || st === 'partial'
+}
+
 const HKD_ALIASES = new Set([
   'HKD',
   'HK$',

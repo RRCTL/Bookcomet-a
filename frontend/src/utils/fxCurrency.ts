@@ -51,6 +51,46 @@ export function parseFxNumber(raw: unknown): number | null {
   return Number.isFinite(n) ? n : null
 }
 
+/** Draft for Books money inputs: empty, optional minus, digits, at most two decimals. */
+const MONEY_DRAFT_RE = /^-?\d*\.?\d{0,2}$/
+
+export function isMoneyDraft(raw: string): boolean {
+  return MONEY_DRAFT_RE.test(String(raw))
+}
+
+export function parseMoney2dp(raw: string): number | null {
+  const s = String(raw ?? '').trim()
+  if (!s || s === '-' || s === '.' || s === '-.') return null
+  const n = parseFxNumber(s)
+  return n == null ? null : quantizeMoney(n)
+}
+
+export type ManualFxPatch = {
+  currency?: string | null
+  amount?: number | null
+  company_currency?: string | null
+  company_amount?: number | null
+}
+
+/** Books-grid override: write code/amount only. Never apply the company rate book. */
+export function applyManualCompanyOverride<T extends FxRowLike>(row: T, patch: ManualFxPatch): T {
+  const next: T = { ...row }
+  if ('currency' in patch) next.currency = normalizeCurrencyCode(patch.currency)
+  if ('amount' in patch) next.amount = patch.amount
+  if ('company_currency' in patch) next.company_currency = normalizeCurrencyCode(patch.company_currency)
+  if ('company_amount' in patch) {
+    next.company_amount = patch.company_amount == null ? null : quantizeMoney(patch.company_amount)
+  }
+  const receiptAmt = parseFxNumber(next.amount)
+  const companyAmt = parseFxNumber(next.company_amount)
+  if (companyAmt == null || receiptAmt == null || receiptAmt === 0) {
+    next.exchange_rate = null
+  } else {
+    next.exchange_rate = impliedRateFromPrinted(receiptAmt, companyAmt)
+  }
+  return next
+}
+
 export function quantizeRate(rate: number): number {
   return Math.round(rate * 10000) / 10000
 }
@@ -205,6 +245,57 @@ export function hydrateRowsForCompany<T extends FxRowLike>(
     if (rate == null) return { ...row, company_currency: company }
     return applySavedRateToRow(working, company, rate, { keepPrinted: false })
   })
+}
+
+/** Distinct receipt currencies that need a rate dialog vs company currency. */
+export function foreignReceiptCurrencies(
+  rows: Array<{ currency?: string | null }>,
+  companyCurrency: string,
+): string[] {
+  const company = normalizeCurrencyCode(companyCurrency)
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const row of rows) {
+    const code = normalizeCurrencyCode(row.currency)
+    if (!code || !company || sameCurrency(code, company) || seen.has(code)) continue
+    seen.add(code)
+    out.push(code)
+  }
+  return out
+}
+
+export type RateDialogState = {
+  from: string
+  to: string
+  amount: number | null
+  printed: number | null
+}
+
+export function receiptAmountFromFxRow(row: Record<string, unknown>, bank?: boolean): number | null {
+  if (bank) return receiptAmountFromBankRow(row)
+  return (
+    parseFxNumber(row.amount) ??
+    parseFxNumber(row.principal_amount) ??
+    parseFxNumber(row.purchase_amount)
+  )
+}
+
+export function rateDialogForPair(
+  rows: Array<Record<string, unknown>>,
+  from: string,
+  to: string,
+  opts?: { bank?: boolean },
+): RateDialogState | null {
+  const src = normalizeCurrencyCode(from)
+  const dest = normalizeCurrencyCode(to)
+  if (!src || !dest || sameCurrency(src, dest)) return null
+  const row = rows.find(r => normalizeCurrencyCode(String(r.currency ?? '')) === src)
+  return {
+    from: src,
+    to: dest,
+    amount: row ? receiptAmountFromFxRow(row, opts?.bank) : null,
+    printed: row ? parseFxNumber(row.printed_company_amount) : null,
+  }
 }
 
 export function companyAmountForMatch(row: {
