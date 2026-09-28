@@ -49,12 +49,15 @@ import { CompanyFxToolbar } from '../../components/CompanyFxToolbar'
 import { ExchangeRateDialog } from '../../components/ExchangeRateDialog'
 import {
   applySavedRateToRow,
+  foreignReceiptCurrencies,
   fxPairKey,
   fxRatesFromSettings,
   hydrateRowsForCompany,
   normalizeCurrencyCode,
   parseFxNumber,
+  rateDialogForPair,
   receiptAmountFromBankRow,
+  receiptAmountFromFxRow,
   reportingCurrencyFromSettings,
   rowReadyForBooks,
   sameCurrency,
@@ -372,6 +375,7 @@ export function ProcessingView() {
   const [tableCompanyCurrency, setTableCompanyCurrency] = useState('')
   const [hideReceiptCurrency, setHideReceiptCurrency] = useState(false)
   const [rateDialog, setRateDialog] = useState<{ from: string; to: string; amount: number | null; printed: number | null } | null>(null)
+  const [rateQueue, setRateQueue] = useState<string[]>([])
   const [applyingTemplate, setApplyingTemplate] = useState(false)
   const [templateChoice, setTemplateChoice] = useState('')
   const [menuRunId, setMenuRunId] = useState<string | null>(null)
@@ -943,8 +947,8 @@ export function ProcessingView() {
 
   useEffect(() => {
     setEditedRows(null)
-    setTableCompanyCurrency('')
     setRateDialog(null)
+    setRateQueue([])
   }, [activeRunId])
 
   useEffect(() => {
@@ -1087,6 +1091,55 @@ export function ProcessingView() {
   const reVlmLocked = Boolean(activeRun && runHasLockedApprovedTable(activeRun))
   const reVlmLockedTitle =
     'Approved and loaded into modules — Re-VLM is disabled to avoid conflicting updates.'
+  const fxTableRows = (): Record<string, unknown>[] => {
+    if (isAsset) return assetRecords as Record<string, unknown>[]
+    if (isBank) return ((editedRows as BankTransaction[] | null) ?? bankRows) as Record<string, unknown>[]
+    return ((editedRows as ARAPTransaction[] | null) ?? arapRows) as Record<string, unknown>[]
+  }
+
+  const openQueuedDialog = (queue: string[], company: string, rows: Record<string, unknown>[]) => {
+    const nextFrom = queue[0]
+    if (!nextFrom) {
+      setRateQueue([])
+      setRateDialog(null)
+      return
+    }
+    setRateQueue(queue)
+    setRateDialog(rateDialogForPair(rows, nextFrom, company, { bank: isBank }))
+  }
+
+  const persistReportingCurrency = async (next: string) => {
+    const code = normalizeCurrencyCode(next)
+    try {
+      const profile = await api.getCompanyProfile()
+      await api.upsertCompanyProfile({
+        industry: profile.industry,
+        accounting_basis: profile.accounting_basis,
+        fiscal_year_end: profile.fiscal_year_end,
+        company_name: profile.company_name,
+        company_name_keywords: profile.company_name_keywords,
+        custom_settings: { ...profile.custom_settings, reporting_currency: code || null },
+      })
+    } catch {
+      /* keep local selection even if profile save fails */
+    }
+    setReportingCurrency(code)
+    setTableCompanyCurrency(code)
+  }
+
+  const onCompanyCurrencyChange = async (next: string) => {
+    const code = normalizeCurrencyCode(next)
+    await persistReportingCurrency(code)
+    if (!code) {
+      setRateQueue([])
+      setRateDialog(null)
+      return
+    }
+    const rows = fxTableRows()
+    const queue = foreignReceiptCurrencies(rows, code)
+    openQueuedDialog(queue, code, rows)
+  }
+
   const applyPairRate = async (rate: number, printedAmount?: number) => {
     if (!rateDialog || !effectiveCompanyCurrency) return
     const pair = fxPairKey(rateDialog.from, rateDialog.to)
@@ -1099,7 +1152,11 @@ export function ProcessingView() {
         fiscal_year_end: profile.fiscal_year_end,
         company_name: profile.company_name,
         company_name_keywords: profile.company_name_keywords,
-        custom_settings: { ...profile.custom_settings, fx_rates: nextRates },
+        custom_settings: {
+          ...profile.custom_settings,
+          reporting_currency: effectiveCompanyCurrency || profile.custom_settings?.reporting_currency || null,
+          fx_rates: nextRates,
+        },
       })
     } catch {
       /* keep local rate even if profile save fails */
@@ -1108,7 +1165,9 @@ export function ProcessingView() {
     const applyRow = <T extends Record<string, unknown>>(row: T): T => {
       const receipt = normalizeCurrencyCode(String(row.currency ?? ''))
       if (receipt !== rateDialog.from) return row
-      const working = isBank ? { ...row, amount: receiptAmountFromBankRow(row) } : row
+      const working = isBank
+        ? { ...row, amount: receiptAmountFromBankRow(row) }
+        : { ...row, amount: receiptAmountFromFxRow(row) ?? row.amount }
       if (printedAmount != null && parseFxNumber(working.amount) != null) {
         return applySavedRateToRow(
           { ...working, printed_company_amount: printedAmount },
@@ -1119,19 +1178,22 @@ export function ProcessingView() {
       }
       return applySavedRateToRow(working, effectiveCompanyCurrency, rate, { keepPrinted: false }) as T
     }
-    if (isBank) setEditedRows(((editedRows as BankTransaction[] | null) ?? bankRows).map(applyRow))
+    if (isAsset) setAssetRecords(assetRecords.map(row => applyRow(row as Record<string, unknown>) as OtherRow))
+    else if (isBank) setEditedRows(((editedRows as BankTransaction[] | null) ?? bankRows).map(applyRow))
     else setEditedRows(((editedRows as ARAPTransaction[] | null) ?? arapRows).map(applyRow))
-    setRateDialog(null)
+    const rest = rateQueue.filter(code => code !== rateDialog.from)
+    openQueuedDialog(rest, effectiveCompanyCurrency, fxTableRows().map(row => applyRow(row)))
   }
 
   const openRateDialog = (row: Record<string, unknown>) => {
     const from = normalizeCurrencyCode(String(row.currency ?? ''))
     const to = normalizeCurrencyCode(effectiveCompanyCurrency)
     if (!from || !to || sameCurrency(from, to)) return
+    setRateQueue([])
     setRateDialog({
       from,
       to,
-      amount: isBank ? receiptAmountFromBankRow(row) : parseFxNumber(row.amount),
+      amount: receiptAmountFromFxRow(row, isBank),
       printed: parseFxNumber(row.printed_company_amount),
     })
   }
@@ -1516,9 +1578,8 @@ export function ProcessingView() {
               ) : isAsset ? (
                 <>
                   <CompanyFxToolbar
-                    reportingCurrency={reportingCurrency}
-                    tableCurrency={tableCompanyCurrency}
-                    onTableCurrencyChange={setTableCompanyCurrency}
+                    tableCurrency={effectiveCompanyCurrency}
+                    onTableCurrencyChange={code => void onCompanyCurrencyChange(code)}
                     hideReceiptCurrency={hideReceiptCurrency}
                     onToggleReceiptCurrency={() => setHideReceiptCurrency(v => !v)}
                     fxBlocked={!fxReady}
@@ -1528,9 +1589,8 @@ export function ProcessingView() {
               ) : isBank ? (
                 <>
                   <CompanyFxToolbar
-                    reportingCurrency={reportingCurrency}
-                    tableCurrency={tableCompanyCurrency}
-                    onTableCurrencyChange={setTableCompanyCurrency}
+                    tableCurrency={effectiveCompanyCurrency}
+                    onTableCurrencyChange={code => void onCompanyCurrencyChange(code)}
                     hideReceiptCurrency={hideReceiptCurrency}
                     onToggleReceiptCurrency={() => setHideReceiptCurrency(v => !v)}
                     fxBlocked={!fxReady}
@@ -1549,9 +1609,8 @@ export function ProcessingView() {
               ) : (
                 <>
                   <CompanyFxToolbar
-                    reportingCurrency={reportingCurrency}
-                    tableCurrency={tableCompanyCurrency}
-                    onTableCurrencyChange={setTableCompanyCurrency}
+                    tableCurrency={effectiveCompanyCurrency}
+                    onTableCurrencyChange={code => void onCompanyCurrencyChange(code)}
                     hideReceiptCurrency={hideReceiptCurrency}
                     onToggleReceiptCurrency={() => setHideReceiptCurrency(v => !v)}
                     fxBlocked={!fxReady}
@@ -1591,7 +1650,10 @@ export function ProcessingView() {
                   sampleReceiptAmount={rateDialog.amount}
                   printedCompanyAmount={rateDialog.printed}
                   onApply={(rate, printed) => void applyPairRate(rate, printed)}
-                  onClose={() => setRateDialog(null)}
+                  onClose={() => {
+                    setRateDialog(null)
+                    setRateQueue([])
+                  }}
                 />
               )}
             </div>

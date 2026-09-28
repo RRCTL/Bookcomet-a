@@ -3,12 +3,14 @@ import {
   applyManualCompanyOverride,
   applySavedRateToRow,
   convertReceiptToCompany,
+  foreignReceiptCurrencies,
   formatCurrencyAmount,
   fxPairKey,
   impliedRateFromPrinted,
   isMoneyDraft,
   normalizeCurrencyCode,
   parseMoney2dp,
+  rateDialogForPair,
   rowReadyForBooks,
   sameCurrency,
 } from './fxCurrency'
@@ -97,6 +99,28 @@ describe('fxCurrency', () => {
     expect(row.company_amount).toBeNull()
     expect(row.exchange_rate).toBeNull()
     expect(row.company_currency).toBe('HKD')
+  })
+
+  it('foreignReceiptCurrencies queues one dialog per foreign code', () => {
+    expect(foreignReceiptCurrencies([{ currency: 'HKD' }, { currency: 'HKD' }], 'USD')).toEqual(['HKD'])
+    expect(
+      foreignReceiptCurrencies([{ currency: 'HKD' }, { currency: 'JPY' }, { currency: 'USD' }], 'USD'),
+    ).toEqual(['HKD', 'JPY'])
+    expect(foreignReceiptCurrencies([{ currency: 'USD' }, { currency: 'usd' }], 'USD')).toEqual([])
+    expect(foreignReceiptCurrencies([{ currency: '' }], 'USD')).toEqual([])
+  })
+
+  it('rateDialogForPair uses the first matching row sample', () => {
+    const dialog = rateDialogForPair(
+      [
+        { currency: 'JPY', amount: 1700, printed_company_amount: 12 },
+        { currency: 'HKD', amount: 20 },
+      ],
+      'HKD',
+      'USD',
+    )
+    expect(dialog).toEqual({ from: 'HKD', to: 'USD', amount: 20, printed: null })
+    expect(rateDialogForPair([{ currency: 'USD', amount: 10 }], 'USD', 'USD')).toBeNull()
   })
 
   it('applyManualCompanyOverride changes code only and leaves the amount', () => {
