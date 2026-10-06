@@ -5,7 +5,8 @@ pytesseract==0.3.13
 
 # PaddleOCR dependencies
 paddlepaddle>=3.3.1
-imgaug
+# imgaug removed: unused by app code and flagged PYSEC-2026-356; not a hard
+# requirement of current PaddleOCR installs used here.
 visualdl
 opencv-contrib-python
 
