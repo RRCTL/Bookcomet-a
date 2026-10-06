@@ -525,6 +525,77 @@ def resolve_row_task_file_id(row: dict[str, Any], run_files: list[WorkflowRunFil
     return None
 
 
+def resolve_row_task_file_id_strict(
+    row: dict[str, Any], run_files: list[WorkflowRunFile]
+) -> str | None:
+    """Match a review row to a run file without the single-file fallback.
+
+    Used on Approve so rows from another run's PDF cannot be accepted just
+    because the current run happens to have exactly one file.
+    """
+    import re
+
+    explicit = str(row.get("task_file_id") or row.get("source_file_id") or "").strip()
+    if explicit:
+        for rf in run_files:
+            if rf.task_file_id == explicit:
+                return rf.task_file_id
+        return None
+
+    file_key = _ar_ap_file_key(row).lower()
+    if not file_key:
+        # Unmarked rows are only allowed when the run has a single file.
+        if len(run_files) == 1:
+            return run_files[0].task_file_id
+        return None
+
+    # Strip trailing " P12" / " P12-R3" page suffixes for stem compare.
+    key_stem = re.sub(r"\s+p\d+(?:-r\d+)?\b", "", file_key).strip()
+
+    for rf in run_files:
+        name, stem = _filename_stems(rf)
+        if not name and not stem:
+            continue
+        if file_key == rf.task_file_id.lower():
+            return rf.task_file_id
+        # Strict: exact filename, exact stem, or key starts with "name " / "stem ".
+        if key_stem == name or key_stem == stem:
+            return rf.task_file_id
+        if name and (file_key == name or file_key.startswith(name + " ") or file_key.startswith(name + "p")):
+            return rf.task_file_id
+        if stem and (file_key.startswith(stem + ".") or file_key.startswith(stem + " ")):
+            return rf.task_file_id
+    return None
+
+
+def assert_review_rows_belong_to_run(
+    review_rows: list[Any] | None,
+    run_files: list[WorkflowRunFile],
+) -> None:
+    """Reject approve/resume payloads that reference files outside this run."""
+    if not isinstance(review_rows, list) or not review_rows:
+        return
+    if not run_files:
+        raise HTTPException(
+            status_code=400,
+            detail="These rows don't belong to this run. Reload the run.",
+        )
+    foreign = 0
+    for row in review_rows:
+        if not isinstance(row, dict):
+            continue
+        if resolve_row_task_file_id_strict(row, run_files) is None:
+            foreign += 1
+    if foreign:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Some rows came from files that aren't in this run and are hidden. "
+                "Reload the run to fix this."
+            ),
+        )
+
+
 def row_file_ids_for_rows(
     rows: list[dict[str, Any]],
     run_files: list[WorkflowRunFile],
@@ -2161,6 +2232,30 @@ class WorkflowService:
             approved_payload.get("bankTransactions")
             if mode == "BANK"
             else approved_payload.get("arapTransactions")
+        )
+        run_files = (
+            db.query(WorkflowRunFile).filter(WorkflowRunFile.run_id == run.id).all()
+        )
+        # Attach TaskFile.original_filename for ownership matching (not on WorkflowRunFile).
+        task_file_ids = [rf.task_file_id for rf in run_files if rf.task_file_id]
+        task_files_by_id = {
+            tf.id: tf
+            for tf in (
+                db.query(TaskFile).filter(TaskFile.id.in_(task_file_ids)).all()
+                if task_file_ids
+                else []
+            )
+        }
+        for rf in run_files:
+            tf = task_files_by_id.get(rf.task_file_id)
+            if tf is not None and not getattr(rf, "original_filename", None):
+                try:
+                    rf.original_filename = tf.original_filename  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+        assert_review_rows_belong_to_run(
+            review_rows if isinstance(review_rows, list) else None,
+            run_files,
         )
         if isinstance(review_rows, list):
             pending = [

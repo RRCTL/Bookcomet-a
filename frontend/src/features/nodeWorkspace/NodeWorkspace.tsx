@@ -33,6 +33,7 @@ import { safeRandomUUID } from '../../utils/safeRandomUUID'
 import { hasOcrDataOnRun, tablePayloadHasRows } from './tablePayloadMerge'
 import { committedTimelineBatches, composerStagingFiles, workflowQueueFiles } from './runFileBatches'
 import { enrichNodesFromRun, type WorkflowNodeData } from './nodes/workflowNodeTypes'
+import { filterPayloadRowsToRunFiles } from '../erpShell/runReviewRowOwnership'
 import {
   ConfirmDialog,
   ControlsBottomSheet,
@@ -505,8 +506,11 @@ export default function NodeWorkspace() {
         }
         run = mergeServerRun(run)
         if (run.company_id !== companyIdRef.current) return null
+        // Ignore stale responses if the user already selected another run.
+        if (id !== activeRunIdRef.current) return null
         setFullRun(run)
         const loaded = await loadAllBatchTablePayloads(run, scopeId)
+        if (id !== activeRunIdRef.current) return null
         let payloads = hasOcrDataOnRun(run)
           ? mergeBatchTablePayloads(run, loaded, buildBatchTablePayloadsFromRun(run))
           : loaded
@@ -516,6 +520,7 @@ export default function NodeWorkspace() {
         const hasAnyRows = Object.values(payloads).some(p =>
           tablePayloadHasRows(p, run.processing_mode),
         )
+        if (id !== activeRunIdRef.current) return null
         if (hasAnyRows) {
           setBatchTablePayloads(payloads)
         } else {
@@ -651,7 +656,24 @@ export default function NodeWorkspace() {
       if (!companyId) return
       setBusyRunId(run.id)
       try {
-        const updated = await workflowApi.resume(companyId, run.id, payload, skipCoa)
+        const runFiles = (run.files ?? []).map(f => ({
+          task_file_id: f.task_file_id,
+          original_filename: f.original_filename,
+        }))
+        const { payload: scoped, foreignCount } = filterPayloadRowsToRunFiles(
+          payload,
+          runFiles,
+          run.processing_mode ?? '',
+        )
+        if (foreignCount > 0) {
+          reportApiError(
+            new Error(
+              "Some rows came from files that aren't in this run and are hidden. Reload the run to fix this.",
+            ),
+          )
+          return
+        }
+        const updated = await workflowApi.resume(companyId, run.id, scoped, skipCoa)
         setFullRun(updated)
       } catch (err) {
         reportApiError(err)
@@ -1222,6 +1244,8 @@ export default function NodeWorkspace() {
 
   const selectRun = useCallback(
     (id: string) => {
+      // Drop prior run's table immediately so Live output never flashes stale rows.
+      setBatchTablePayloads({})
       runsDispatch({ type: 'set_active', id })
       bumpExpandAllTables()
       if (companyId) void activateRun(id, companyId)
