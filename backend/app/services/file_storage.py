@@ -99,8 +99,13 @@ ALLOWED_UPLOAD_EXTENSIONS = {
     ".xls",
 }
 
+# Acrobat / ISO 32000: %PDF- may appear anywhere in the first 1024 bytes.
+# Some bank/government/scanner systems prepend a short ASCII reference string.
+PDF_MAGIC = b"%PDF-"
+PDF_HEADER_SEARCH_WINDOW = 1024
+
 _MAGIC_PREFIXES: list[tuple[bytes, frozenset[str]]] = [
-    (b"%PDF", frozenset({".pdf"})),
+    # PDF is handled separately via pdf_header_offset (header may be offset).
     (b"\xff\xd8\xff", frozenset({".jpg", ".jpeg"})),
     (b"\x89PNG\r\n\x1a\n", frozenset({".png"})),
     (b"II*\x00", frozenset({".tif", ".tiff"})),
@@ -109,6 +114,26 @@ _MAGIC_PREFIXES: list[tuple[bytes, frozenset[str]]] = [
     (b"PK\x03\x04", frozenset({".xlsx"})),  # OOXML zip
     (b"\xd0\xcf\x11\xe0", frozenset({".xls"})),  # OLE compound
 ]
+
+
+def pdf_header_offset(data: bytes) -> int | None:
+    """Return byte offset of ``%PDF-`` within the first 1024 bytes, else None."""
+    if not data:
+        return None
+    idx = data[:PDF_HEADER_SEARCH_WINDOW].find(PDF_MAGIC)
+    return idx if idx >= 0 else None
+
+
+def normalize_pdf_bytes(data: bytes) -> bytes:
+    """Strip leading junk before ``%PDF-`` so stored/parsed PDFs start at the header.
+
+    PyMuPDF often repairs offset headers, but stripping keeps xref startxref
+    offsets consistent for pickier tools and matches Acrobat's stored form.
+    """
+    offset = pdf_header_offset(data)
+    if offset is None or offset == 0:
+        return data
+    return data[offset:]
 
 
 def safe_upload_temp_suffix(filename: str | None) -> str:
@@ -160,6 +185,15 @@ def assert_file_type(filename: str, data: bytes) -> None:
             return
         raise ValueError("File signature mismatch for .webp")
 
+    # PDF: accept %PDF- anywhere in the first 1024 bytes (Acrobat tolerance).
+    if ext == ".pdf":
+        if pdf_header_offset(data) is not None:
+            return
+        raise ValueError(
+            "Unknown or invalid file format for .pdf: "
+            "no %PDF- header within the first 1024 bytes"
+        )
+
     for magic, allowed_exts in _MAGIC_PREFIXES:
         if data.startswith(magic):
             if ext not in allowed_exts:
@@ -169,6 +203,15 @@ def assert_file_type(filename: str, data: bytes) -> None:
             return
 
     raise ValueError(f"Unknown or invalid file format for {ext}")
+
+
+def prepare_upload_bytes(filename: str, data: bytes) -> bytes:
+    """Validate upload bytes and normalize PDFs that have a leading prefix."""
+    assert_file_type(filename, data)
+    ext = safe_upload_temp_suffix(filename)
+    if ext == ".pdf":
+        return normalize_pdf_bytes(data)
+    return data
 
 
 def _fernet_from_env():
@@ -286,7 +329,7 @@ class LocalDiskStorage:
         norm_ext = (ext or "").lower()
         if not norm_ext.startswith("."):
             norm_ext = f".{norm_ext}" if norm_ext else ""
-        assert_file_type(f"{file_uuid}{norm_ext}", data)
+        data = prepare_upload_bytes(f"{file_uuid}{norm_ext}", data)
         dest = resolve_path_under_root(
             self._root, self._root / company_id / task_id / f"{file_uuid}{norm_ext}"
         )
@@ -301,7 +344,7 @@ class LocalDiskStorage:
         norm_ext = (ext or "").lower()
         if not norm_ext.startswith("."):
             norm_ext = f".{norm_ext}" if norm_ext else ""
-        assert_file_type(f"input{norm_ext}", data)
+        data = prepare_upload_bytes(f"input{norm_ext}", data)
         dest = resolve_path_under_root(
             self._root, self._root / "background_jobs" / job_id / f"input{norm_ext}"
         )

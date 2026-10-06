@@ -22,17 +22,17 @@ from app.models.transaction import BankTransaction, TransactionStatus
 from app.services.bank_opening_row import is_balance_forward_opening_row
 from app.services.bank_statement_parser import BankStatementParser
 from app.services.file_storage import (
-    assert_file_type,
     assert_upload_size,
+    prepare_upload_bytes,
     safe_upload_temp_suffix,
 )
 
 
-def _assert_upload_payload(filename: str | None, content: bytes) -> None:
-    """Size + type gate; map ValueError to HTTPException."""
+def _assert_upload_payload(filename: str | None, content: bytes) -> bytes:
+    """Size + type gate; return normalized bytes. Map ValueError to HTTPException."""
     try:
         assert_upload_size(content)
-        assert_file_type(filename or "upload.bin", content)
+        return prepare_upload_bytes(filename or "upload.bin", content)
     except ValueError as exc:
         detail = str(exc)
         code = 413 if "maximum size" in detail.lower() else 400
@@ -465,7 +465,7 @@ async def get_bank_statement_page_count(
         return {"page_count": 1}
 
     content = await file.read()
-    _assert_upload_payload(file.filename, content)
+    content = _assert_upload_payload(file.filename, content)
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, mode="wb") as tmp:
         tmp.write(content)
         tmp_path = tmp.name
@@ -521,7 +521,7 @@ async def upload_bank_statement(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     content = await file.read()
-    _assert_upload_payload(file.filename, content)
+    content = _assert_upload_payload(file.filename, content)
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, mode="wb") as tmp:
         tmp.write(content)
         tmp_path = tmp.name
@@ -585,7 +585,7 @@ async def start_upload_bank_statement_job(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     content = await file.read()
-    _assert_upload_payload(file.filename, content)
+    content = _assert_upload_payload(file.filename, content)
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, mode="wb") as tmp:
         tmp.write(content)
         tmp_path = tmp.name

@@ -45,7 +45,7 @@ from app.models.workflow import (
 )
 from app.database import get_db
 from app.services.file_storage import (
-    assert_file_type,
+    prepare_upload_bytes,
     resolve_path_under_root,
     safe_upload_temp_suffix,
     storage,
@@ -908,7 +908,7 @@ async def upload_run_file(
     contents = await file.read()
     try:
         ext = safe_upload_temp_suffix(file.filename or "file.pdf")
-        assert_file_type(file.filename or f"upload{ext}", contents)
+        contents = prepare_upload_bytes(file.filename or f"upload{ext}", contents)
         dest_path = storage.save(company_id, run.task_id, file_uuid, contents, ext)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
