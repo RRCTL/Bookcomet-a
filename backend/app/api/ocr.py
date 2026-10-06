@@ -27,7 +27,7 @@ from app.ocr.runtime import (
 from app.database import get_db, SessionLocal
 from app.api.deps import get_current_company_id, get_current_user, get_trace_id
 from app.models.identity import User
-from app.services.file_storage import assert_file_type, assert_upload_size
+from app.services.file_storage import assert_file_type, assert_upload_size, safe_upload_temp_suffix
 from app.core.db_concurrency import long_running_db_work_slot
 from app.models.company_context import CompanyProfile
 from app.models.compliance import OcrCompletionEvent
@@ -5236,12 +5236,12 @@ async def ocr_debug(
     try:
         assert_upload_size(content)
         assert_file_type(file.filename or "image.jpg", content)
+        suffix = safe_upload_temp_suffix(file.filename or "image.jpg")
     except ValueError as exc:
         detail = str(exc)
         code = 413 if "maximum size" in detail.lower() else 400
         raise HTTPException(status_code=code, detail=detail) from exc
 
-    suffix = os.path.splitext(file.filename or "image.jpg")[1]
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, mode="wb") as tmp_file:
         tmp_file.write(content)
         tmp_file.flush()
@@ -5342,18 +5342,21 @@ async def ocr_test_core(
     # Validate file
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
-    
-    # Get file extension
-    suffix = os.path.splitext(file.filename)[1].lower()
+
+    try:
+        suffix = safe_upload_temp_suffix(file.filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     supported_images = [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"]
     supported_pdf = [".pdf"]
-    
+
     is_pdf = suffix in supported_pdf
     is_image = suffix in supported_images
-    
+
     if not is_pdf and not is_image:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"Unsupported file format: {suffix}. Supported: jpg, jpeg, png, bmp, tiff, webp, pdf"
         )
     
@@ -6469,15 +6472,17 @@ async def ocr_ai_enhanced(
     # Validate file
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
-    
-    # Get file extension
-    suffix = os.path.splitext(file.filename)[1].lower()
+
+    try:
+        suffix = safe_upload_temp_suffix(file.filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if suffix not in [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"]:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"Unsupported file format: {suffix}"
         )
-    
+
     # Read file content
     content = await file.read()
     if len(content) == 0:

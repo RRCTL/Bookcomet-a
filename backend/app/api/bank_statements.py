@@ -21,7 +21,11 @@ from app.models.company_context import CompanyProfile
 from app.models.transaction import BankTransaction, TransactionStatus
 from app.services.bank_opening_row import is_balance_forward_opening_row
 from app.services.bank_statement_parser import BankStatementParser
-from app.services.file_storage import assert_file_type, assert_upload_size
+from app.services.file_storage import (
+    assert_file_type,
+    assert_upload_size,
+    safe_upload_temp_suffix,
+)
 
 
 def _assert_upload_payload(filename: str | None, content: bytes) -> None:
@@ -451,15 +455,18 @@ async def get_bank_statement_page_count(
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
 
-    suffix = os.path.splitext(file.filename)[1].lower()
+    try:
+        suffix = safe_upload_temp_suffix(file.filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if suffix != ".pdf":
         content = await file.read()
         _assert_upload_payload(file.filename, content)
         return {"page_count": 1}
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, mode='wb') as tmp:
-        content = await file.read()
-        _assert_upload_payload(file.filename, content)
+    content = await file.read()
+    _assert_upload_payload(file.filename, content)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, mode="wb") as tmp:
         tmp.write(content)
         tmp_path = tmp.name
 
@@ -509,10 +516,13 @@ async def upload_bank_statement(
     
     logger.info("Received bank statement upload: %s", file.filename)
 
-    suffix = os.path.splitext(file.filename)[1].lower()
+    try:
+        suffix = safe_upload_temp_suffix(file.filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    content = await file.read()
+    _assert_upload_payload(file.filename, content)
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, mode="wb") as tmp:
-        content = await file.read()
-        _assert_upload_payload(file.filename, content)
         tmp.write(content)
         tmp_path = tmp.name
 
@@ -570,10 +580,13 @@ async def start_upload_bank_statement_job(
         raise HTTPException(status_code=404, detail="Task not found")
 
     _cleanup_old_jobs()
-    suffix = os.path.splitext(file.filename)[1].lower()
+    try:
+        suffix = safe_upload_temp_suffix(file.filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    content = await file.read()
+    _assert_upload_payload(file.filename, content)
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, mode="wb") as tmp:
-        content = await file.read()
-        _assert_upload_payload(file.filename, content)
         tmp.write(content)
         tmp_path = tmp.name
 

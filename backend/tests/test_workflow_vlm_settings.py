@@ -63,7 +63,11 @@ def test_vlm_ocr_kwargs_bank_ignores_cross():
 
 
 @pytest.mark.asyncio
-async def test_process_one_file_passes_vlm_graph_settings():
+async def test_process_one_file_passes_vlm_graph_settings(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("UPLOADS_DIR", str(tmp_path))
+    upload = tmp_path / "test.pdf"
+    upload.write_bytes(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+
     graph = build_default_graph("AP")
     explicit_model = "custom-vlm-model"
     for node in graph["nodes"]:
@@ -85,7 +89,7 @@ async def test_process_one_file_passes_vlm_graph_settings():
         result_summary_json=None,
     )
     task_file = SimpleNamespace(
-        storage_path=__file__,
+        storage_path=str(upload),
         original_filename="test.pdf",
     )
     db = MagicMock()

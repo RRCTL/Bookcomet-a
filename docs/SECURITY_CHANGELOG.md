@@ -40,6 +40,7 @@ Stable IDs for security work. Prefer these over informal “phase” names in PR
 | SEC-CODE-014 | Code | Contain load/delete/read/PDF paths under uploads or temp (CodeQL path-injection) | This PR |
 | SEC-CODE-015 | Code | Linear email validation instead of a quantified regex (CodeQL ReDoS) | This PR |
 | SEC-CODE-016 | Code | Stop logging API-key suffixes and test-user passwords | This PR |
+| SEC-CODE-017 | Code | Allowlist tempfile upload suffixes; contain debug/pool2/crop paths (CodeQL alert #14) | This PR |
 
 ## Former phase map
 

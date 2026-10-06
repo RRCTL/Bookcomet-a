@@ -111,14 +111,40 @@ _MAGIC_PREFIXES: list[tuple[bytes, frozenset[str]]] = [
 ]
 
 
-def assert_file_type(filename: str, data: bytes) -> None:
-    """Validate extension + magic bytes for uploaded document bytes."""
-    ext = Path(filename or "").suffix.lower()
-    if ext not in ALLOWED_UPLOAD_EXTENSIONS:
+def safe_upload_temp_suffix(filename: str | None) -> str:
+    """Return an allowlisted tempfile suffix from a user-supplied upload name.
+
+    ``tempfile.NamedTemporaryFile(suffix=...)`` is a CodeQL path-injection sink.
+    Attackers can craft names like ``invoice./../../etc/passwd`` so that
+    ``os.path.splitext`` yields a suffix containing ``..`` / separators while
+    ``Path(...).suffix`` looks empty. Only return a constant from the allowlist.
+    """
+    raw = filename or ""
+    # Prefer basename so absolute / nested names cannot contribute separators.
+    base = os.path.basename(raw.replace("\\", "/"))
+    ext = Path(base).suffix.lower()
+    if not ext or ext not in ALLOWED_UPLOAD_EXTENSIONS:
+        # Fall back to splitext only to produce a clearer error for odd names;
+        # never pass that value through to tempfile.
+        split_ext = os.path.splitext(base)[1].lower()
+        shown = ext or split_ext or "(none)"
         raise ValueError(
-            f"File type {ext or '(none)'} not allowed. "
+            f"File type {shown} not allowed. "
             f"Supported: {', '.join(sorted(ALLOWED_UPLOAD_EXTENSIONS))}"
         )
+    # Equality re-bind so CodeQL ConstCompare clears taint on the returned constant.
+    for allowed in ALLOWED_UPLOAD_EXTENSIONS:
+        if ext == allowed:
+            return allowed
+    raise ValueError(
+        f"File type {ext} not allowed. "
+        f"Supported: {', '.join(sorted(ALLOWED_UPLOAD_EXTENSIONS))}"
+    )
+
+
+def assert_file_type(filename: str, data: bytes) -> None:
+    """Validate extension + magic bytes for uploaded document bytes."""
+    ext = safe_upload_temp_suffix(filename)
     if not data:
         raise ValueError("Uploaded file is empty")
 

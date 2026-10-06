@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import uuid
-from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
@@ -44,7 +44,13 @@ from app.models.workflow import (
     WorkflowTemplate,
 )
 from app.database import get_db
-from app.services.file_storage import assert_file_type, storage
+from app.services.file_storage import (
+    assert_file_type,
+    resolve_path_under_root,
+    safe_upload_temp_suffix,
+    storage,
+    uploads_root,
+)
 from app.services.pool2_storage import pool2
 
 router = APIRouter(prefix="/api/workflows", tags=["workflows"])
@@ -625,8 +631,18 @@ def download_node_debug_output(
     )
     if not row or not row.storage_path:
         raise HTTPException(status_code=404, detail="Debug output not found")
-    path = Path(row.storage_path)
-    if not path.is_file():
+    candidates = (
+        os.getenv("TRANSACTIONS_DIR", "./transactions"),
+        uploads_root(),
+    )
+    path = None
+    for root in candidates:
+        try:
+            path = resolve_path_under_root(root, row.storage_path)
+            break
+        except ValueError:
+            continue
+    if path is None or not path.is_file():
         raise HTTPException(status_code=404, detail="Debug output file not found")
     return FileResponse(path, media_type="application/json", filename=f"{row.node_id}-{row.id}.json")
 
@@ -889,9 +905,9 @@ async def upload_run_file(
 ):
     run = _get_run_or_404(run_id, company_id, db)
     file_uuid = str(uuid.uuid4())
-    ext = Path(file.filename or "file").suffix.lower() or ".bin"
     contents = await file.read()
     try:
+        ext = safe_upload_temp_suffix(file.filename or "file.pdf")
         assert_file_type(file.filename or f"upload{ext}", contents)
         dest_path = storage.save(company_id, run.task_id, file_uuid, contents, ext)
     except ValueError as exc:
