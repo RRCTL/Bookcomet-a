@@ -1,11 +1,19 @@
 """
 Bank of East Asia (BEA) Hong Kong — VLM prompts and detection keywords.
 
-Typical layout: Transaction Date | Value Date | Particulars | Withdrawal | Deposit | Balance.
-Withdrawal = money out (JSON withdrawal). Deposit = money in (JSON deposit).
+Typical ACCOUNT ACTIVITIES layout (English / Chinese bilingual headers):
+  Cur | Date | Bk Ref | Transaction Details | Deposit | Withdrawal | Balance
+  貨幣 | 日期 | 銀行備考 | 交易項目 | 存入 | 支出 | 結餘
+
+Quirks: Cur is often filled ONLY on the Balance B/F line (e.g. HKD) and blank on
+transaction rows — never shift Date into Currency when Cur is empty. Dates are
+often DDMMMYY (05AUG20). A 4-digit Bk Ref sits after Date. Wrapped lines merge
+into description. Section footers "Total Transaction Amount / 交易總金額" are not
+transactions.
 """
 
 from ._shared import UNIVERSAL_RULES
+
 
 KEYWORDS: list[str] = [
     "THE BANK OF EAST ASIA",
@@ -18,36 +26,53 @@ KEYWORDS: list[str] = [
 
 PROMPT: str = """You are an expert at reading Bank of East Asia (BEA) Hong Kong account statements.
 
-TASK: Extract every transaction row from the main account activity table on this page.
+TASK: Extract every transaction row from the main ACCOUNT ACTIVITIES table on this page.
 Output ONLY a valid JSON object — no markdown, no code fences, no explanation.
 
 TABLE DETECTION
 Look for a header row with BOTH credit/debit style columns, e.g.:
-  English: Withdrawal / Withdrawals / Debit AND Deposit / Deposits / Credit
-  Chinese: 支出 AND 存入
-  Balance: Balance column (English or Chinese header)
+  English: Deposit / Deposits / Credit AND Withdrawal / Withdrawals / Debit
+  Chinese: 存入 AND 支出
+  Plus Date (日期) and Balance (結餘). A leading Cur / Currency / 貨幣 column is common.
 
 If that header row is ABSENT, output {"bank_id": "BEA", "account_no": null, "transactions": []} and stop.
 Do NOT extract rows from portfolio summary / cover pages (e.g. "PORTFOLIO SUMMARY", "ACCOUNT PORTFOLIO",
 \u8ca1\u52d9\u7d44\u5408\u6458\u8981, \u8cec\u6236\u7d44\u5408) when there is no real account activity table with 存入 + 支出 as above.
 
-COLUMN MAPPING (typical BEA)
-Left to right: transaction date, value date (optional), particulars/description,
-then withdrawal (debit / out), then deposit (credit / in), then balance.
-If deposit column is physically left of withdrawal on a variant layout, still map:
-  printed deposit -> deposit, printed withdrawal -> withdrawal.
+COLUMN MAPPING (typical BEA ACCOUNT ACTIVITIES — map by HEADER, not by assuming column 1 is filled)
+Left to right when present:
+  Cur / Currency / 貨幣 → currency (3-letter code ONLY, e.g. HKD). Often BLANK on txn rows.
+  Date / 日期 → transaction_date
+  Bk Ref / 銀行備考 → keep inside description (do NOT treat as an amount or date)
+  Transaction Details / 交易項目 → description
+  Deposit / 存入 → deposit (money IN)
+  Withdrawal / 支出 → withdrawal (money OUT)
+  Balance / 結餘 → balance
 
-RULES
-- Each row: exactly one of deposit or withdrawal is non-null.
-- Read printed amounts only; never compute from balance.
-- Never copy balance into deposit or withdrawal.
-- Join multi-line descriptions with a space.
-- Repeat transaction_date for all rows in the same date group when only the first row shows a date.
-- Skip legal text, page chrome, INFORMATION / 資料 footer blocks, and period totals that are not line items.
-- Do NOT extract subtotal lines such as "Total Transaction Amount" or \u4ea4\u6613\u7e3d\u91d1\u984d (per-section totals).
-- Prefer account_type labels aligned with the printed section title when visible, e.g. "HKD CURRENT",
-  "HKD STATEMENT SAVINGS", matching English titles like "HKD CURRENT ACCOUNT" or  "STATEMENT SAVINGS ACCOUNT".
-- Balance: use printed balance per row when shown; use null on rows where balance cell is blank.
+CRITICAL — BLANK CUR COLUMN
+• On Balance B/F / 承上結餘 the Cur cell may show HKD (or another code). Carry that currency
+  for following rows in the same account section.
+• On ordinary transaction rows Cur is usually EMPTY. NEVER shift Date into the currency field.
+• currency must be a 3-letter code (HKD/USD/…) or null — NEVER a date, NEVER an amount,
+  NEVER "2020-08-11 4,600.00".
+
+DATES
+• Printed dates are often DDMMMYY with no separators (05AUG20, 11AUG20) → YYYY-MM-DD.
+• Also accept DD/MM/YYYY. Never invent dates from FRN reference digits.
+
+CONTINUATION / WRAP LINES
+• Lines under a txn with no date and no deposit/withdrawal (e.g. "TO FPS ID …", or a lone
+  cheque date like 10AUG20) MERGE into the previous row's description — do not emit new rows.
+
+SECTIONS & FOOTERS
+• A page may have multiple accounts (HKD CURRENT ACCOUNT / STATEMENT SAVINGS ACCOUNT), each
+  with its own Balance B/F and a "Total Transaction Amount / 交易總金額" footer.
+• Include Balance B/F / 承上結餘 as an opening row (deposit=null, withdrawal=null, balance=printed).
+• SKIP Total Transaction Amount / 交易總金額 / 交易筆數 — not transactions.
+
+AMOUNTS
+• Only one of Deposit / Withdrawal is filled per row; Balance is always filled when printed.
+• Read printed amounts only; never compute from balance.
 
 """ + UNIVERSAL_RULES + """
 OUTPUT FORMAT
@@ -76,13 +101,18 @@ OUTPUT FORMAT
 PROMPT_V2: str = """
 You are reading ONE page of a Bank of East Asia (BEA) Hong Kong statement.
 
-Numerical amounts in Withdrawal, Deposit, and Balance columns are handled separately.
+Numerical amounts in Deposit, Withdrawal, and Balance columns are handled separately.
 DO NOT output any numbers from those columns.
+
+Typical headers: Cur | Date | Bk Ref | Transaction Details | Deposit | Withdrawal | Balance.
+Cur is often blank on txn rows — do not invent a currency in date_label.
 
 For each transaction row that has either a withdrawal or a deposit amount on the page, output:
   "y_pct" — row top as percent of page height (0-100), from the description/particulars line.
-  "description" — full particulars text; join wrapped lines with a space; verbatim.
-  "date_label" — DD/MM/YYYY or DD-MM-YYYY as printed, or day+month label (e.g. 7 Nov), or "".
+  "description" — full particulars text; join wrapped lines with a space; include Bk Ref text
+                  when printed next to the date (e.g. "1005 FPS TRANS WDL …"); verbatim.
+  "date_label" — DDMMMYY (05AUG20), DD/MM/YYYY, DD-MM-YYYY, day+month label (e.g. 7 Nov), or "".
+                 NEVER put a currency code here. NEVER put an amount here.
   "account_type" — short product/section label if visible, else "".
 
 Rules:
@@ -91,8 +121,9 @@ Rules:
 3. If this page is only a portfolio/cover summary with no activity table (no 存入+支出 headers), return {"rows": []}.
 4. Skip INFORMATION / 資料 footer legal blocks and any "Total Transaction Amount" / \u4ea4\u6613\u7e3d\u91d1\u984d subtotal lines.
 5. For account_type, use short labels when visible: prefer "HKD CURRENT" or "HKD STATEMENT SAVINGS" to match the section title.
-6. No numeric amounts in JSON.
-7. Top-to-bottom order.
+6. Merge wrapped particulars into the same row's description (do not emit a separate row for a continuation line).
+7. No numeric amounts in JSON.
+8. Top-to-bottom order.
 
 Output valid JSON only:
 {"rows": [{"y_pct": <float>, "description": "<string>", "date_label": "<string>", "account_type": "<string>"}]}
@@ -108,7 +139,8 @@ Output ONLY valid JSON (no markdown): { "bank_id": "BEA", "transactions": [ ... 
 
 --- STEP 1: ACTIVITY TABLE CHECK ---
 Require a real transaction grid: printed headers including BOTH 存入 (or Deposit/Credit) AND 支出
-(or Withdrawal/Debit), plus a balance-style column in context.
+(or Withdrawal/Debit), plus a balance-style column in context. A leading Cur/貨幣 column may be
+blank on most rows — that is normal.
 If this page is cover/portfolio only, INFORMATION / 資料 footer only, or has no such table,
 output { "bank_id": "BEA", "transactions": [] } and stop.
 
@@ -119,7 +151,7 @@ number of objects in "transactions", in the SAME order. Do not add or remove row
 Section titles may include HKD CURRENT, HKD STATEMENT SAVINGS, etc. — use them only for alignment context.
 
 --- B/F ROWS (balance only) ---
-Opening rows (B/F BALANCE, 承前, etc.) have blank deposit and withdrawal on the statement.
+Opening rows (B/F BALANCE, 承上結餘, 承前, etc.) have blank deposit and withdrawal on the statement.
 Keep deposit and withdrawal null in your output. Set balance to the printed opening balance for that row only.
 
 --- READING BALANCE ---
@@ -128,6 +160,7 @@ For EACH object:
 - withdrawal — ALWAYS null.
 - balance — read from the Balance column for that row; null if the cell is blank.
 - Do not compute balances by arithmetic.
+- Do not put dates or amounts into any currency field.
 
 The downstream merge only fills missing bookkeeper balances from your output; amounts stay with the bookkeeper.
 """.strip()

@@ -8,6 +8,12 @@ import { BANK_ACCOUNT_TYPES_VALID, coalesceBankAccountTypeRows, normalizeBankAcc
 import { formatBankSourceFile, bankSourceFileStem } from '../utils/bankSourceFile'
 import { coaNameMapFromOptionLabels } from '../utils/coaDisplay'
 import { formatCurrencyAmount, parseFxNumber, receiptAmountFromBankRow } from '../utils/fxCurrency'
+import {
+  BANK_ROW_CHECK_MESSAGE,
+  bankRowNeedsPlacementCheck,
+  countRowsNeedingPlacementCheck,
+  placementCheckBannerText,
+} from '../utils/bankRowFieldCheck'
 
 const EMPTY_LOCK_KEYS: ReadonlySet<string> = new Set()
 
@@ -445,6 +451,10 @@ export function BankStatementReview({
   const totalDeposit = rows.reduce((s, r) => s + (r.deposit ?? 0), 0)
   const totalWithdrawal = rows.reduce((s, r) => s + (r.withdrawal ?? 0), 0)
 
+  const placementFlagCount = useMemo(() => countRowsNeedingPlacementCheck(rows), [rows])
+  const hasPlacementFlags = placementFlagCount > 0
+  const approveEnabled = Boolean(canApprove) && !approveBusy && !hasPlacementFlags
+
   const { isMobile } = useViewport()
   const S = useMemo(() => resolveBankStyles(isMobile), [isMobile])
 
@@ -477,10 +487,14 @@ export function BankStatementReview({
         <button style={S.btnPrimary} onClick={exportCSV}>Export CSV</button>
         {onApprove && (
           <button
-            style={{ ...S.btnPrimary, opacity: !canApprove || approveBusy ? 0.5 : 1 }}
+            style={{ ...S.btnPrimary, opacity: !approveEnabled ? 0.5 : 1 }}
             onClick={onApprove}
-            disabled={!canApprove || approveBusy}
-            title="Approve the table and transfer it to the destination module"
+            disabled={!approveEnabled}
+            title={
+              hasPlacementFlags
+                ? placementCheckBannerText(placementFlagCount)
+                : 'Approve the table and transfer it to the destination module'
+            }
           >
             {approveBusy ? 'Approving...' : 'Approve'}
           </button>
@@ -493,6 +507,24 @@ export function BankStatementReview({
         <div style={{ flex: 1 }} />
         <div style={S.rowCount}>{rows.length} transaction{rows.length === 1 ? '' : 's'}</div>
       </div>
+
+      {hasPlacementFlags && (
+        <div
+          role="status"
+          style={{
+            margin: '0 12px 8px',
+            padding: '8px 12px',
+            borderRadius: 6,
+            background: '#fffbeb',
+            border: '1px solid #f59e0b',
+            color: '#92400e',
+            fontSize: 13,
+            fontWeight: 600,
+          }}
+        >
+          {placementCheckBannerText(placementFlagCount)}
+        </div>
+      )}
 
       {/* ── Table ── */}
       <div style={S.tableContainer}>
@@ -531,11 +563,28 @@ export function BankStatementReview({
                 (row as Record<string, unknown>).needs_manual_review === true
                 || (row as Record<string, unknown>).needs_review === true
                 || extractionFlags.length > 0
+              const placementFlag = bankRowNeedsPlacementCheck(row)
               const exclusionReasons: string[] = Array.isArray((row as Record<string, unknown>).exclusion_reasons)
                 ? (row as Record<string, unknown>).exclusion_reasons as string[]
                 : []
-              const reviewBankTitle = [...exclusionReasons, ...extractionFlags].filter(Boolean).join(' | ')
-              const rowBg = isSelected ? '#e8f0fe' : needsReview ? '#fff5f5' : dup ? '#fafafa' : glPosted ? '#fffbeb' : locked ? '#f0fdf4' : undefined
+              const reviewBankTitle = [
+                ...(placementFlag ? [BANK_ROW_CHECK_MESSAGE] : []),
+                ...exclusionReasons,
+                ...extractionFlags,
+              ].filter(Boolean).join(' | ')
+              const rowBg = isSelected
+                ? '#e8f0fe'
+                : placementFlag
+                  ? '#fffbeb'
+                  : needsReview
+                    ? '#fff5f5'
+                    : dup
+                      ? '#fafafa'
+                      : glPosted
+                        ? '#fffbeb'
+                        : locked
+                          ? '#f0fdf4'
+                          : undefined
               const dupRowStyle = dup ? { opacity: 0.35, textDecoration: 'line-through' as const, pointerEvents: 'none' as const } : {}
               const prev = i > 0 ? rows[i - 1] : null
               const showFileSeparator = i === 0 || rowSourceStem(row) !== rowSourceStem(prev!)
@@ -565,12 +614,31 @@ export function BankStatementReview({
                     </tr>
                   )}
                 <tr
-                  style={{ ...S.tbodyRow, background: rowBg, ...dupRowStyle, ...(needsReview ? { borderLeft: '3px solid #ef4444' } : {}) }}
+                  style={{
+                    ...S.tbodyRow,
+                    background: rowBg,
+                    ...dupRowStyle,
+                    ...(placementFlag
+                      ? { borderLeft: '3px solid #f59e0b' }
+                      : needsReview
+                        ? { borderLeft: '3px solid #ef4444' }
+                        : {}),
+                  }}
                   onClick={e => !dup && toggleSelect(row._id, e.ctrlKey || e.metaKey)}
+                  data-placement-flag={placementFlag ? 'true' : undefined}
                 >
-                  {/* # — shows GL posted / lock / dup / review */}
-                  <td style={{ ...S.rowNum, ...(glPosted ? { background: '#fde68a' } : {}), ...(locked && !glPosted ? { background: '#dcfce7' } : {}), ...(dup ? { background: '#fef2f2' } : {}), ...(needsReview ? { background: '#fff5f5' } : {}) }}>
-                    {needsReview && !dup
+                  {/* # — shows GL posted / lock / dup / review / placement check */}
+                  <td style={{
+                    ...S.rowNum,
+                    ...(glPosted ? { background: '#fde68a' } : {}),
+                    ...(locked && !glPosted ? { background: '#dcfce7' } : {}),
+                    ...(dup ? { background: '#fef2f2' } : {}),
+                    ...(placementFlag ? { background: '#fef3c7' } : {}),
+                    ...(needsReview && !placementFlag ? { background: '#fff5f5' } : {}),
+                  }}>
+                    {placementFlag && !dup
+                      ? <span title={reviewBankTitle || BANK_ROW_CHECK_MESSAGE} style={{ fontSize: 9, display: 'block', textAlign: 'center', lineHeight: 1, color: '#b45309', fontWeight: 700 }}>CHECK</span>
+                      : needsReview && !dup
                       ? <span title={reviewBankTitle || 'Needs manual review'} style={{ fontSize: 9, display: 'block', textAlign: 'center', lineHeight: 1, color: '#ef4444', fontWeight: 700 }}>REVIEW</span>
                       : dup
                       ? <span title={`Duplicate (L${dupLevel})`} style={{ fontSize: 10, display: 'block', textAlign: 'center', lineHeight: 1, color: '#dc2626', fontWeight: 700 }}>DUP</span>
@@ -870,6 +938,19 @@ export function BankStatementReview({
                       onChange={e => updateField(row._id, 'particulars', e.target.value)}
                       onClick={e => e.stopPropagation()}
                     />
+                    {placementFlag && (
+                      <div
+                        style={{
+                          marginTop: 4,
+                          fontSize: 11,
+                          fontWeight: 600,
+                          color: '#b45309',
+                          lineHeight: 1.3,
+                        }}
+                      >
+                        {BANK_ROW_CHECK_MESSAGE}
+                      </div>
+                    )}
                   </td>
                 </tr>
                 </React.Fragment>

@@ -15,6 +15,11 @@ from typing import Any, Callable, Dict, List
 import pandas as pd
 
 from app.services.extraction_validation import finalize_bank_transactions
+from app.services.statement_activity_map import (
+    is_valid_currency_code,
+    parse_statement_date,
+    repair_shifted_bank_fields,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -8251,27 +8256,20 @@ class BankStatementParser:
                     received = ""
 
         date_raw = pick(["date", "transaction_date", "交易日期", "日期", "入賬日期", "入账日期"])
-        # Normalise YYYY/MM/DD → YYYY-MM-DD
-        date_value = str(date_raw).replace("/", "-") if date_raw else date_raw
-        # Normalise DDMONYY (OCBC/HK format) → YYYY-MM-DD: 29MAY25 → 2025-05-29
-        if date_value:
-            _mon_map = {
-                'JAN': '01', 'FEB': '02', 'MAR': '03', 'APR': '04',
-                'MAY': '05', 'JUN': '06', 'JUL': '07', 'AUG': '08',
-                'SEP': '09', 'OCT': '10', 'NOV': '11', 'DEC': '12',
-            }
-            _dm = re.match(r'^(\d{1,2})([A-Za-z]{3})(\d{2})$', str(date_value).strip())
-            if _dm:
-                _dd, _mon, _yy = _dm.groups()
-                _mm = _mon_map.get(_mon.upper())
-                if _mm:
-                    date_value = f'20{_yy}-{_mm}-{int(_dd):02d}'
+        # Normalise via shared parser (ISO, slash, DDMMMYY / DDMMMYYYY).
+        date_value = parse_statement_date(date_raw) if date_raw else ""
+        if date_raw and not date_value:
+            # Fall back to slash→dash for already-near-ISO strings the shared
+            # parser rejected (keeps legacy behaviour for odd inputs).
+            date_value = str(date_raw).replace("/", "-")
         # description already resolved above for amount disambiguation
-        reference = pick(["reference", "ref", "憑證號", "凭证号", "參考", "参考", "交易參考", "交易参考"])
+        reference = pick(["reference", "ref", "憑證號", "凭证号", "參考", "参考", "交易參考", "交易参考", "bk_ref"])
         payment_ref = pick(["payment_ref", "付款參考", "付款参考", "Payment Ref", "payment reference"])
         source = pick(["source", "bank", "銀行", "银行", "Bank Transaction Source"])
         status = pick(["status", "狀態", "状态"])
-        currency = pick(["currency", "幣別", "币别"]) or "HKD"
+        currency_raw = pick(["currency", "幣別", "币别"])
+        # Do not treat dates / amounts jammed into Cur as currency codes.
+        currency = currency_raw if is_valid_currency_code(currency_raw) else ""
         payer = pick(["payer", "付款人"])
         payee = pick(["payee", "收款人"])
         account_type = pick(
@@ -8281,7 +8279,7 @@ class BankStatementParser:
         original_balance = pick(["原幣結餘", "原币结余", "balance", "結餘", "结余"])
         confidence = pick(["confidence", "confidence_score", "信心度", "置信度"])
 
-        return {
+        out = {
             "date": date_value,
             "description": description,
             "reference": reference,
@@ -8290,6 +8288,7 @@ class BankStatementParser:
             "received": received,
             "source": source,
             "status": status,
+            "currency": currency,
             "幣別": currency,
             "存入": received or "",
             "提取": spent or "",
@@ -8307,6 +8306,16 @@ class BankStatementParser:
             "category": account_category,
             "信心度": confidence
         }
+        # Recover when VLM/OCR put the date (or date+amount) into currency because
+        # a blank leading Cur column shifted fields left.
+        if currency_raw and not currency:
+            out["currency"] = currency_raw
+            out["幣別"] = currency_raw
+        repair_shifted_bank_fields(out)
+        if not str(out.get("currency") or "").strip():
+            out["currency"] = "HKD"
+            out["幣別"] = "HKD"
+        return out
     
     REQUIRED_CSV_HEADERS = {'Date', 'Description', 'Amount'}
 
@@ -8388,7 +8397,9 @@ class BankStatementParser:
     # Helper methods
     
     def _is_date_field(self, text: str) -> bool:
-        """Check if text contains a date pattern"""
+        """Check if text contains a date pattern (incl. DDMMMYY)."""
+        if parse_statement_date(text):
+            return True
         date_patterns = [
             r'\d{4}/\d{1,2}/\d{1,2}',  # YYYY/MM/DD or YYYY/M/D
             r'\d{1,2}/\d{1,2}/\d{4}',  # DD/MM/YYYY or D/M/YYYY

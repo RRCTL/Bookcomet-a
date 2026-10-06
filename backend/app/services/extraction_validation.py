@@ -244,6 +244,12 @@ def validate_bank_transaction(txn: Mapping[str, Any]) -> ValidationResult:
     if not tx_date:
         flags.append("bank_transaction_date_missing")
 
+    from app.services.statement_activity_map import bank_row_placement_issues
+
+    for issue in bank_row_placement_issues(txn):
+        if issue not in flags:
+            flags.append(issue)
+
     return ValidationResult(needs_review=bool(flags), validation_flags=tuple(flags))
 
 
