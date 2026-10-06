@@ -24,7 +24,25 @@ def _run_file(task_file_id: str, filename: str) -> SimpleNamespace:
 def test_strict_resolve_rejects_foreign_filename_even_on_single_file_run():
     run_files = [_run_file("tf-a", "A.pdf")]
     assert resolve_row_task_file_id_strict({"source_file": "A.pdf P1"}, run_files) == "tf-a"
+    assert resolve_row_task_file_id_strict({"source_file": "A.pdf P12-R3"}, run_files) == "tf-a"
     assert resolve_row_task_file_id_strict({"source_file": "Jan.pdf P1"}, run_files) is None
+
+
+def test_strict_resolve_handles_long_tab_runs_in_source_file():
+    """Regression for CodeQL py/polynomial-redos: no regex on uncontrolled source_file."""
+    run_files = [_run_file("tf-a", "A.pdf")]
+    evil_owned = "A.pdf" + ("\t" * 20000) + "P1"
+    assert resolve_row_task_file_id_strict({"source_file": evil_owned}, run_files) == "tf-a"
+    evil_foreign = "Jan.pdf" + ("\t" * 20000) + "P1"
+    assert resolve_row_task_file_id_strict({"source_file": evil_foreign}, run_files) is None
+    # Whitespace-only padding without a page marker still matches basename.
+    assert (
+        resolve_row_task_file_id_strict(
+            {"source_file": "A.pdf" + ("\t" * 5000)},
+            run_files,
+        )
+        == "tf-a"
+    )
 
 
 def test_assert_review_rows_belong_to_run_rejects_cross_run_rows():

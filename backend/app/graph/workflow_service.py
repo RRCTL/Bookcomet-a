@@ -525,6 +525,44 @@ def resolve_row_task_file_id(row: dict[str, Any], run_files: list[WorkflowRunFil
     return None
 
 
+def _strip_source_page_suffix(value: str) -> str:
+    """Strip trailing page markers like ' P12' / ' P12-R3' in linear time.
+
+    Avoids regex on uncontrolled source_file strings (CodeQL py/polynomial-redos).
+    Input length is bounded; only the basename is considered.
+    """
+    from pathlib import PurePath
+
+    # Bound uncontrolled input before any scanning.
+    raw = (value or "")[:4096]
+    base = PurePath(raw.replace("\\", "/")).name
+    s = base.strip()
+    if not s:
+        return ""
+
+    # Match suffix: whitespace + 'p' + digits + optional ('-r' + digits), casefolded.
+    i = len(s) - 1
+    if i < 0 or not s[i].isdigit():
+        return s
+    while i >= 0 and s[i].isdigit():
+        i -= 1
+    # Optional -R\d+ (already casefolded to -r\d+)
+    if i >= 1 and s[i] == "r" and s[i - 1] == "-":
+        i -= 2
+        if i < 0 or not s[i].isdigit():
+            return s
+        while i >= 0 and s[i].isdigit():
+            i -= 1
+    if i < 0 or s[i] != "p":
+        return s
+    i -= 1
+    if i < 0 or not s[i].isspace():
+        return s
+    while i >= 0 and s[i].isspace():
+        i -= 1
+    return s[: i + 1].rstrip()
+
+
 def resolve_row_task_file_id_strict(
     row: dict[str, Any], run_files: list[WorkflowRunFile]
 ) -> str | None:
@@ -533,8 +571,6 @@ def resolve_row_task_file_id_strict(
     Used on Approve so rows from another run's PDF cannot be accepted just
     because the current run happens to have exactly one file.
     """
-    import re
-
     explicit = str(row.get("task_file_id") or row.get("source_file_id") or "").strip()
     if explicit:
         for rf in run_files:
@@ -542,26 +578,32 @@ def resolve_row_task_file_id_strict(
                 return rf.task_file_id
         return None
 
-    file_key = _ar_ap_file_key(row).lower()
+    file_key = _ar_ap_file_key(row).casefold()[:4096]
     if not file_key:
         # Unmarked rows are only allowed when the run has a single file.
         if len(run_files) == 1:
             return run_files[0].task_file_id
         return None
 
-    # Strip trailing " P12" / " P12-R3" page suffixes for stem compare.
-    key_stem = re.sub(r"\s+p\d+(?:-r\d+)?\b", "", file_key).strip()
+    key_stem = _strip_source_page_suffix(file_key)
 
     for rf in run_files:
         name, stem = _filename_stems(rf)
+        name = (name or "").casefold()
+        stem = (stem or "").casefold()
         if not name and not stem:
             continue
-        if file_key == rf.task_file_id.lower():
+        tfid = (rf.task_file_id or "").casefold()
+        if file_key == tfid:
             return rf.task_file_id
         # Strict: exact filename, exact stem, or key starts with "name " / "stem ".
         if key_stem == name or key_stem == stem:
             return rf.task_file_id
-        if name and (file_key == name or file_key.startswith(name + " ") or file_key.startswith(name + "p")):
+        if name and (
+            file_key == name
+            or file_key.startswith(name + " ")
+            or file_key.startswith(name + "p")
+        ):
             return rf.task_file_id
         if stem and (file_key.startswith(stem + ".") or file_key.startswith(stem + " ")):
             return rf.task_file_id
