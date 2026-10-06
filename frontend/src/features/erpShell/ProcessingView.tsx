@@ -98,6 +98,18 @@ import {
 import { FilePreviewModal } from '../../components/filePreview/FilePreviewModal'
 import { useTaskFilePreview } from '../../components/filePreview/useTaskFilePreview'
 import { processingModeLabel } from '../../components/ModeSelector'
+import {
+  RUN_ROW_FOREIGN_HIDDEN_NOTICE,
+  RUN_ROW_MISMATCH_MESSAGE,
+  filterPayloadRowsToRunFiles,
+  partitionRowsByRunOwnership,
+} from './runReviewRowOwnership'
+import {
+  clearReviewTableOnRunSwitch,
+  editedRowsSafeForApprove,
+  resolveDisplayRowsForRun,
+  reviewTableShowingLoader,
+} from './reviewTableSession'
 
 // Modes offered when creating a run (matches enabled Phase 1 grid modules).
 const PROC_MODES = ['AP', 'AR', 'BANK', 'OTHER'] as const
@@ -368,6 +380,10 @@ export function ProcessingView() {
   const [resizingRail, setResizingRail] = useState(false)
   const [resizingRight, setResizingRight] = useState(false)
   const [payloads, setPayloads] = useState<Record<string, Record<string, unknown>>>({})
+  /** Run id that `payloads` / `editedRows` currently belong to (prevents cross-run bleed). */
+  const [tableBoundRunId, setTableBoundRunId] = useState<string | null>(null)
+  /** True after a run switch until that run's table payloads finish loading. */
+  const [tableLoading, setTableLoading] = useState(false)
   const [assetRecords, setAssetRecords] = useState<OtherRow[]>([])
   const [editedRows, setEditedRows] = useState<ARAPTransaction[] | BankTransaction[] | null>(null)
   const [reportingCurrency, setReportingCurrency] = useState('')
@@ -511,10 +527,17 @@ export function ProcessingView() {
           resolveBatchPayloads(run, loaded),
         )
         if (runId !== activeRunIdRef.current) return run
+        // Replace table for this run only; drop any overlay from a prior run.
         setPayloads(p)
+        setTableBoundRunId(runId)
+        setEditedRows(null)
+        setTableLoading(false)
       } catch {
         if (runId !== activeRunIdRef.current) return run
         setPayloads({})
+        setTableBoundRunId(runId)
+        setEditedRows(null)
+        setTableLoading(false)
       }
       void refreshAssetRecords(run)
       return run
@@ -525,21 +548,38 @@ export function ProcessingView() {
   useEffect(() => {
     if (!activeRunId) {
       setActiveRun(null)
-      setPayloads({})
+      const cleared = clearReviewTableOnRunSwitch(null)
+      setPayloads(cleared.payloads)
+      setTableBoundRunId(cleared.boundRunId)
+      setEditedRows(cleared.editedRows as null)
+      setTableLoading(cleared.loading)
       setAssetRecords([])
       return
     }
+    // Synchronously drop previous run's table so FX / display cannot re-seed sticky rows.
+    const cleared = clearReviewTableOnRunSwitch(activeRunId)
+    setPayloads(cleared.payloads)
+    setTableBoundRunId(cleared.boundRunId)
+    setEditedRows(cleared.editedRows as null)
+    setTableLoading(cleared.loading)
+    setAssetRecords([])
     let cancelled = false
     loadActiveRun(activeRunId).catch(err => {
       if (cancelled) return
       setActiveRun(null)
       setPayloads({})
+      setTableBoundRunId(null)
+      setEditedRows(null)
+      setTableLoading(false)
       setError(err instanceof Error ? err.message : 'Could not load run.')
     })
     return () => {
       cancelled = true
     }
-  }, [activeRunId, loadActiveRun])
+    // Intentionally only re-run on activeRunId: loadActiveRun identity changes must not
+    // re-clear a freshly loaded table.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRunId])
 
   const applyRunFromServer = useCallback(
     (run: WorkflowRun, refreshPayloads = false) => {
@@ -567,6 +607,8 @@ export function ProcessingView() {
           .then(loaded => {
             if (runId !== activeRunIdRef.current) return
             setPayloads(resolveBatchPayloads(run, loaded))
+            setTableBoundRunId(runId)
+            setTableLoading(false)
           })
           .catch(() => {})
         void refreshAssetRecords(run)
@@ -939,14 +981,64 @@ export function ProcessingView() {
   )
   const isAsset = (activeRun?.processing_mode ?? '').toUpperCase() === 'OTHER'
   const isBank = (activeRun?.processing_mode ?? '').toUpperCase() === 'BANK'
+  const tableAwaitingLoad = reviewTableShowingLoader(activeRunId, {
+    boundRunId: tableBoundRunId,
+    loading: tableLoading,
+  })
   const arapRows = (combined.arapTransactions as ARAPTransaction[] | undefined) ?? []
   const bankRows = (combined.bankTransactions as BankTransaction[] | undefined) ?? []
-  const displayArapRows = (editedRows as ARAPTransaction[] | null) ?? arapRows
-  const displayBankRows = (editedRows as BankTransaction[] | null) ?? bankRows
-  const outputRowCount = isAsset ? assetRecords.length : Math.max(displayArapRows.length, displayBankRows.length)
+  // Never surface an edited overlay / prior-run rows while loading or unbound.
+  const displayArapRows = resolveDisplayRowsForRun(
+    activeRunId,
+    tableBoundRunId,
+    arapRows,
+    editedRows as ARAPTransaction[] | null,
+    tableAwaitingLoad,
+  )
+  const displayBankRows = resolveDisplayRowsForRun(
+    activeRunId,
+    tableBoundRunId,
+    bankRows,
+    editedRows as BankTransaction[] | null,
+    tableAwaitingLoad,
+  )
+  const runFilesForOwnership = useMemo(
+    () =>
+      (activeRun?.files ?? []).map(f => ({
+        task_file_id: f.task_file_id,
+        original_filename: f.original_filename,
+      })),
+    [activeRun?.files],
+  )
+  const reviewOwnership = useMemo(() => {
+    if (!activeRun || isAsset || tableAwaitingLoad) {
+      return { ok: true, foreignCount: 0, ownedRows: [], foreignRows: [] }
+    }
+    const rows = (isBank ? displayBankRows : displayArapRows) as Record<string, unknown>[]
+    if (rows.length === 0) return { ok: true, foreignCount: 0, ownedRows: [], foreignRows: [] }
+    return partitionRowsByRunOwnership(rows, runFilesForOwnership)
+  }, [
+    activeRun,
+    isAsset,
+    isBank,
+    displayBankRows,
+    displayArapRows,
+    runFilesForOwnership,
+    tableAwaitingLoad,
+  ])
+  // Grid + Export CSV only ever see owned rows (foreign filtered out).
+  const safeDisplayArapRows = (
+    reviewOwnership.ok ? displayArapRows : reviewOwnership.ownedRows
+  ) as ARAPTransaction[]
+  const safeDisplayBankRows = (
+    reviewOwnership.ok ? displayBankRows : reviewOwnership.ownedRows
+  ) as BankTransaction[]
+  const outputRowCount = isAsset
+    ? assetRecords.length
+    : Math.max(safeDisplayArapRows.length, safeDisplayBankRows.length)
+  const showForeignHiddenNotice = !tableAwaitingLoad && reviewOwnership.foreignCount > 0
 
   useEffect(() => {
-    setEditedRows(null)
     setRateDialog(null)
     setRateQueue([])
   }, [activeRunId])
@@ -970,7 +1062,18 @@ export function ProcessingView() {
 
   const effectiveCompanyCurrency = reportingCurrency || tableCompanyCurrency
 
-  const fxSourceRows = isBank ? displayBankRows : displayArapRows
+  // Hydrate from canonical run rows only — never from sticky editedRows of another run.
+  const fxCanonicalRows = isBank ? bankRows : arapRows
+  const fxSourceRows =
+    !tableAwaitingLoad &&
+    tableBoundRunId === activeRunId &&
+    editedRowsSafeForApprove(activeRunId, tableBoundRunId, editedRows, tableAwaitingLoad)
+      ? isBank
+        ? safeDisplayBankRows
+        : safeDisplayArapRows
+      : tableAwaitingLoad
+        ? []
+        : fxCanonicalRows
   const fxReady = useMemo(
     () =>
       fxSourceRows.length === 0 ||
@@ -986,16 +1089,17 @@ export function ProcessingView() {
   )
 
   useEffect(() => {
-    if (!effectiveCompanyCurrency || fxSourceRows.length === 0) return
+    if (!activeRunId || tableBoundRunId !== activeRunId || tableAwaitingLoad) return
+    if (!effectiveCompanyCurrency || fxCanonicalRows.length === 0) return
     const hydrated = hydrateRowsForCompany(
-      fxSourceRows.map(row =>
+      fxCanonicalRows.map(row =>
         isBank ? { ...row, amount: receiptAmountFromBankRow(row as Record<string, unknown>) } : row,
       ),
       effectiveCompanyCurrency,
       fxRates,
     )
     const changed = hydrated.some((row, i) => {
-      const prev = fxSourceRows[i] as Record<string, unknown>
+      const prev = fxCanonicalRows[i] as Record<string, unknown>
       return (
         row.company_amount !== prev.company_amount ||
         row.company_currency !== prev.company_currency ||
@@ -1003,7 +1107,16 @@ export function ProcessingView() {
       )
     })
     if (changed) setEditedRows(hydrated as ARAPTransaction[] | BankTransaction[])
-  }, [effectiveCompanyCurrency, fxRates, arapRows, bankRows, isBank])
+  }, [
+    effectiveCompanyCurrency,
+    fxRates,
+    arapRows,
+    bankRows,
+    isBank,
+    activeRunId,
+    tableBoundRunId,
+    tableAwaitingLoad,
+  ])
 
   const modeTemplates = useMemo(
     () => sortPaletteTemplates(templates.filter(t => t.processing_mode === activeRun?.processing_mode)),
@@ -1032,29 +1145,70 @@ export function ProcessingView() {
 
   const approve = useCallback(async () => {
     if (!activeRun) return
+    if (tableAwaitingLoad) return
+    if (!editedRowsSafeForApprove(activeRunId, tableBoundRunId, editedRows, tableAwaitingLoad)) {
+      setError(RUN_ROW_MISMATCH_MESSAGE)
+      return
+    }
     setApproving(true)
     setBusy(true)
     setError(null)
     try {
       const payload: Record<string, unknown> = { ...combined }
       if (isBank) {
-        const raw = ((editedRows as BankTransaction[] | null) ?? bankRows).map(t => ({ ...t }))
+        const raw = (safeDisplayBankRows as BankTransaction[]).map(t => ({ ...t }))
         payload.bankTransactions = coalesceBankAccountTypeRows(raw) as BankTransaction[]
       } else {
-        payload.arapTransactions = (editedRows as ARAPTransaction[] | null) ?? arapRows
+        payload.arapTransactions = safeDisplayArapRows as ARAPTransaction[]
       }
-      const updated = await workflowApi.resume(companyId, activeRun.id, payload, false)
+      // Defense in depth: scrub any foreign-source rows before they leave the client.
+      const { payload: scoped, foreignCount } = filterPayloadRowsToRunFiles(
+        payload,
+        runFilesForOwnership,
+        activeRun.processing_mode ?? '',
+      )
+      if (foreignCount > 0) {
+        setError(RUN_ROW_FOREIGN_HIDDEN_NOTICE)
+        setApproving(false)
+        setBusy(false)
+        return
+      }
+      if (
+        (isBank && !Array.isArray(scoped.bankTransactions)) ||
+        (!isBank && !isAsset && !Array.isArray(scoped.arapTransactions))
+      ) {
+        setError(RUN_ROW_MISMATCH_MESSAGE)
+        setApproving(false)
+        setBusy(false)
+        return
+      }
+      const updated = await workflowApi.resume(companyId, activeRun.id, scoped, false)
       setActiveRun(updated)
-      setPayloads(mapCombinedPayloadToBatches(updated, payload))
+      setPayloads(mapCombinedPayloadToBatches(updated, scoped))
+      setTableBoundRunId(updated.id)
       setEditedRows(null)
       void reloadRuns()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not approve and resume.')
+      setError(err instanceof Error ? err.message : 'Could not approve.')
     } finally {
-      setBusy(false)
       setApproving(false)
+      setBusy(false)
     }
-  }, [activeRun, combined, isBank, editedRows, bankRows, arapRows, companyId, reloadRuns])
+  }, [
+    activeRun,
+    activeRunId,
+    tableBoundRunId,
+    tableAwaitingLoad,
+    combined,
+    isBank,
+    isAsset,
+    editedRows,
+    safeDisplayBankRows,
+    safeDisplayArapRows,
+    runFilesForOwnership,
+    companyId,
+    reloadRuns,
+  ])
 
   const selectedNode = activeRun?.graph_json.nodes.find(n => n.id === selectedNodeId) ?? null
   const receiptStyleNode = activeRun?.graph_json.nodes.find(n => n.type === 'ReceiptStyle') ?? null
@@ -1093,8 +1247,8 @@ export function ProcessingView() {
     'Approved and loaded into modules — Re-VLM is disabled to avoid conflicting updates.'
   const fxTableRows = (): Record<string, unknown>[] => {
     if (isAsset) return assetRecords as Record<string, unknown>[]
-    if (isBank) return ((editedRows as BankTransaction[] | null) ?? bankRows) as Record<string, unknown>[]
-    return ((editedRows as ARAPTransaction[] | null) ?? arapRows) as Record<string, unknown>[]
+    if (isBank) return safeDisplayBankRows as Record<string, unknown>[]
+    return safeDisplayArapRows as Record<string, unknown>[]
   }
 
   const openQueuedDialog = (queue: string[], company: string, rows: Record<string, unknown>[]) => {
@@ -1179,8 +1333,8 @@ export function ProcessingView() {
       return applySavedRateToRow(working, effectiveCompanyCurrency, rate, { keepPrinted: false }) as T
     }
     if (isAsset) setAssetRecords(assetRecords.map(row => applyRow(row as Record<string, unknown>) as OtherRow))
-    else if (isBank) setEditedRows(((editedRows as BankTransaction[] | null) ?? bankRows).map(applyRow))
-    else setEditedRows(((editedRows as ARAPTransaction[] | null) ?? arapRows).map(applyRow))
+    else if (isBank) setEditedRows(safeDisplayBankRows.map(applyRow))
+    else setEditedRows(safeDisplayArapRows.map(applyRow))
     const rest = rateQueue.filter(code => code !== rateDialog.from)
     openQueuedDialog(rest, effectiveCompanyCurrency, fxTableRows().map(row => applyRow(row)))
   }
@@ -1203,7 +1357,10 @@ export function ProcessingView() {
     !outputReadOnly &&
     !isRunning &&
     !anyNodeRunning &&
+    !tableAwaitingLoad &&
     fxReady &&
+    reviewOwnership.ok &&
+    editedRowsSafeForApprove(activeRunId, tableBoundRunId, editedRows, tableAwaitingLoad) &&
     (awaitingReview || (outputRowCount > 0 && hasOcrDataOnRun(activeRun)))
   const completedFileCount = (activeRun?.files ?? []).filter(f =>
     ['ok', 'warning'].includes(f.file_status ?? ''),
@@ -1571,90 +1728,103 @@ export function ProcessingView() {
           </div>
           {activeRun ? (
             <div className="erp-proc-output-scroll">
-              {outputRowCount === 0 ? (
-                <div className={extracting ? 'erp-empty erp-empty--compact' : 'erp-empty'}>
-                  {extracting ? 'Processing…' : 'No extracted rows yet.'}
-                </div>
-              ) : isAsset ? (
-                <>
-                  <CompanyFxToolbar
-                    tableCurrency={effectiveCompanyCurrency}
-                    onTableCurrencyChange={code => void onCompanyCurrencyChange(code)}
-                    hideReceiptCurrency={hideReceiptCurrency}
-                    onToggleReceiptCurrency={() => setHideReceiptCurrency(v => !v)}
-                    fxBlocked={!fxReady}
-                  />
-                  <OtherTable records={assetRecords} readOnly={outputReadOnly} hideReceiptCurrency={hideReceiptCurrency} />
-                </>
-              ) : isBank ? (
-                <>
-                  <CompanyFxToolbar
-                    tableCurrency={effectiveCompanyCurrency}
-                    onTableCurrencyChange={code => void onCompanyCurrencyChange(code)}
-                    hideReceiptCurrency={hideReceiptCurrency}
-                    onToggleReceiptCurrency={() => setHideReceiptCurrency(v => !v)}
-                    fxBlocked={!fxReady}
-                  />
-                  <BankStatementReview
-                    transactions={displayBankRows}
-                    readOnly={outputReadOnly}
-                    onDataChange={outputReadOnly ? undefined : rows => setEditedRows(rows)}
-                    onApprove={() => void approve()}
-                    canApprove={canApproveTable}
-                    approveBusy={approving}
-                    hideReceiptCurrency={hideReceiptCurrency}
-                    onCompanyAmountClick={row => openRateDialog(row as Record<string, unknown>)}
-                  />
-                </>
+              {tableAwaitingLoad ? (
+                <div className="erp-empty erp-empty--compact">Loading…</div>
               ) : (
                 <>
-                  <CompanyFxToolbar
-                    tableCurrency={effectiveCompanyCurrency}
-                    onTableCurrencyChange={code => void onCompanyCurrencyChange(code)}
-                    hideReceiptCurrency={hideReceiptCurrency}
-                    onToggleReceiptCurrency={() => setHideReceiptCurrency(v => !v)}
-                    fxBlocked={!fxReady}
-                  />
-                  <ARAPReview
-                  transactions={displayArapRows}
-                  readOnly={outputReadOnly}
-                  useApTableSchema={(activeRun.processing_mode ?? '').toUpperCase() === 'AP'}
-                  onDataChange={outputReadOnly ? undefined : rows => setEditedRows(rows)}
-                  onApprove={() => void approve()}
-                  canApprove={canApproveTable}
-                  approveBusy={approving}
-                  hideReceiptCurrency={hideReceiptCurrency}
-                  onCompanyAmountClick={row => openRateDialog(row as Record<string, unknown>)}
-                  isProcessing={tableProcessing}
-                  completedFiles={completedFileCount}
-                  totalFiles={totalFileCount}
-                  cropPreview={
-                    activeRun.task_id
-                      ? {
-                          taskId: activeRun.task_id,
-                          companyId,
-                          files: (activeRun.files ?? []).map(f => ({
-                            taskFileId: f.task_file_id,
-                            originalFilename: f.original_filename,
-                          })),
+                  {showForeignHiddenNotice && (
+                    <div className="erp-proc-row-mismatch" role="alert">
+                      {RUN_ROW_FOREIGN_HIDDEN_NOTICE}
+                    </div>
+                  )}
+                  {outputRowCount === 0 ? (
+                    <div className={extracting ? 'erp-empty erp-empty--compact' : 'erp-empty'}>
+                      {extracting ? 'Processing…' : 'No extracted rows yet.'}
+                    </div>
+                  ) : isAsset ? (
+                    <>
+                      <CompanyFxToolbar
+                        tableCurrency={effectiveCompanyCurrency}
+                        onTableCurrencyChange={code => void onCompanyCurrencyChange(code)}
+                        hideReceiptCurrency={hideReceiptCurrency}
+                        onToggleReceiptCurrency={() => setHideReceiptCurrency(v => !v)}
+                        fxBlocked={!fxReady}
+                      />
+                      <OtherTable records={assetRecords} readOnly={outputReadOnly} hideReceiptCurrency={hideReceiptCurrency} />
+                    </>
+                  ) : isBank ? (
+                    <>
+                      <CompanyFxToolbar
+                        tableCurrency={effectiveCompanyCurrency}
+                        onTableCurrencyChange={code => void onCompanyCurrencyChange(code)}
+                        hideReceiptCurrency={hideReceiptCurrency}
+                        onToggleReceiptCurrency={() => setHideReceiptCurrency(v => !v)}
+                        fxBlocked={!fxReady}
+                      />
+                      <BankStatementReview
+                        key={activeRunId ?? 'bank-review'}
+                        transactions={safeDisplayBankRows}
+                        readOnly={outputReadOnly}
+                        onDataChange={outputReadOnly ? undefined : rows => setEditedRows(rows)}
+                        onApprove={() => void approve()}
+                        canApprove={canApproveTable}
+                        approveBusy={approving}
+                        hideReceiptCurrency={hideReceiptCurrency}
+                        onCompanyAmountClick={row => openRateDialog(row as Record<string, unknown>)}
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <CompanyFxToolbar
+                        tableCurrency={effectiveCompanyCurrency}
+                        onTableCurrencyChange={code => void onCompanyCurrencyChange(code)}
+                        hideReceiptCurrency={hideReceiptCurrency}
+                        onToggleReceiptCurrency={() => setHideReceiptCurrency(v => !v)}
+                        fxBlocked={!fxReady}
+                      />
+                      <ARAPReview
+                        key={activeRunId ?? 'arap-review'}
+                        transactions={safeDisplayArapRows}
+                        readOnly={outputReadOnly}
+                        useApTableSchema={(activeRun.processing_mode ?? '').toUpperCase() === 'AP'}
+                        onDataChange={outputReadOnly ? undefined : rows => setEditedRows(rows)}
+                        onApprove={() => void approve()}
+                        canApprove={canApproveTable}
+                        approveBusy={approving}
+                        hideReceiptCurrency={hideReceiptCurrency}
+                        onCompanyAmountClick={row => openRateDialog(row as Record<string, unknown>)}
+                        isProcessing={tableProcessing}
+                        completedFiles={completedFileCount}
+                        totalFiles={totalFileCount}
+                        cropPreview={
+                          activeRun.task_id
+                            ? {
+                                taskId: activeRun.task_id,
+                                companyId,
+                                files: (activeRun.files ?? []).map(f => ({
+                                  taskFileId: f.task_file_id,
+                                  originalFilename: f.original_filename,
+                                })),
+                              }
+                            : null
                         }
-                      : null
-                  }
-                />
+                      />
+                    </>
+                  )}
+                  {rateDialog && (
+                    <ExchangeRateDialog
+                      from={rateDialog.from}
+                      to={rateDialog.to}
+                      sampleReceiptAmount={rateDialog.amount}
+                      printedCompanyAmount={rateDialog.printed}
+                      onApply={(rate, printed) => void applyPairRate(rate, printed)}
+                      onClose={() => {
+                        setRateDialog(null)
+                        setRateQueue([])
+                      }}
+                    />
+                  )}
                 </>
-              )}
-              {rateDialog && (
-                <ExchangeRateDialog
-                  from={rateDialog.from}
-                  to={rateDialog.to}
-                  sampleReceiptAmount={rateDialog.amount}
-                  printedCompanyAmount={rateDialog.printed}
-                  onApply={(rate, printed) => void applyPairRate(rate, printed)}
-                  onClose={() => {
-                    setRateDialog(null)
-                    setRateQueue([])
-                  }}
-                />
               )}
             </div>
           ) : null}
