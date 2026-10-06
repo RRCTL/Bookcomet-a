@@ -575,7 +575,7 @@ export function OnboardingWizard({ onComplete, onSkip }: OnboardingWizardProps) 
               <div className="wizard-bank-header">
                 <span className="wizard-bank-title">Director / Owner Account <span className="wizard-bank-subtitle-inline">suspense account</span></span>
                 <span className="wizard-bank-subtitle">
-                  Tracks funds between company and owner. Will be added to Chart of Accounts (code 2100)
+                  Tracks funds between company and owner. Will be added to Chart of Accounts as a liability account
                 </span>
               </div>
 
