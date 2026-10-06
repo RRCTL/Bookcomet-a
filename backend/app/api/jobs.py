@@ -187,10 +187,10 @@ async def create_ocr_job(
     if len(content) == 0:
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
     try:
-        from app.services.file_storage import assert_file_type, assert_upload_size
+        from app.services.file_storage import assert_upload_size, prepare_upload_bytes
 
         assert_upload_size(content)
-        assert_file_type(file.filename, content)
+        content = prepare_upload_bytes(file.filename, content)
     except ValueError as exc:
         detail = str(exc)
         code = 413 if "maximum size" in detail.lower() else 400

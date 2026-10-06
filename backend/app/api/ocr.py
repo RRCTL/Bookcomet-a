@@ -27,7 +27,7 @@ from app.ocr.runtime import (
 from app.database import get_db, SessionLocal
 from app.api.deps import get_current_company_id, get_current_user, get_trace_id
 from app.models.identity import User
-from app.services.file_storage import assert_file_type, assert_upload_size, safe_upload_temp_suffix
+from app.services.file_storage import assert_upload_size, prepare_upload_bytes, safe_upload_temp_suffix
 from app.core.db_concurrency import long_running_db_work_slot
 from app.models.company_context import CompanyProfile
 from app.models.compliance import OcrCompletionEvent
@@ -5235,7 +5235,7 @@ async def ocr_debug(
     content = await file.read()
     try:
         assert_upload_size(content)
-        assert_file_type(file.filename or "image.jpg", content)
+        content = prepare_upload_bytes(file.filename or "image.jpg", content)
         suffix = safe_upload_temp_suffix(file.filename or "image.jpg")
     except ValueError as exc:
         detail = str(exc)
@@ -5372,7 +5372,7 @@ async def ocr_test_core(
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
     try:
         assert_upload_size(content)
-        assert_file_type(file.filename or "upload.bin", content)
+        content = prepare_upload_bytes(file.filename or "upload.bin", content)
     except ValueError as exc:
         detail = str(exc)
         code = 413 if "maximum size" in detail.lower() else 400
@@ -6489,7 +6489,7 @@ async def ocr_ai_enhanced(
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
     try:
         assert_upload_size(content)
-        assert_file_type(file.filename or "upload.bin", content)
+        content = prepare_upload_bytes(file.filename or "upload.bin", content)
     except ValueError as exc:
         detail = str(exc)
         code = 413 if "maximum size" in detail.lower() else 400

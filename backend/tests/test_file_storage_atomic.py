@@ -19,6 +19,15 @@ def test_local_disk_storage_save(tmp_path, monkeypatch):
     assert Path(path).read_bytes() == pdf
 
 
+def test_local_disk_storage_strips_pdf_prefix(tmp_path, monkeypatch):
+    monkeypatch.setenv("UPLOADS_DIR", str(tmp_path))
+    store = LocalDiskStorage(str(tmp_path))
+    pdf = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n"
+    prefix = b"0000000000-00-0000-0" + b" " * 43
+    path = store.save("co1", "task1", "fid-prefix", prefix + pdf, ".pdf")
+    assert Path(path).read_bytes() == pdf
+
+
 def test_save_job_input(tmp_path, monkeypatch):
     monkeypatch.setenv("UPLOADS_DIR", str(tmp_path))
     store = LocalDiskStorage(str(tmp_path))

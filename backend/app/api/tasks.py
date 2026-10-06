@@ -40,7 +40,12 @@ from app.models.chat import (
 )
 from app.models.identity import Membership, User
 from app.models.workflow import WorkflowRun
-from app.services.file_storage import assert_file_type, read_stored_bytes, safe_upload_temp_suffix, storage
+from app.services.file_storage import (
+    prepare_upload_bytes,
+    read_stored_bytes,
+    safe_upload_temp_suffix,
+    storage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -811,7 +816,7 @@ async def upload_file(
     contents = await file.read()
     try:
         ext = safe_upload_temp_suffix(file.filename or "file.pdf")
-        assert_file_type(file.filename or f"upload{ext}", contents)
+        contents = prepare_upload_bytes(file.filename or f"upload{ext}", contents)
         dest_path = storage.save(company_id, task_id, file_uuid, contents, ext)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
