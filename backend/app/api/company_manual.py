@@ -438,12 +438,35 @@ def _coa_name_exists(db: Session, company_id: str, name: str) -> bool:
     ).first() is not None
 
 
-def _coa_code_exists(db: Session, company_id: str, code: str) -> bool:
+def _used_coa_codes_in_range(db: Session, company_id: str, start: int, end: int) -> set[int]:
+    """Return numeric CoA codes already used in [start, end] for this company."""
     from app.models.reconciliation import ChartOfAccountEntry
-    return db.query(ChartOfAccountEntry).filter(
+    used: set[int] = set()
+    rows = db.query(ChartOfAccountEntry.code).filter(
         ChartOfAccountEntry.company_id == company_id,
-        ChartOfAccountEntry.code == code,
-    ).first() is not None
+    ).all()
+    for (code,) in rows:
+        try:
+            n = int(code)
+            if start <= n <= end:
+                used.add(n)
+        except (ValueError, TypeError):
+            pass
+    return used
+
+
+def _allocate_coa_code(
+    used: set[int],
+    start: int,
+    end: int,
+) -> int | None:
+    """Return the next free integer code in [start, end], or None if the range is full."""
+    code = start
+    while code in used and code <= end:
+        code += 1
+    if code > end:
+        return None
+    return code
 
 
 def _add_entry(
@@ -480,9 +503,11 @@ def _create_bank_coa_entries(
     """
     Create ChartOfAccountEntry rows for:
     - Bank accounts       → 1100–1199 (asset)
-    - Cash on Hand        → 1010 (asset)
-    - Director's Account  → 2100 (liability)
-    Skips if entry with the same name already exists.
+    - Cash on Hand        → next free 1000–1099 (asset); avoids seeded 1010/1020
+    - Director's Account  → next free 2600–2699 (liability); avoids seeded 2100 AP
+
+    Skips if an entry with the same English name already exists (idempotent re-sync).
+    Opening balances are stored on the CoA row only — no journals are posted.
     Returns list of created account codes.
     """
     created: list[str] = []
@@ -490,19 +515,7 @@ def _create_bank_coa_entries(
 
     # ── 1. Bank accounts (1100–1199) ──────────────────────────────────────────
     if pm in ("bank", "both"):
-        used_bank_codes: set[int] = set()
-        from app.models.reconciliation import ChartOfAccountEntry
-        rows = db.query(ChartOfAccountEntry.code).filter(
-            ChartOfAccountEntry.company_id == company_id,
-        ).all()
-        for (code,) in rows:
-            try:
-                n = int(code)
-                if 1100 <= n <= 1199:
-                    used_bank_codes.add(n)
-            except (ValueError, TypeError):
-                pass
-
+        used_bank_codes = _used_coa_codes_in_range(db, company_id, 1100, 1199)
         next_code = 1100
         for acct in bank_settings.accounts:
             name = (acct.account_nickname or acct.bank_name or "").strip()
@@ -512,43 +525,51 @@ def _create_bank_coa_entries(
             if _coa_name_exists(db, company_id, name):
                 continue
 
-            while next_code in used_bank_codes and next_code <= 1199:
-                next_code += 1
-            if next_code > 1199:
+            allocated = _allocate_coa_code(used_bank_codes, next_code, 1199)
+            if allocated is None:
                 break
 
             _add_entry(
-                db, company_id, str(next_code), name,
+                db, company_id, str(allocated), name,
                 "asset", ["BANK"],
                 _parse_balance(acct.opening_balance), acct.dr_cr,
             )
-            used_bank_codes.add(next_code)
-            created.append(str(next_code))
-            next_code += 1
+            used_bank_codes.add(allocated)
+            created.append(str(allocated))
+            next_code = allocated + 1
 
-    # ── 2. Cash on Hand (1010) ────────────────────────────────────────────────
+    # ── 2. Cash on Hand (next free 1000–1099) ─────────────────────────────────
+    # Seeded defaults already own 1010 (Cash at Bank) and 1020 (Petty Cash).
     if pm in ("cash", "both") and bank_settings.cash_account:
         ca = bank_settings.cash_account
         name = (ca.account_nickname or "Cash on Hand").strip()
-        if not _coa_code_exists(db, company_id, "1010") and not _coa_name_exists(db, company_id, name):
-            _add_entry(
-                db, company_id, "1010", name,
-                "asset", ["BANK", "AR", "AP"],
-                _parse_balance(ca.opening_balance), ca.dr_cr,
-            )
-            created.append("1010")
+        if not _coa_name_exists(db, company_id, name):
+            used_cash = _used_coa_codes_in_range(db, company_id, 1000, 1099)
+            cash_code = _allocate_coa_code(used_cash, 1000, 1099)
+            if cash_code is not None:
+                _add_entry(
+                    db, company_id, str(cash_code), name,
+                    "asset", ["BANK", "AR", "AP"],
+                    _parse_balance(ca.opening_balance), ca.dr_cr,
+                )
+                created.append(str(cash_code))
 
-    # ── 3. Director / Owner account (2100) ────────────────────────────────────
+    # ── 3. Director / Owner account (next free 2600–2699 liability) ───────────
+    # Hardcoding 2100 collided with seeded Accounts Payable and silently dropped
+    # the director account (and its opening balance). Do not reuse 1999 suspense.
     if bank_settings.director_account:
         da = bank_settings.director_account
         name = (da.account_nickname or "Director's Current Account").strip()
-        if not _coa_code_exists(db, company_id, "2100") and not _coa_name_exists(db, company_id, name):
-            _add_entry(
-                db, company_id, "2100", name,
-                "liability", ["AR", "AP", "BANK"],
-                _parse_balance(da.opening_balance), da.dr_cr,
-            )
-            created.append("2100")
+        if not _coa_name_exists(db, company_id, name):
+            used_liab = _used_coa_codes_in_range(db, company_id, 2600, 2699)
+            dir_code = _allocate_coa_code(used_liab, 2600, 2699)
+            if dir_code is not None:
+                _add_entry(
+                    db, company_id, str(dir_code), name,
+                    "liability", ["AR", "AP", "BANK"],
+                    _parse_balance(da.opening_balance), da.dr_cr,
+                )
+                created.append(str(dir_code))
 
     return created
 

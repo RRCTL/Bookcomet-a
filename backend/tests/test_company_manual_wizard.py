@@ -18,6 +18,7 @@ from app.api.company_manual import (
     WizardAnswers,
     _build_manual_from_wizard,
     _coalesce_text,
+    _create_bank_coa_entries,
     _is_wizard_completed,
     _knowledge_context_body,
     _mark_wizard_completed,
@@ -30,6 +31,8 @@ from app.database import Base, get_db
 from app.models.company_context import CompanyProfile, CompanyRule
 from app.models.company_manual import CompanyManual
 from app.models.identity import Company, Membership, User
+from app.models.reconciliation import ChartOfAccountEntry
+from app.services.chart_of_accounts import _seed_defaults
 from app.services.rule_governance import RULE_TYPE_COMPANY_CONTEXT
 
 
@@ -242,3 +245,135 @@ class CompanyManualWizardApiTest(unittest.TestCase):
         )
         self.assertEqual(status.status_code, 200)
         self.assertEqual(status.json(), {"exists": True, "wizard_completed": False})
+
+
+def test_create_bank_coa_entries_includes_director_current_with_cr_balance() -> None:
+    """
+    Regression: director's current account must sync into CoA even when seeded
+    Accounts Payable already owns code 2100. Bank + director Cr opening balances
+    must land on distinct CoA rows; a second sync must not duplicate.
+    """
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+    db = SessionLocal()
+    company_id = str(uuid.uuid4())
+
+    try:
+        _seed_defaults(db, company_id)
+
+        ap = (
+            db.query(ChartOfAccountEntry)
+            .filter(
+                ChartOfAccountEntry.company_id == company_id,
+                ChartOfAccountEntry.code == "2100",
+            )
+            .one()
+        )
+        assert ap.name_en == "Accounts Payable"
+
+        suspense = (
+            db.query(ChartOfAccountEntry)
+            .filter(
+                ChartOfAccountEntry.company_id == company_id,
+                ChartOfAccountEntry.code == "1999",
+            )
+            .one()
+        )
+        assert suspense.opening_balance in (None, 0.0)
+
+        bank_settings = BankSettingsInput(
+            payment_method="bank",
+            accounts=[
+                BankAccountInput(
+                    bank_name="BEA",
+                    account_nickname="BEA current",
+                    currency="HKD",
+                    opening_balance="3019.25",
+                    dr_cr="Dr",
+                ),
+            ],
+            director_account=BankAccountInput(
+                account_nickname="Director's Current Account",
+                currency="HKD",
+                opening_balance="86862",
+                dr_cr="Cr",
+            ),
+        )
+
+        created_first = _create_bank_coa_entries(db, company_id, bank_settings)
+        db.commit()
+        assert len(created_first) == 2
+
+        bank = (
+            db.query(ChartOfAccountEntry)
+            .filter(
+                ChartOfAccountEntry.company_id == company_id,
+                ChartOfAccountEntry.name_en == "BEA current",
+            )
+            .one()
+        )
+        assert bank.category_type == "asset"
+        assert bank.allowed_modes == ["BANK"]
+        assert bank.opening_balance == 3019.25
+        assert bank.opening_balance_dr_cr == "Dr"
+        assert 1100 <= int(bank.code) <= 1199
+
+        director = (
+            db.query(ChartOfAccountEntry)
+            .filter(
+                ChartOfAccountEntry.company_id == company_id,
+                ChartOfAccountEntry.name_en == "Director's Current Account",
+            )
+            .one()
+        )
+        assert director.category_type == "liability"
+        assert set(director.allowed_modes) == {"AR", "AP", "BANK"}
+        assert director.opening_balance == 86862.0
+        assert director.opening_balance_dr_cr == "Cr"
+        assert director.code != "2100"
+        assert director.code != "1999"
+        assert 2600 <= int(director.code) <= 2699
+
+        # Seeded AP and reconciliation suspense must be untouched
+        db.refresh(ap)
+        db.refresh(suspense)
+        assert ap.name_en == "Accounts Payable"
+        assert ap.opening_balance in (None, 0.0)
+        assert suspense.opening_balance in (None, 0.0)
+
+        # Opening-balance sync must not auto-create journals
+        from app.models.gl_journal import GlJournal
+
+        assert db.query(GlJournal).filter(GlJournal.company_id == company_id).count() == 0
+
+        created_second = _create_bank_coa_entries(db, company_id, bank_settings)
+        db.commit()
+        assert created_second == []
+
+        director_count = (
+            db.query(ChartOfAccountEntry)
+            .filter(
+                ChartOfAccountEntry.company_id == company_id,
+                ChartOfAccountEntry.name_en == "Director's Current Account",
+            )
+            .count()
+        )
+        bank_count = (
+            db.query(ChartOfAccountEntry)
+            .filter(
+                ChartOfAccountEntry.company_id == company_id,
+                ChartOfAccountEntry.name_en == "BEA current",
+            )
+            .count()
+        )
+        assert director_count == 1
+        assert bank_count == 1
+        assert db.query(GlJournal).filter(GlJournal.company_id == company_id).count() == 0
+    finally:
+        db.close()
+        engine.dispose()
