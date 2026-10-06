@@ -12,7 +12,6 @@ import os
 import uuid
 from datetime import datetime, timezone
 from io import BytesIO
-from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File
@@ -41,7 +40,7 @@ from app.models.chat import (
 )
 from app.models.identity import Membership, User
 from app.models.workflow import WorkflowRun
-from app.services.file_storage import assert_file_type, read_stored_bytes, storage
+from app.services.file_storage import assert_file_type, read_stored_bytes, safe_upload_temp_suffix, storage
 
 logger = logging.getLogger(__name__)
 
@@ -809,9 +808,9 @@ async def upload_file(
     _check_read_access(task, user)
 
     file_uuid = str(uuid.uuid4())
-    ext = Path(file.filename or "file").suffix.lower() or ".bin"
     contents = await file.read()
     try:
+        ext = safe_upload_temp_suffix(file.filename or "file.pdf")
         assert_file_type(file.filename or f"upload{ext}", contents)
         dest_path = storage.save(company_id, task_id, file_uuid, contents, ext)
     except ValueError as exc:

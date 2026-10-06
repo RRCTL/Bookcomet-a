@@ -1251,15 +1251,22 @@ class WorkflowService:
         db.commit()
 
         path = task_file.storage_path
-        if not path or not os.path.isfile(path):
+        if not path:
             run_file.file_status = "failed"
             run_file.error_text = "File missing on disk"
             db.commit()
             return {"ok": False, "error": run_file.error_text}
 
         filename = task_file.original_filename or "upload"
-        with open(path, "rb") as handle:
-            content = handle.read()
+        try:
+            from app.services.file_storage import read_stored_bytes
+
+            content = read_stored_bytes(path)
+        except (ValueError, FileNotFoundError, OSError):
+            run_file.file_status = "failed"
+            run_file.error_text = "File missing on disk"
+            db.commit()
+            return {"ok": False, "error": run_file.error_text}
         upload = UploadFile(filename=filename, file=BytesIO(content))
         trace_id = str(uuid.uuid4())
         validated_reasons = validate_rescan_reasons(rescan_reasons)

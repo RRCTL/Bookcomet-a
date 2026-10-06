@@ -41,7 +41,8 @@ def test_region_pixels_from_bbox_clamps() -> None:
     assert bottom - top == 10
 
 
-def test_render_receipt_crop_jpeg_full_and_region(tmp_path: Path) -> None:
+def test_render_receipt_crop_jpeg_full_and_region(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("UPLOADS_DIR", str(tmp_path))
     src = tmp_path / "synthetic_page.png"
     _write_synthetic_png(src)
 
@@ -59,6 +60,19 @@ def test_render_receipt_crop_jpeg_full_and_region(tmp_path: Path) -> None:
         assert out.size[1] < 300
 
 
-def test_render_missing_file_raises(tmp_path: Path) -> None:
+def test_render_missing_file_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("UPLOADS_DIR", str(tmp_path))
     with pytest.raises(FileNotFoundError):
         render_receipt_crop_jpeg(storage_path=str(tmp_path / "missing.png"))
+
+
+def test_render_rejects_path_outside_uploads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    monkeypatch.setenv("UPLOADS_DIR", str(uploads))
+    outside = tmp_path / "outside.png"
+    _write_synthetic_png(outside)
+    with pytest.raises(FileNotFoundError):
+        render_receipt_crop_jpeg(storage_path=str(outside))
+    with pytest.raises(FileNotFoundError):
+        render_receipt_crop_jpeg(storage_path=str(uploads / ".." / "outside.png"))
