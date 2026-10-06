@@ -50,7 +50,7 @@ A PR cannot flip visibility. Follow [`GITHUB_PUBLIC_DAY.md`](GITHUB_PUBLIC_DAY.m
 
 ## Step 7 — After public (source work in this PR)
 
-- [x] Formal accept record: [`DEPENDENCY_EXCEPTIONS.md`](DEPENDENCY_EXCEPTIONS.md) (`ecdsa` / `cryptography` pins).
+- [x] Dependency exception record: [`DEPENDENCY_EXCEPTIONS.md`](DEPENDENCY_EXCEPTIONS.md) (ecdsa / cryptography / imgaug / python-jose cleared).
 - [x] SBOM workflow: `.github/workflows/sbom.yml` (CycloneDX artifacts).
 - [x] Optional upload at-rest wrap: `UPLOADS_ENCRYPTION_KEY` (SEC-PUB-003).
 - [x] Maintained fictional demo set: [`demo/`](demo/README.md).
