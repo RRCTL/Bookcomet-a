@@ -2268,6 +2268,7 @@ class WorkflowService:
             raise HTTPException(status_code=404, detail="Task not found")
 
         from app.services.company_fx import row_ready_for_books
+        from app.services.statement_activity_map import bank_row_has_placement_issues
 
         mode = (run.processing_mode or "").upper()
         review_rows = (
@@ -2310,6 +2311,20 @@ class WorkflowService:
                     status_code=400,
                     detail="Set company currency amounts for every row before approving.",
                 )
+            if mode == "BANK":
+                misplaced = [
+                    row
+                    for row in review_rows
+                    if isinstance(row, dict) and bank_row_has_placement_issues(row)
+                ]
+                if misplaced:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"{len(misplaced)} row(s) need checking: date or amount looks "
+                            "misplaced. Fix or delete them before approving."
+                        ),
+                    )
 
         states = dict(run.node_states_json) if isinstance(run.node_states_json, dict) else {}
         states["approved_payload"] = approved_payload
