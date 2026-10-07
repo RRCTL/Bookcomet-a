@@ -36,6 +36,22 @@ def _assert_safe_pdf_path(pdf_path: str) -> Path:
     return Path(_resolved_pdf_path(pdf_path))
 
 
+# tempfile.NamedTemporaryFile(suffix=...) is a CodeQL py/path-injection sink.
+# Never interpolate page numbers or other caller values into the suffix — only
+# return a constant from this allowlist (ConstCompare clears taint).
+_ALLOWED_RASTER_TEMP_SUFFIXES = (".png", ".jpg")
+
+
+def _safe_raster_temp_suffix(target_format: str = "PNG") -> str:
+    """Allowlisted tempfile suffix for PDF raster output (no user-controlled path text)."""
+    fmt = (target_format or "PNG").strip().upper()
+    chosen = ".jpg" if fmt in ("JPEG", "JPG") else ".png"
+    for allowed in _ALLOWED_RASTER_TEMP_SUFFIXES:
+        if chosen == allowed:
+            return allowed
+    return ".png"
+
+
 def _pil_open_pixel_budget() -> int:
     """Max width*height Pillow allows before DecompressionBombError (pixels > 2 * MAX_IMAGE_PIXELS)."""
     raw = os.getenv("PDF_RENDER_MAX_PIXELS")
@@ -124,9 +140,9 @@ def convert_pdf_to_images_list(pdf_path: str, target_format: str = 'PNG') -> Lis
         logger.info(f"PDF has {pdf_document.page_count} page(s)")
         
         images_list = []
-        base_filename = Path(pdf_path).stem
-        file_ext = 'png' if target_format.upper() == 'PNG' else 'jpg'
-        
+        raster_suffix = _safe_raster_temp_suffix(target_format)
+        save_as_jpeg = raster_suffix == ".jpg"
+
         # Convert each page to image
         for page_num in range(pdf_document.page_count):
             page = pdf_document[page_num]
@@ -143,7 +159,7 @@ def convert_pdf_to_images_list(pdf_path: str, target_format: str = 'PNG') -> Lis
             img = Image.open(io.BytesIO(img_data))
             
             # Convert to RGB mode (required for JPEG)
-            if target_format.upper() == 'JPEG':
+            if save_as_jpeg:
                 if img.mode != 'RGB':
                     img = img.convert('RGB')
             else:
@@ -151,11 +167,13 @@ def convert_pdf_to_images_list(pdf_path: str, target_format: str = 'PNG') -> Lis
                 if img.mode not in ['RGB', 'RGBA']:
                     img = img.convert('RGBA')
             
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f'_page{page_num+1}.{file_ext}', mode='wb') as tmp_img:
-                if target_format.upper() == 'PNG':
-                    img.save(tmp_img, format='PNG', optimize=True)
-                else:
+            # Constant allowlisted suffix only — page index stays out of the path
+            # (CodeQL py/path-injection / CWE-022).
+            with tempfile.NamedTemporaryFile(delete=False, suffix=raster_suffix, mode='wb') as tmp_img:
+                if save_as_jpeg:
                     img.save(tmp_img, format='JPEG', quality=95, optimize=True)
+                else:
+                    img.save(tmp_img, format='PNG', optimize=True)
                 
                 image_path = tmp_img.name
                 logger.info(f"Saved page {page_num + 1} to {image_path}")
@@ -231,7 +249,10 @@ def convert_one_pdf_page_to_temp_png(pdf_path: str, page_number_one_based: int) 
         img = Image.open(io.BytesIO(img_data))
         if img.mode not in ["RGB", "RGBA"]:
             img = img.convert("RGBA")
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f"_page{page_number_one_based}.png")
+        # Constant allowlisted suffix only — do not interpolate page_number into the
+        # tempfile name (CodeQL py/path-injection / CWE-022; page is API-controlled).
+        raster_suffix = _safe_raster_temp_suffix("PNG")
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=raster_suffix)
         tmp.close()
         img.save(tmp.name, format="PNG", optimize=True)
         logger.info("Saved PDF page %s to %s", page_number_one_based, tmp.name)
