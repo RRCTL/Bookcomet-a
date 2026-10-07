@@ -364,6 +364,20 @@ export const workflowApi = {
     wfJson<WorkflowRun>(companyId, `/api/workflows/runs/${runId}/files/${taskFileId}/force-process`, {
       method: 'POST',
     }),
+  /** Re-extract one dense bank page whose VLM returned no rows (extract miss). */
+  retryEmptyExtractPage: (companyId: string, runId: string, taskFileId: string, page: number) =>
+    wfJson<WorkflowRun>(
+      companyId,
+      `/api/workflows/runs/${runId}/files/${taskFileId}/retry-empty-extract-page?page=${encodeURIComponent(String(page))}`,
+      { method: 'POST' },
+    ),
+  /** Rare secondary: user confirms they checked the PDF and accept no extracted rows. */
+  markPageReviewedNoRows: (companyId: string, runId: string, taskFileId: string, page: number) =>
+    wfJson<WorkflowRun>(
+      companyId,
+      `/api/workflows/runs/${runId}/files/${taskFileId}/mark-page-reviewed-no-rows?page=${encodeURIComponent(String(page))}`,
+      { method: 'POST' },
+    ),
   recoverStuck: (companyId: string, runId: string) =>
     wfJson<WorkflowRun>(companyId, `/api/workflows/runs/${runId}/recover-stuck`, { method: 'POST' }),
   removeRunFile: (companyId: string, runId: string, taskFileId: string) =>

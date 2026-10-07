@@ -1137,6 +1137,42 @@ async def force_process_file(
     return _run_out(run, db)
 
 
+@router.post("/runs/{run_id}/files/{task_file_id}/retry-empty-extract-page")
+async def retry_empty_extract_page(
+    run_id: str,
+    task_file_id: str,
+    page: int,
+    company_id: str = Depends(get_current_company_id),
+    db: Session = Depends(get_db),
+):
+    """Re-extract one bank PDF page flagged as dense OCR / empty extract miss."""
+    if page < 1:
+        raise HTTPException(status_code=400, detail="page must be >= 1")
+    run = _get_run_or_404(run_id, company_id, db)
+    run = await WorkflowService.retry_bank_empty_extract_page(
+        db, run, task_file_id, page
+    )
+    return _run_out(run, db)
+
+
+@router.post("/runs/{run_id}/files/{task_file_id}/mark-page-reviewed-no-rows")
+async def mark_page_reviewed_no_rows(
+    run_id: str,
+    task_file_id: str,
+    page: int,
+    company_id: str = Depends(get_current_company_id),
+    db: Session = Depends(get_db),
+):
+    """Rare secondary: user confirms they checked the PDF and accept no extracted rows."""
+    if page < 1:
+        raise HTTPException(status_code=400, detail="page must be >= 1")
+    run = _get_run_or_404(run_id, company_id, db)
+    run = WorkflowService.mark_bank_page_reviewed_with_no_rows(
+        db, run, task_file_id, page
+    )
+    return _run_out(run, db)
+
+
 # ── Templates (Manager) ───────────────────────────────────────────────────
 
 

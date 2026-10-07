@@ -111,6 +111,10 @@ import {
   resolveDisplayRowsForRun,
   reviewTableShowingLoader,
 } from './reviewTableSession'
+import {
+  collectEmptyExtractPagesFromRunFiles,
+  type EmptyExtractPageFlag,
+} from '../../utils/bankEmptyExtract'
 
 // Modes offered when creating a run (matches enabled Phase 1 grid modules).
 const PROC_MODES = ['AP', 'AR', 'BANK', 'OTHER'] as const
@@ -376,6 +380,7 @@ export function ProcessingView() {
   const [busy, setBusy] = useState(false)
   const [approving, setApproving] = useState(false)
   const [rebuilding, setRebuilding] = useState(false)
+  const [emptyExtractBusy, setEmptyExtractBusy] = useState(false)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [railWidth, setRailWidth] = useState(() => readStoredWidth(PROC_RAIL_WIDTH_KEY, 220))
   const [rightWidth, setRightWidth] = useState(() => readStoredWidth(PROC_RIGHT_WIDTH_KEY, 312))
@@ -1026,6 +1031,90 @@ export function ProcessingView() {
   )
   const isAsset = (activeRun?.processing_mode ?? '').toUpperCase() === 'OTHER'
   const isBank = (activeRun?.processing_mode ?? '').toUpperCase() === 'BANK'
+  const emptyExtractPages = useMemo(
+    () => (isBank ? collectEmptyExtractPagesFromRunFiles(activeRun?.files) : []),
+    [activeRun?.files, isBank],
+  )
+  const hasEmptyExtractFlags = emptyExtractPages.length > 0
+
+  const retryEmptyExtractPage = useCallback(
+    async (flag: EmptyExtractPageFlag) => {
+      if (!activeRun || emptyExtractBusy || rebuilding || busy || approving) return
+      if (runHasLockedApprovedTable(activeRun)) {
+        setError(
+          'Approved and loaded into modules — page retry is disabled to avoid conflicting updates.',
+        )
+        return
+      }
+      setError(null)
+      setEmptyExtractBusy(true)
+      try {
+        const updated = await workflowApi.retryEmptyExtractPage(
+          companyId,
+          activeRun.id,
+          flag.taskFileId,
+          flag.page,
+        )
+        applyRunFromServer(updated, true)
+        void reloadRuns()
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Could not retry this page.')
+      } finally {
+        setEmptyExtractBusy(false)
+      }
+    },
+    [
+      activeRun,
+      applyRunFromServer,
+      approving,
+      busy,
+      companyId,
+      emptyExtractBusy,
+      rebuilding,
+      reloadRuns,
+    ],
+  )
+
+  const markEmptyExtractReviewed = useCallback(
+    async (flag: EmptyExtractPageFlag) => {
+      if (!activeRun || emptyExtractBusy || rebuilding || busy || approving) return
+      if (runHasLockedApprovedTable(activeRun)) {
+        setError(
+          'Approved and loaded into modules — mark-reviewed is disabled to avoid conflicting updates.',
+        )
+        return
+      }
+      setError(null)
+      setEmptyExtractBusy(true)
+      try {
+        const updated = await workflowApi.markPageReviewedNoRows(
+          companyId,
+          activeRun.id,
+          flag.taskFileId,
+          flag.page,
+        )
+        applyRunFromServer(updated, true)
+        void reloadRuns()
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : 'Could not mark page as reviewed with no rows.',
+        )
+      } finally {
+        setEmptyExtractBusy(false)
+      }
+    },
+    [
+      activeRun,
+      applyRunFromServer,
+      approving,
+      busy,
+      companyId,
+      emptyExtractBusy,
+      rebuilding,
+      reloadRuns,
+    ],
+  )
+
   const tableAwaitingLoad =
     rebuilding ||
     reviewTableShowingLoader(activeRunId, {
@@ -1405,6 +1494,8 @@ export function ProcessingView() {
     !isRunning &&
     !anyNodeRunning &&
     !rebuilding &&
+    !emptyExtractBusy &&
+    !hasEmptyExtractFlags &&
     !tableAwaitingLoad &&
     fxReady &&
     reviewOwnership.ok &&
@@ -1417,6 +1508,7 @@ export function ProcessingView() {
     !isRunning &&
     !anyNodeRunning &&
     !rebuilding &&
+    !emptyExtractBusy &&
     !busy &&
     !approving &&
     !reVlmLocked &&
@@ -1829,10 +1921,14 @@ export function ProcessingView() {
                         onDataChange={outputReadOnly ? undefined : rows => setEditedRows(rows)}
                         onApprove={() => void approve()}
                         canApprove={canApproveTable}
-                        approveBusy={approving || rebuilding}
+                        approveBusy={approving || rebuilding || emptyExtractBusy}
                         onRebuildFromRunFiles={() => void rebuildFromRunFiles()}
                         rebuildBusy={rebuilding}
                         canRebuild={canRebuildFromRunFiles}
+                        emptyExtractPages={emptyExtractPages}
+                        onRetryEmptyExtractPage={flag => void retryEmptyExtractPage(flag)}
+                        onMarkEmptyExtractReviewed={flag => void markEmptyExtractReviewed(flag)}
+                        emptyExtractBusy={emptyExtractBusy}
                         hideReceiptCurrency={hideReceiptCurrency}
                         onCompanyAmountClick={row => openRateDialog(row as Record<string, unknown>)}
                       />
