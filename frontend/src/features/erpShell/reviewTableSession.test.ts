@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   applyPayloadsIfCurrentRun,
+  clearReviewTableForRebuild,
   clearReviewTableOnRunSwitch,
   emptyReviewTableSession,
   editedRowsSafeForApprove,
@@ -52,6 +53,29 @@ describe('reviewTableSession', () => {
       ),
     ).toEqual([])
     expect(prev.payloads).toEqual(payloadsA)
+  })
+
+  it('clears payloads and shows loader when rebuild from run files starts', () => {
+    const prev = {
+      boundRunId: 'run-a',
+      payloads: payloadsA,
+      editedRows: [{ source_file: 'Foreign.pdf P1', deposit: 99 }],
+      loading: false,
+    }
+    const next = clearReviewTableForRebuild('run-a')
+    expect(next.loading).toBe(true)
+    expect(next.boundRunId).toBeNull()
+    expect(next.payloads).toEqual({})
+    expect(next.editedRows).toBeNull()
+    expect(
+      resolveDisplayRowsForRun(
+        'run-a',
+        next.boundRunId,
+        (prev.payloads['batch-a']?.bankTransactions as unknown[]) ?? [],
+        next.editedRows as never,
+        next.loading,
+      ),
+    ).toEqual([])
   })
 
   it('ignores stale fetch results from a previously selected run', () => {

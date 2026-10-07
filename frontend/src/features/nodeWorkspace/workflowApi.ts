@@ -351,6 +351,15 @@ export const workflowApi = {
         expected_receipt_count: options?.expected_receipt_count ?? null,
       }),
     }),
+  /** Re-extract review rows from this run's own uploads only (no Approve / journal transfer). */
+  rebuildReview: (companyId: string, id: string, task_file_ids?: string[]) =>
+    wfJson<WorkflowRun>(companyId, `/api/workflows/runs/${id}/rebuild-review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        task_file_ids && task_file_ids.length > 0 ? { task_file_ids } : {},
+      ),
+    }),
   forceProcess: (companyId: string, runId: string, taskFileId: string) =>
     wfJson<WorkflowRun>(companyId, `/api/workflows/runs/${runId}/files/${taskFileId}/force-process`, {
       method: 'POST',

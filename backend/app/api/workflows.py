@@ -9,7 +9,7 @@ import os
 import uuid
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -95,6 +95,12 @@ class ReVlmRequest(BaseModel):
     rescan_reasons: list[str] = Field(default_factory=list)
     rescan_note: Optional[str] = None
     expected_receipt_count: Optional[int] = None
+
+
+class RebuildReviewRequest(BaseModel):
+    """Optional explicit file IDs; omit to rebuild from every file on the run."""
+
+    task_file_ids: Optional[list[str]] = None
 
 
 class MoveRunFileBatchRequest(BaseModel):
@@ -1093,6 +1099,26 @@ async def re_vlm_run(
         rescan_reasons=body.rescan_reasons,
         rescan_note=body.rescan_note,
         expected_receipt_count=body.expected_receipt_count,
+    )
+    return _run_out(run, db)
+
+
+@router.post("/runs/{run_id}/rebuild-review")
+async def rebuild_review_run(
+    run_id: str,
+    body: RebuildReviewRequest = Body(default_factory=RebuildReviewRequest),
+    company_id: str = Depends(get_current_company_id),
+    db: Session = Depends(get_db),
+):
+    """Re-extract the review table from this run's own uploaded files only.
+
+    Does not approve or transfer journals — user must Approve explicitly afterward.
+    """
+    run = _get_run_or_404(run_id, company_id, db)
+    run = await WorkflowService.rebuild_review_from_run_files(
+        db,
+        run,
+        task_file_ids=body.task_file_ids,
     )
     return _run_out(run, db)
 

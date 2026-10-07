@@ -105,6 +105,7 @@ import {
   partitionRowsByRunOwnership,
 } from './runReviewRowOwnership'
 import {
+  clearReviewTableForRebuild,
   clearReviewTableOnRunSwitch,
   editedRowsSafeForApprove,
   resolveDisplayRowsForRun,
@@ -374,6 +375,7 @@ export function ProcessingView() {
   const [creating, setCreating] = useState(false)
   const [busy, setBusy] = useState(false)
   const [approving, setApproving] = useState(false)
+  const [rebuilding, setRebuilding] = useState(false)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [railWidth, setRailWidth] = useState(() => readStoredWidth(PROC_RAIL_WIDTH_KEY, 220))
   const [rightWidth, setRightWidth] = useState(() => readStoredWidth(PROC_RIGHT_WIDTH_KEY, 312))
@@ -894,6 +896,49 @@ export function ProcessingView() {
     setShowReVlm(true)
   }, [activeRun])
 
+  const rebuildFromRunFiles = useCallback(async () => {
+    if (!activeRun || rebuilding || busy || approving) return
+    if (runHasLockedApprovedTable(activeRun)) {
+      setError(
+        'Approved and loaded into modules — rebuild is disabled to avoid conflicting updates.',
+      )
+      return
+    }
+    if ((activeRun.files ?? []).length === 0) {
+      setError('This run has no uploaded files')
+      return
+    }
+    setError(null)
+    setRebuilding(true)
+    // Drop stale/wrong rows immediately — same empty-loader spirit as #133 run switch.
+    const cleared = clearReviewTableForRebuild(activeRun.id)
+    setPayloads(cleared.payloads)
+    setTableBoundRunId(cleared.boundRunId)
+    setEditedRows(cleared.editedRows as null)
+    setTableLoading(cleared.loading)
+    try {
+      const updated = await workflowApi.rebuildReview(companyId, activeRun.id)
+      applyRunFromServer(updated, true)
+      void reloadRuns()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not rebuild review from run files.')
+      void workflowApi
+        .getRun(companyId, activeRun.id)
+        .then(run => applyRunFromServer(run, true))
+        .catch(() => {})
+    } finally {
+      setRebuilding(false)
+    }
+  }, [
+    activeRun,
+    approving,
+    applyRunFromServer,
+    busy,
+    companyId,
+    rebuilding,
+    reloadRuns,
+  ])
+
   const handleReVlmConfirm = useCallback(
     async ({
       taskFileIds,
@@ -981,10 +1026,12 @@ export function ProcessingView() {
   )
   const isAsset = (activeRun?.processing_mode ?? '').toUpperCase() === 'OTHER'
   const isBank = (activeRun?.processing_mode ?? '').toUpperCase() === 'BANK'
-  const tableAwaitingLoad = reviewTableShowingLoader(activeRunId, {
-    boundRunId: tableBoundRunId,
-    loading: tableLoading,
-  })
+  const tableAwaitingLoad =
+    rebuilding ||
+    reviewTableShowingLoader(activeRunId, {
+      boundRunId: tableBoundRunId,
+      loading: tableLoading,
+    })
   const arapRows = (combined.arapTransactions as ARAPTransaction[] | undefined) ?? []
   const bankRows = (combined.bankTransactions as BankTransaction[] | undefined) ?? []
   // Never surface an edited overlay / prior-run rows while loading or unbound.
@@ -1357,11 +1404,23 @@ export function ProcessingView() {
     !outputReadOnly &&
     !isRunning &&
     !anyNodeRunning &&
+    !rebuilding &&
     !tableAwaitingLoad &&
     fxReady &&
     reviewOwnership.ok &&
     editedRowsSafeForApprove(activeRunId, tableBoundRunId, editedRows, tableAwaitingLoad) &&
     (awaitingReview || (outputRowCount > 0 && hasOcrDataOnRun(activeRun)))
+  const canRebuildFromRunFiles =
+    Boolean(activeRun) &&
+    isBank &&
+    !outputReadOnly &&
+    !isRunning &&
+    !anyNodeRunning &&
+    !rebuilding &&
+    !busy &&
+    !approving &&
+    !reVlmLocked &&
+    (activeRun?.files.length ?? 0) > 0
   const completedFileCount = (activeRun?.files ?? []).filter(f =>
     ['ok', 'warning'].includes(f.file_status ?? ''),
   ).length
@@ -1729,7 +1788,9 @@ export function ProcessingView() {
           {activeRun ? (
             <div className="erp-proc-output-scroll">
               {tableAwaitingLoad ? (
-                <div className="erp-empty erp-empty--compact">Loading…</div>
+                <div className="erp-empty erp-empty--compact">
+                  {rebuilding ? "Rebuilding from this run's files…" : 'Loading…'}
+                </div>
               ) : (
                 <>
                   {showForeignHiddenNotice && (
@@ -1768,7 +1829,10 @@ export function ProcessingView() {
                         onDataChange={outputReadOnly ? undefined : rows => setEditedRows(rows)}
                         onApprove={() => void approve()}
                         canApprove={canApproveTable}
-                        approveBusy={approving}
+                        approveBusy={approving || rebuilding}
+                        onRebuildFromRunFiles={() => void rebuildFromRunFiles()}
+                        rebuildBusy={rebuilding}
+                        canRebuild={canRebuildFromRunFiles}
                         hideReceiptCurrency={hideReceiptCurrency}
                         onCompanyAmountClick={row => openRateDialog(row as Record<string, unknown>)}
                       />

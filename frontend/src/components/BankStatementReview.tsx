@@ -74,6 +74,10 @@ interface Props {
   onApprove?: () => void
   canApprove?: boolean
   approveBusy?: boolean
+  /** Re-extract review rows from this run's own uploaded files only. */
+  onRebuildFromRunFiles?: () => void
+  rebuildBusy?: boolean
+  canRebuild?: boolean
   hideReceiptCurrency?: boolean
   onCompanyAmountClick?: (row: BankTransaction) => void
 }
@@ -233,6 +237,9 @@ export function BankStatementReview({
   onApprove,
   canApprove = false,
   approveBusy = false,
+  onRebuildFromRunFiles,
+  rebuildBusy = false,
+  canRebuild = false,
   hideReceiptCurrency = false,
   onCompanyAmountClick,
 }: Props) {
@@ -453,7 +460,10 @@ export function BankStatementReview({
 
   const placementFlagCount = useMemo(() => countRowsNeedingPlacementCheck(rows), [rows])
   const hasPlacementFlags = placementFlagCount > 0
-  const approveEnabled = Boolean(canApprove) && !approveBusy && !hasPlacementFlags
+  const rebuildInFlight = Boolean(rebuildBusy)
+  const approveEnabled =
+    Boolean(canApprove) && !approveBusy && !rebuildInFlight && !hasPlacementFlags
+  const rebuildEnabled = Boolean(canRebuild) && !rebuildInFlight && !approveBusy
 
   const { isMobile } = useViewport()
   const S = useMemo(() => resolveBankStyles(isMobile), [isMobile])
@@ -491,12 +501,24 @@ export function BankStatementReview({
             onClick={onApprove}
             disabled={!approveEnabled}
             title={
-              hasPlacementFlags
-                ? placementCheckBannerText(placementFlagCount)
-                : 'Approve the table and transfer it to the destination module'
+              rebuildInFlight
+                ? 'Rebuild in progress'
+                : hasPlacementFlags
+                  ? placementCheckBannerText(placementFlagCount)
+                  : 'Approve the table and transfer it to the destination module'
             }
           >
             {approveBusy ? 'Approving...' : 'Approve'}
+          </button>
+        )}
+        {onRebuildFromRunFiles && (
+          <button
+            style={{ ...S.btn, opacity: !rebuildEnabled ? 0.5 : 1 }}
+            onClick={onRebuildFromRunFiles}
+            disabled={!rebuildEnabled}
+            title="Re-extract the review table from this run's own uploaded files only"
+          >
+            {rebuildInFlight ? 'Rebuilding…' : "Rebuild from this run's files"}
           </button>
         )}
         {!readOnly && onDeploy && (
