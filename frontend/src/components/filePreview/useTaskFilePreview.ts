@@ -1,10 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { taskApi } from '../../services/api'
+import { PDF_NOT_AVAILABLE_FOR_RUN, normalizePreviewPage } from './pdfPreviewSrc'
 import { guessMimeFromFilename } from './resolvePreviewKind'
 
 export type TaskPreviewFile = {
   taskFileId: string
   originalFilename?: string | null
+}
+
+export type OpenPreviewOptions = {
+  /** 1-based PDF page to open when known (e.g. empty-extract amber banner). */
+  page?: number | null
 }
 
 type CacheEntry = {
@@ -22,6 +28,8 @@ export type FilePreviewState = {
   previewUrl: string | null
   loading: boolean
   error: string | null
+  /** 1-based page for PDF fragment navigation; null when unknown. */
+  page: number | null
 }
 
 function filenameFor(file: TaskPreviewFile): string {
@@ -43,6 +51,7 @@ export function useTaskFilePreview(
     previewUrl: null,
     loading: false,
     error: null,
+    page: null,
   })
 
   const fileList = useMemo(
@@ -90,9 +99,24 @@ export function useTaskFilePreview(
   )
 
   const openPreview = useCallback(
-    async (taskFileId: string) => {
+    async (taskFileId: string, opts?: OpenPreviewOptions) => {
+      const page = normalizePreviewPage(opts?.page)
+      // Security: only open this run's own stored file IDs.
       const meta = files.find(f => f.taskFileId === taskFileId)
-      const filename = meta ? filenameFor(meta) : taskFileId
+      if (!meta) {
+        setState({
+          open: true,
+          activeFileId: taskFileId,
+          filename: taskFileId,
+          mimeType: '',
+          previewUrl: null,
+          loading: false,
+          error: PDF_NOT_AVAILABLE_FOR_RUN,
+          page,
+        })
+        return
+      }
+      const filename = filenameFor(meta)
       setState({
         open: true,
         activeFileId: taskFileId,
@@ -101,6 +125,7 @@ export function useTaskFilePreview(
         previewUrl: null,
         loading: true,
         error: null,
+        page,
       })
       try {
         const entry = await fetchFile(taskFileId, filename)
@@ -112,13 +137,13 @@ export function useTaskFilePreview(
           previewUrl: entry.blobUrl,
           loading: false,
           error: null,
+          page,
         })
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Could not load file preview.'
+      } catch {
         setState(prev => ({
           ...prev,
           loading: false,
-          error: msg,
+          error: PDF_NOT_AVAILABLE_FOR_RUN,
           previewUrl: null,
         }))
       }
@@ -131,8 +156,10 @@ export function useTaskFilePreview(
   }, [])
 
   const retryPreview = useCallback(() => {
-    if (state.activeFileId) void openPreview(state.activeFileId)
-  }, [state.activeFileId, openPreview])
+    if (state.activeFileId) {
+      void openPreview(state.activeFileId, { page: state.page })
+    }
+  }, [state.activeFileId, state.page, openPreview])
 
   const registerLocalFile = useCallback((taskFileId: string, file: File) => {
     localFilesRef.current.set(taskFileId, file)

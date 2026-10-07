@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { buildPdfPreviewSrc } from './pdfPreviewSrc'
 import { resolvePreviewKind } from './resolvePreviewKind'
 import './FilePreviewModal.css'
 
@@ -17,6 +18,8 @@ type Props = {
   error?: string | null
   files?: FilePreviewModalFile[]
   activeFileId?: string | null
+  /** 1-based PDF page to open when known. */
+  page?: number | null
   onSelectFile?: (id: string) => void
   onRetry?: () => void
   onDownload?: () => void
@@ -32,6 +35,7 @@ export function FilePreviewModal({
   error = null,
   files = [],
   activeFileId,
+  page = null,
   onSelectFile,
   onRetry,
   onDownload,
@@ -117,7 +121,7 @@ export function FilePreviewModal({
           ) : previewUrl && kind === 'pdf' ? (
             <div className="file-preview-viewer">
               <iframe
-                src={`${previewUrl}#view=FitH`}
+                src={buildPdfPreviewSrc(previewUrl, page)}
                 title={filename}
                 className="preview-pdf"
                 allow="fullscreen"

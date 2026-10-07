@@ -112,7 +112,11 @@ import {
   reviewTableShowingLoader,
 } from './reviewTableSession'
 import {
+  REVIEWED_NO_ROWS_GATE,
+  REVIEWED_NO_ROWS_LABEL,
+  VIEW_PDF_ACTION,
   collectEmptyExtractPagesFromRunFiles,
+  formatLiveOutputPageStatuses,
   type EmptyExtractPageFlag,
 } from '../../utils/bankEmptyExtract'
 
@@ -259,7 +263,8 @@ function nodeIconStatus(status?: string): string {
   return 'pending'
 }
 
-function fileStatusLabel(status: string): string {
+function fileStatusLabel(status: string, gate?: string | null): string {
+  if (gate === REVIEWED_NO_ROWS_GATE) return REVIEWED_NO_ROWS_LABEL
   switch (status) {
     case 'ok':
       return 'Passed'
@@ -1835,9 +1840,12 @@ export function ProcessingView() {
                 {activeRun.files.length > 0 && (
                   <ul className="erp-fstatus">
                     {activeRun.files.map(f => {
-                      const reason = [f.gate_result ? `gate: ${f.gate_result}` : '', f.error_text ?? '']
-                        .filter(Boolean)
-                        .join(' \u00B7 ')
+                      const livePages = formatLiveOutputPageStatuses(f)
+                      const reason =
+                        livePages ||
+                        [f.gate_result ? `gate: ${f.gate_result}` : '', f.error_text ?? '']
+                          .filter(Boolean)
+                          .join(' \u00B7 ')
                       const canRetry = f.file_status === 'failed' || f.file_status === 'warning'
                       const pageLabel = formatFilePageCount(f.page_count)
                       return (
@@ -1846,15 +1854,25 @@ export function ProcessingView() {
                           <button
                             type="button"
                             className="fn erp-link"
-                            title={`Preview ${f.original_filename ?? f.task_file_id}`}
+                            title={`${VIEW_PDF_ACTION}: ${f.original_filename ?? f.task_file_id}`}
                             onClick={() => void filePreview.openPreview(f.task_file_id)}
                           >
                             {f.original_filename ?? f.task_file_id}
                             {pageLabel ? ` (${pageLabel})` : ''}
                           </button>
-                          <span className={`fst ${f.file_status}`}>{fileStatusLabel(f.file_status)}</span>
+                          <button
+                            type="button"
+                            className="erp-btn erp-view-pdf"
+                            title={`${VIEW_PDF_ACTION}: ${f.original_filename ?? f.task_file_id}`}
+                            onClick={() => void filePreview.openPreview(f.task_file_id)}
+                          >
+                            {VIEW_PDF_ACTION}
+                          </button>
+                          <span className={`fst ${f.file_status}`}>
+                            {fileStatusLabel(f.file_status, f.gate_result)}
+                          </span>
                           {reason && (
-                            <span className="fre" title={reason}>
+                            <span className="fre" title={reason} data-live-page-statuses="true">
                               {reason}
                             </span>
                           )}
@@ -1928,6 +1946,9 @@ export function ProcessingView() {
                         emptyExtractPages={emptyExtractPages}
                         onRetryEmptyExtractPage={flag => void retryEmptyExtractPage(flag)}
                         onMarkEmptyExtractReviewed={flag => void markEmptyExtractReviewed(flag)}
+                        onViewEmptyExtractPdf={flag =>
+                          void filePreview.openPreview(flag.taskFileId, { page: flag.page })
+                        }
                         emptyExtractBusy={emptyExtractBusy}
                         hideReceiptCurrency={hideReceiptCurrency}
                         onCompanyAmountClick={row => openRateDialog(row as Record<string, unknown>)}
@@ -2083,6 +2104,7 @@ export function ProcessingView() {
         error={filePreview.state.error}
         files={filePreview.fileList}
         activeFileId={filePreview.state.activeFileId}
+        page={filePreview.state.page}
         onSelectFile={id => void filePreview.openPreview(id)}
         onRetry={filePreview.retryPreview}
         onDownload={filePreview.downloadActive}
