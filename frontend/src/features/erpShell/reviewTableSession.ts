@@ -32,6 +32,16 @@ export function clearReviewTableOnRunSwitch(
 }
 
 /**
+ * Clear table state when "Rebuild from this run's files" starts.
+ * Same empty-loader spirit as a run switch — never leave the old wrong rows visible.
+ */
+export function clearReviewTableForRebuild(
+  runId: string | null,
+): ReviewTableSession {
+  return clearReviewTableOnRunSwitch(runId)
+}
+
+/**
  * Apply a fetch result only if it still matches the active run.
  * Ignores stale responses from a previously selected run (race).
  */

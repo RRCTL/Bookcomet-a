@@ -320,6 +320,68 @@ _POST_APPROVE_RUN_STATUSES = frozenset({"coa_running", "completed", "done", "sav
 RE_VLM_LOCKED_DETAIL = (
     "Approved and loaded into modules — Re-VLM is disabled to avoid conflicting updates."
 )
+REBUILD_NO_FILES_DETAIL = "This run has no uploaded files"
+REBUILD_FOREIGN_FILES_DETAIL = "File IDs aren't in this run"
+
+
+def resolve_rebuild_task_file_ids(
+    run_files: list[Any],
+    requested_ids: list[str] | None = None,
+) -> list[str]:
+    """Return run-owned file IDs for a review rebuild; reject empty runs and foreign IDs."""
+    owned_ids = [
+        str(getattr(rf, "task_file_id", "") or "")
+        for rf in (run_files or [])
+        if getattr(rf, "task_file_id", None)
+    ]
+    if not owned_ids:
+        raise HTTPException(status_code=400, detail=REBUILD_NO_FILES_DETAIL)
+
+    if not requested_ids:
+        # Preserve first-seen order; drop empty / duplicate ids.
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for fid in owned_ids:
+            if fid and fid not in seen:
+                seen.add(fid)
+                ordered.append(fid)
+        return ordered
+
+    owned_set = set(owned_ids)
+    foreign = [fid for fid in requested_ids if fid and fid not in owned_set]
+    if foreign:
+        raise HTTPException(status_code=400, detail=REBUILD_FOREIGN_FILES_DETAIL)
+
+    seen_req: set[str] = set()
+    ordered_req: list[str] = []
+    for fid in requested_ids:
+        if fid and fid not in seen_req:
+            seen_req.add(fid)
+            ordered_req.append(fid)
+    if not ordered_req:
+        raise HTTPException(status_code=400, detail=REBUILD_NO_FILES_DETAIL)
+    return ordered_req
+
+
+def clear_run_review_ocr_state(run: WorkflowRun, run_files: list[Any], target_ids: list[str]) -> None:
+    """Drop saved review/OCR rows for target files so rebuild never shows stale wrong data."""
+    target = set(target_ids)
+    for rf in run_files:
+        if str(getattr(rf, "task_file_id", "") or "") not in target:
+            continue
+        rf.result_summary_json = None
+        rf.file_status = "pending"
+        rf.error_text = None
+        rf.gate_result = None
+
+    states = dict(run.node_states_json) if isinstance(run.node_states_json, dict) else {}
+    states.pop("merged_ocr", None)
+    states.pop("ocr_by_file", None)
+    # Draft review only — never auto-post. Drop uncommitted approve payload so the
+    # rebuilt table is the sole source until the user Approves again.
+    if not _run_has_locked_approved_table(run):
+        states.pop("approved_payload", None)
+    run.node_states_json = states
 
 
 def _approved_payload_has_rows(payload: dict[str, Any], processing_mode: str | None) -> bool:
@@ -2096,6 +2158,40 @@ class WorkflowService:
         db.commit()
         db.refresh(run)
         return run
+
+    @staticmethod
+    async def rebuild_review_from_run_files(
+        db: Session,
+        run: WorkflowRun,
+        task_file_ids: list[str] | None = None,
+    ) -> WorkflowRun:
+        """Re-extract review rows from this run's own uploads only (no journal transfer).
+
+        Clears stored OCR/review state for the selected run files, then reuses the
+        existing Re-VLM extraction pipeline. Journals stay draft until explicit Approve.
+        """
+        if _run_has_locked_approved_table(run):
+            raise HTTPException(status_code=409, detail=RE_VLM_LOCKED_DETAIL)
+
+        all_run_files = (
+            db.query(WorkflowRunFile).filter(WorkflowRunFile.run_id == run.id).all()
+        )
+        target_ids = resolve_rebuild_task_file_ids(all_run_files, task_file_ids)
+        clear_run_review_ocr_state(run, all_run_files, target_ids)
+        _append_console(
+            run,
+            "info",
+            f"Rebuild review from {len(target_ids)} run file(s)...",
+        )
+        db.commit()
+        db.refresh(run)
+
+        return await WorkflowService.re_vlm_files(
+            db,
+            run,
+            target_ids,
+            force_process=True,
+        )
 
     @staticmethod
     async def deploy_approved_coa(
