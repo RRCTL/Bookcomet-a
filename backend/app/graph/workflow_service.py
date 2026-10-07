@@ -2699,7 +2699,7 @@ class WorkflowService:
 
                 pending_extract: list[int] = []
                 for rf in run_files:
-                    payload = rf.result_summary_json
+                    payload = getattr(rf, "result_summary_json", None)
                     if not isinstance(payload, dict):
                         continue
                     summary = summarize_empty_extract_for_file(payload.get("pages"))

@@ -3452,27 +3452,16 @@ def _expand_scenario_d_inner_to_public_pages(raw: dict[str, Any]) -> list[dict[s
 
 
 def recompute_ocr_job_outcome_from_pages(pages: list[dict[str, Any]]) -> str:
-    from app.services.bank_empty_extract import (
-        EMPTY_EXTRACT_STATUS,
-        page_has_pending_empty_extract,
-    )
+    from app.services.bank_empty_extract import page_has_pending_empty_extract
 
     dict_pages = [p for p in pages if isinstance(p, dict)]
     has_hard_error = any(p.get("status") == "error" for p in dict_pages)
-    has_extract_miss = any(
-        page_has_pending_empty_extract(p) or p.get("status") == EMPTY_EXTRACT_STATUS
-        for p in dict_pages
-    )
-    has_clean_success = any(
-        p.get("status") == "success" and not page_has_pending_empty_extract(p)
-        for p in dict_pages
-    )
-    # Legacy pages may omit status; treat non-error / non-needs_retry as success-ish.
+    # Only *pending* extract misses count — acknowledged "reviewed with no rows" is clear.
+    has_extract_miss = any(page_has_pending_empty_extract(p) for p in dict_pages)
     has_any_non_failure = any(
-        p.get("status") not in ("error", EMPTY_EXTRACT_STATUS)
-        and not page_has_pending_empty_extract(p)
+        p.get("status") != "error" and not page_has_pending_empty_extract(p)
         for p in dict_pages
-    ) or has_clean_success
+    )
     if has_hard_error and not has_any_non_failure and not has_extract_miss:
         return "failed"
     if has_hard_error or has_extract_miss:
