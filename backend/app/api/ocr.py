@@ -3452,11 +3452,30 @@ def _expand_scenario_d_inner_to_public_pages(raw: dict[str, Any]) -> list[dict[s
 
 
 def recompute_ocr_job_outcome_from_pages(pages: list[dict[str, Any]]) -> str:
-    has_success = any(p.get("status") != "error" for p in pages if isinstance(p, dict))
-    has_error = any(p.get("status") == "error" for p in pages if isinstance(p, dict))
-    if has_error and not has_success:
+    from app.services.bank_empty_extract import (
+        EMPTY_EXTRACT_STATUS,
+        page_has_pending_empty_extract,
+    )
+
+    dict_pages = [p for p in pages if isinstance(p, dict)]
+    has_hard_error = any(p.get("status") == "error" for p in dict_pages)
+    has_extract_miss = any(
+        page_has_pending_empty_extract(p) or p.get("status") == EMPTY_EXTRACT_STATUS
+        for p in dict_pages
+    )
+    has_clean_success = any(
+        p.get("status") == "success" and not page_has_pending_empty_extract(p)
+        for p in dict_pages
+    )
+    # Legacy pages may omit status; treat non-error / non-needs_retry as success-ish.
+    has_any_non_failure = any(
+        p.get("status") not in ("error", EMPTY_EXTRACT_STATUS)
+        and not page_has_pending_empty_extract(p)
+        for p in dict_pages
+    ) or has_clean_success
+    if has_hard_error and not has_any_non_failure and not has_extract_miss:
         return "failed"
-    if has_error:
+    if has_hard_error or has_extract_miss:
         return "partial"
     return "ok"
 
@@ -3610,6 +3629,103 @@ def _multi_region_evidence(
     return True, "strong_multi_evidence", stats
 
 
+async def _enhance_bank_ocr_with_empty_extract_retry(
+    *,
+    ocr_result: Any,
+    page_num: int,
+    processing_mode: str,
+    company_id: str,
+    db: Session,
+    trace_id: str | None,
+    rule_md: str | None,
+    excl_rules: Any,
+) -> tuple[Any, Any]:
+    """Run bank_statement_page enhance; auto-retry once on dense empty-extract miss.
+
+    Returns (ai_enhanced_fields, EmptyExtractAssessment).
+    Does not invent transactions — only re-invokes the same enhance path.
+    """
+    from app.services.bank_empty_extract import assess_bank_page_extract
+
+    detected_type = _document_type_for_enhancement(
+        processing_mode, ocr_result.text, page_num=page_num
+    )
+    company_context = _load_company_context(db, company_id, detected_type)
+
+    async def _once() -> Any:
+        enhanced = await _ai_processor.enhance_ocr_result(
+            ocr_result,
+            document_type=detected_type,
+            processing_mode=processing_mode,
+            metadata={
+                "company_context": company_context,
+                "page_num": page_num,
+            },
+        )
+        if isinstance(enhanced, dict):
+            if trace_id:
+                _inject_trace_meta(enhanced, trace_id=trace_id)
+            ctx = enhanced.get("context_meta") or {}
+            if not isinstance(ctx, dict):
+                ctx = {}
+            ctx["rule_memory_mode"] = processing_mode
+            enhanced["context_meta"] = ctx
+            if isinstance(enhanced.get("transactions"), list):
+                enhanced["transactions"] = _apply_rules_from_memory(
+                    enhanced["transactions"],
+                    rule_md,
+                    ocr_result.text,
+                )
+                if excl_rules:
+                    enhanced["transactions"] = _apply_exclusions(
+                        enhanced["transactions"],
+                        excl_rules,
+                        ocr_result.text,
+                        processing_mode,
+                        db,
+                    )
+        return enhanced
+
+    ai_enhanced = await _once()
+    assessment = assess_bank_page_extract(
+        ocr_text=ocr_result.text,
+        lines_count=len(ocr_result.lines),
+        ai_enhanced=ai_enhanced,
+    )
+    if not assessment.needs_retry:
+        return ai_enhanced, assessment
+
+    logger.warning(
+        "[BANK][empty_extract] page=%s extract miss on dense OCR "
+        "(lines=%s ocr_chars=%s reply_chars=%s activity_rows=%s) — auto-retrying once",
+        page_num,
+        assessment.ocr_lines,
+        assessment.ocr_chars,
+        assessment.reply_chars,
+        assessment.activity_row_count,
+    )
+    ai_enhanced = await _once()
+    assessment = assess_bank_page_extract(
+        ocr_text=ocr_result.text,
+        lines_count=len(ocr_result.lines),
+        ai_enhanced=ai_enhanced,
+    )
+    if assessment.needs_retry:
+        logger.warning(
+            "[BANK][empty_extract] page=%s still empty after auto-retry "
+            "(reply_chars=%s) — marking needs_retry (extract miss, not blank page)",
+            page_num,
+            assessment.reply_chars,
+        )
+    else:
+        logger.info(
+            "[BANK][empty_extract] page=%s recovered after auto-retry (activity_rows=%s)",
+            page_num,
+            assessment.activity_row_count,
+        )
+    return ai_enhanced, assessment
+
+
 async def retry_scenario_d_pdf_page(
     *,
     pdf_path: str,
@@ -3697,38 +3813,59 @@ async def retry_scenario_d_pdf_page(
             )
             filtered_result = _filtering_pipeline.filter_and_extract(ocr_result)
             ai_enhanced_fields = None
+            empty_extract_assessment = None
             if _ai_processor.api_key:
                 try:
-                    detected_type = _document_type_for_enhancement(processing_mode, ocr_result.text)
-                    company_context = _load_company_context(db, company_id, detected_type)
-                    ai_enhanced = await _ai_processor.enhance_ocr_result(
-                        ocr_result,
-                        document_type=detected_type,
-                        processing_mode=processing_mode,
-                        metadata={"company_context": company_context},
-                    )
-                    ai_enhanced_fields = ai_enhanced
-                    if isinstance(ai_enhanced_fields, dict):
-                        _inject_trace_meta(ai_enhanced_fields, trace_id=trace_id)
-                        ctx = ai_enhanced_fields.get("context_meta") or {}
-                        if not isinstance(ctx, dict):
-                            ctx = {}
-                        ctx["rule_memory_mode"] = processing_mode
-                        ai_enhanced_fields["context_meta"] = ctx
-                        if isinstance(ai_enhanced_fields.get("transactions"), list):
-                            ai_enhanced_fields["transactions"] = _apply_rules_from_memory(
-                                ai_enhanced_fields["transactions"],
-                                _rule_md_pre,
-                                ocr_result.text,
-                            )
-                            if _excl_rules_pre:
-                                ai_enhanced_fields["transactions"] = _apply_exclusions(
+                    if processing_mode == "BANK":
+                        (
+                            ai_enhanced_fields,
+                            empty_extract_assessment,
+                        ) = await _enhance_bank_ocr_with_empty_extract_retry(
+                            ocr_result=ocr_result,
+                            page_num=page_num,
+                            processing_mode=processing_mode,
+                            company_id=company_id,
+                            db=db,
+                            trace_id=trace_id,
+                            rule_md=_rule_md_pre,
+                            excl_rules=_excl_rules_pre,
+                        )
+                    else:
+                        detected_type = _document_type_for_enhancement(
+                            processing_mode, ocr_result.text, page_num=page_num
+                        )
+                        company_context = _load_company_context(db, company_id, detected_type)
+                        ai_enhanced = await _ai_processor.enhance_ocr_result(
+                            ocr_result,
+                            document_type=detected_type,
+                            processing_mode=processing_mode,
+                            metadata={
+                                "company_context": company_context,
+                                "page_num": page_num,
+                            },
+                        )
+                        ai_enhanced_fields = ai_enhanced
+                        if isinstance(ai_enhanced_fields, dict):
+                            _inject_trace_meta(ai_enhanced_fields, trace_id=trace_id)
+                            ctx = ai_enhanced_fields.get("context_meta") or {}
+                            if not isinstance(ctx, dict):
+                                ctx = {}
+                            ctx["rule_memory_mode"] = processing_mode
+                            ai_enhanced_fields["context_meta"] = ctx
+                            if isinstance(ai_enhanced_fields.get("transactions"), list):
+                                ai_enhanced_fields["transactions"] = _apply_rules_from_memory(
                                     ai_enhanced_fields["transactions"],
-                                    _excl_rules_pre,
+                                    _rule_md_pre,
                                     ocr_result.text,
-                                    processing_mode,
-                                    db,
                                 )
+                                if _excl_rules_pre:
+                                    ai_enhanced_fields["transactions"] = _apply_exclusions(
+                                        ai_enhanced_fields["transactions"],
+                                        _excl_rules_pre,
+                                        ocr_result.text,
+                                        processing_mode,
+                                        db,
+                                    )
                 except Exception as exc:
                     logger.warning(
                         "   [WARN] AI enhancement failed on retry page %s: %s",
@@ -3743,6 +3880,14 @@ async def retry_scenario_d_pdf_page(
                 "field_confidence": filtered_result["overall_confidence"],
                 "ai_enhanced": ai_enhanced_fields,
             }
+            if processing_mode == "BANK" and empty_extract_assessment is not None:
+                from app.services.bank_empty_extract import apply_empty_extract_flags
+
+                apply_empty_extract_flags(
+                    raw_inner,
+                    empty_extract_assessment,
+                    auto_retried=empty_extract_assessment.needs_retry,
+                )
 
         return _expand_scenario_d_inner_to_public_pages(raw_inner)
     finally:
@@ -3765,15 +3910,19 @@ async def merge_ocr_job_retry_page_result(
     db: Session,
 ) -> dict[str, Any]:
     """Replace all rows for pdf page_num and return updated full OCR result dict."""
+    from app.services.bank_empty_extract import page_has_pending_empty_extract
+
     pages = existing.get("pages")
     if not isinstance(pages, list):
         raise ValueError("invalid existing result: pages")
-    has_err = any(
-        isinstance(p, dict) and int(p.get("page", -1)) == page_num and p.get("status") == "error"
+    has_retryable = any(
+        isinstance(p, dict)
+        and int(p.get("page", -1)) == page_num
+        and (p.get("status") == "error" or page_has_pending_empty_extract(p))
         for p in pages
     )
-    if not has_err:
-        raise ValueError("no error row for this page")
+    if not has_retryable:
+        raise ValueError("no error or empty-extract row for this page")
     new_rows = await retry_scenario_d_pdf_page(
         pdf_path=pdf_path,
         page_num=page_num,
@@ -5840,53 +5989,72 @@ async def ocr_test_core(
                                     "metadata": {"page": page_num, "mode": processing_mode},
                                 })
                                 ai_enhanced_fields = None
+                                empty_extract_assessment = None
                                 if _ai_processor.api_key:
                                     try:
-                                        detected_type = _document_type_for_enhancement(
-                                            processing_mode, ocr_result.text, page_num=page_num
-                                        )
-                                        # Use pre-loaded company context key for BANK/other modes
-                                        company_context = _load_company_context(
-                                            db, company_id, detected_type
-                                        )
-                                        ai_enhanced = await _ai_processor.enhance_ocr_result(
-                                            ocr_result,
-                                            document_type=detected_type,
-                                            processing_mode=processing_mode,
-                                            metadata={
-                                                "company_context": company_context,
-                                                "page_num": page_num,
-                                            },
-                                        )
-                                        ai_enhanced_fields = ai_enhanced
-                                        if isinstance(ai_enhanced_fields, dict):
-                                            _inject_trace_meta(
-                                                ai_enhanced_fields, trace_id=trace_id
+                                        if processing_mode == "BANK":
+                                            (
+                                                ai_enhanced_fields,
+                                                empty_extract_assessment,
+                                            ) = await _enhance_bank_ocr_with_empty_extract_retry(
+                                                ocr_result=ocr_result,
+                                                page_num=page_num,
+                                                processing_mode=processing_mode,
+                                                company_id=company_id,
+                                                db=db,
+                                                trace_id=trace_id,
+                                                rule_md=_rule_md_pre,
+                                                excl_rules=_excl_rules_pre,
                                             )
-                                            ctx = ai_enhanced_fields.get("context_meta") or {}
-                                            ctx["rule_memory_mode"] = processing_mode
-                                            ai_enhanced_fields["context_meta"] = ctx
-                                            if isinstance(
-                                                ai_enhanced_fields.get("transactions"), list
-                                            ):
-                                                # Use pre-loaded rule memory (no extra DB call)
-                                                ai_enhanced_fields["transactions"] = (
-                                                    _apply_rules_from_memory(
-                                                        ai_enhanced_fields["transactions"],
-                                                        _rule_md_pre,
-                                                        ocr_result.text,
-                                                    )
+                                        else:
+                                            detected_type = _document_type_for_enhancement(
+                                                processing_mode,
+                                                ocr_result.text,
+                                                page_num=page_num,
+                                            )
+                                            company_context = _load_company_context(
+                                                db, company_id, detected_type
+                                            )
+                                            ai_enhanced = await _ai_processor.enhance_ocr_result(
+                                                ocr_result,
+                                                document_type=detected_type,
+                                                processing_mode=processing_mode,
+                                                metadata={
+                                                    "company_context": company_context,
+                                                    "page_num": page_num,
+                                                },
+                                            )
+                                            ai_enhanced_fields = ai_enhanced
+                                            if isinstance(ai_enhanced_fields, dict):
+                                                _inject_trace_meta(
+                                                    ai_enhanced_fields, trace_id=trace_id
                                                 )
-                                                if _excl_rules_pre:
+                                                ctx = ai_enhanced_fields.get("context_meta") or {}
+                                                ctx["rule_memory_mode"] = processing_mode
+                                                ai_enhanced_fields["context_meta"] = ctx
+                                                if isinstance(
+                                                    ai_enhanced_fields.get("transactions"),
+                                                    list,
+                                                ):
                                                     ai_enhanced_fields["transactions"] = (
-                                                        _apply_exclusions(
+                                                        _apply_rules_from_memory(
                                                             ai_enhanced_fields["transactions"],
-                                                            _excl_rules_pre,
+                                                            _rule_md_pre,
                                                             ocr_result.text,
-                                                            processing_mode,
-                                                            db,
                                                         )
                                                     )
+                                                    if _excl_rules_pre:
+                                                        ai_enhanced_fields["transactions"] = (
+                                                            _apply_exclusions(
+                                                                ai_enhanced_fields[
+                                                                    "transactions"
+                                                                ],
+                                                                _excl_rules_pre,
+                                                                ocr_result.text,
+                                                                processing_mode,
+                                                                db,
+                                                            )
+                                                        )
                                         pending_events.append({
                                             "company_id": company_id,
                                             "trace_id": trace_id,
@@ -5905,7 +6073,7 @@ async def ocr_test_core(
                                             "   [WARN] AI enhancement failed for page %d: %s",
                                             page_num, exc,
                                         )
-                                return {
+                                page_out = {
                                     "page": page_num,
                                     "text": ocr_result.text,
                                     "lines_count": len(ocr_result.lines),
@@ -5914,6 +6082,17 @@ async def ocr_test_core(
                                     "ai_enhanced": ai_enhanced_fields,
                                     "_events": pending_events,
                                 }
+                                if processing_mode == "BANK" and empty_extract_assessment is not None:
+                                    from app.services.bank_empty_extract import (
+                                        apply_empty_extract_flags,
+                                    )
+
+                                    apply_empty_extract_flags(
+                                        page_out,
+                                        empty_extract_assessment,
+                                        auto_retried=empty_extract_assessment.needs_retry,
+                                    )
+                                return page_out
 
                         # ── Scenario D queue workers with early-stop policy ───────────────
                         n_pdf_pages = len(image_paths)
@@ -6103,12 +6282,7 @@ async def ocr_test_core(
                         gather_page_errors = sum(
                             1 for _p in merged_pages if isinstance(_p, dict) and _p.get("status") == "error"
                         )
-                        if gather_page_errors == 0:
-                            ocr_job_outcome = "ok"
-                        elif gather_page_errors >= len(merged_pages):
-                            ocr_job_outcome = "failed"
-                        else:
-                            ocr_job_outcome = "partial"
+                        ocr_job_outcome = recompute_ocr_job_outcome_from_pages(merged_pages)
 
                         logger.info(
                             "[ocr_metrics] scenario_d pages_seen=%s failed_pages=%s queue_wait_ms=%s page_process_ms=%s terminated_reason=%s",
@@ -6119,11 +6293,17 @@ async def ocr_test_core(
                             terminated_reason,
                         )
                         if ocr_job_outcome != "ok":
+                            from app.services.bank_empty_extract import (
+                                collect_pending_empty_extract_pages,
+                            )
+
+                            empty_n = len(collect_pending_empty_extract_pages(merged_pages))
                             logger.info(
-                                "[ocr_metrics] partial_job outcome=%s failed_pages=%s/%s",
+                                "[ocr_metrics] partial_job outcome=%s failed_pages=%s/%s empty_extract_pages=%s",
                                 ocr_job_outcome,
                                 gather_page_errors,
                                 len(merged_pages),
+                                empty_n,
                             )
 
                         logger.info("="*60)

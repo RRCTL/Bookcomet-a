@@ -12,6 +12,19 @@ def test_recompute_outcome_partial() -> None:
     assert recompute_ocr_job_outcome_from_pages(pages) == "partial"
 
 
+def test_recompute_outcome_partial_on_empty_extract_miss() -> None:
+    pages = [
+        {"page": 1, "status": "success"},
+        {
+            "page": 2,
+            "status": "needs_retry",
+            "empty_extract": True,
+            "empty_extract_acknowledged": False,
+        },
+    ]
+    assert recompute_ocr_job_outcome_from_pages(pages) == "partial"
+
+
 def test_recompute_outcome_all_error() -> None:
     pages = [{"page": 1, "status": "error"}]
     assert recompute_ocr_job_outcome_from_pages(pages) == "failed"

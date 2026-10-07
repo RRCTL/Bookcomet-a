@@ -14,6 +14,15 @@ import {
   countRowsNeedingPlacementCheck,
   placementCheckBannerText,
 } from '../utils/bankRowFieldCheck'
+import {
+  EMPTY_EXTRACT_BODY,
+  EMPTY_EXTRACT_MARK_ACTION,
+  EMPTY_EXTRACT_MARK_CONFIRM,
+  EMPTY_EXTRACT_RETRY_ACTION,
+  EMPTY_EXTRACT_TITLE,
+  emptyExtractBannerText,
+  type EmptyExtractPageFlag,
+} from '../utils/bankEmptyExtract'
 
 const EMPTY_LOCK_KEYS: ReadonlySet<string> = new Set()
 
@@ -78,6 +87,11 @@ interface Props {
   onRebuildFromRunFiles?: () => void
   rebuildBusy?: boolean
   canRebuild?: boolean
+  /** Dense-OCR pages where extract returned no rows (amber — extract miss, not blank page). */
+  emptyExtractPages?: EmptyExtractPageFlag[]
+  onRetryEmptyExtractPage?: (flag: EmptyExtractPageFlag) => void
+  onMarkEmptyExtractReviewed?: (flag: EmptyExtractPageFlag) => void
+  emptyExtractBusy?: boolean
   hideReceiptCurrency?: boolean
   onCompanyAmountClick?: (row: BankTransaction) => void
 }
@@ -240,6 +254,10 @@ export function BankStatementReview({
   onRebuildFromRunFiles,
   rebuildBusy = false,
   canRebuild = false,
+  emptyExtractPages = [],
+  onRetryEmptyExtractPage,
+  onMarkEmptyExtractReviewed,
+  emptyExtractBusy = false,
   hideReceiptCurrency = false,
   onCompanyAmountClick,
 }: Props) {
@@ -460,10 +478,18 @@ export function BankStatementReview({
 
   const placementFlagCount = useMemo(() => countRowsNeedingPlacementCheck(rows), [rows])
   const hasPlacementFlags = placementFlagCount > 0
+  const hasEmptyExtractFlags = emptyExtractPages.length > 0
   const rebuildInFlight = Boolean(rebuildBusy)
+  const extractRetryInFlight = Boolean(emptyExtractBusy)
   const approveEnabled =
-    Boolean(canApprove) && !approveBusy && !rebuildInFlight && !hasPlacementFlags
-  const rebuildEnabled = Boolean(canRebuild) && !rebuildInFlight && !approveBusy
+    Boolean(canApprove) &&
+    !approveBusy &&
+    !rebuildInFlight &&
+    !extractRetryInFlight &&
+    !hasPlacementFlags &&
+    !hasEmptyExtractFlags
+  const rebuildEnabled =
+    Boolean(canRebuild) && !rebuildInFlight && !approveBusy && !extractRetryInFlight
 
   const { isMobile } = useViewport()
   const S = useMemo(() => resolveBankStyles(isMobile), [isMobile])
@@ -503,9 +529,13 @@ export function BankStatementReview({
             title={
               rebuildInFlight
                 ? 'Rebuild in progress'
-                : hasPlacementFlags
-                  ? placementCheckBannerText(placementFlagCount)
-                  : 'Approve the table and transfer it to the destination module'
+                : extractRetryInFlight
+                  ? 'Page retry in progress'
+                  : hasEmptyExtractFlags
+                    ? emptyExtractBannerText(emptyExtractPages.length)
+                    : hasPlacementFlags
+                      ? placementCheckBannerText(placementFlagCount)
+                      : 'Approve the table and transfer it to the destination module'
             }
           >
             {approveBusy ? 'Approving...' : 'Approve'}
@@ -529,6 +559,73 @@ export function BankStatementReview({
         <div style={{ flex: 1 }} />
         <div style={S.rowCount}>{rows.length} transaction{rows.length === 1 ? '' : 's'}</div>
       </div>
+
+      {hasEmptyExtractFlags && (
+        <div
+          role="status"
+          data-empty-extract="true"
+          style={{
+            margin: '0 12px 8px',
+            padding: '10px 12px',
+            borderRadius: 6,
+            background: '#fffbeb',
+            border: '1px solid #f59e0b',
+            color: '#92400e',
+            fontSize: 13,
+          }}
+        >
+          {emptyExtractPages.map(flag => (
+            <div
+              key={`${flag.taskFileId}:${flag.page}`}
+              style={{ marginBottom: 10 }}
+              data-empty-extract-page={flag.page}
+            >
+              <div style={{ fontWeight: 700 }}>
+                {flag.filename} · page {flag.page}: {flag.title || EMPTY_EXTRACT_TITLE}
+              </div>
+              <div style={{ marginTop: 4, fontWeight: 500 }}>
+                {flag.body || EMPTY_EXTRACT_BODY}
+              </div>
+              <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {onRetryEmptyExtractPage && (
+                  <button
+                    type="button"
+                    className="erp-btn"
+                    style={{
+                      ...S.btn,
+                      background: '#f59e0b',
+                      color: '#111827',
+                      border: '1px solid #d97706',
+                      fontWeight: 600,
+                      opacity: extractRetryInFlight ? 0.6 : 1,
+                    }}
+                    disabled={extractRetryInFlight || readOnly}
+                    onClick={() => onRetryEmptyExtractPage(flag)}
+                  >
+                    {EMPTY_EXTRACT_RETRY_ACTION}
+                  </button>
+                )}
+                {flag.autoRetried && onMarkEmptyExtractReviewed && (
+                  <button
+                    type="button"
+                    className="erp-btn"
+                    style={{ ...S.btn, opacity: extractRetryInFlight ? 0.6 : 1 }}
+                    disabled={extractRetryInFlight || readOnly}
+                    title={EMPTY_EXTRACT_MARK_CONFIRM}
+                    onClick={() => {
+                      if (window.confirm(EMPTY_EXTRACT_MARK_CONFIRM)) {
+                        onMarkEmptyExtractReviewed(flag)
+                      }
+                    }}
+                  >
+                    {EMPTY_EXTRACT_MARK_ACTION}
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {hasPlacementFlags && (
         <div

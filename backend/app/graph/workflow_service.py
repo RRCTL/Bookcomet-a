@@ -1535,6 +1535,29 @@ class WorkflowService:
                     "result": result,
                 }
 
+        # Dense-OCR extract miss: do not report whole-file Passed while any page
+        # still needs retry (amber). Journals stay draft until explicit Approve.
+        if (run.processing_mode or "").upper() == "BANK" and isinstance(result, dict):
+            from app.services.bank_empty_extract import (
+                EMPTY_EXTRACT_GATE,
+                summarize_empty_extract_for_file,
+            )
+
+            empty_summary = summarize_empty_extract_for_file(result.get("pages"))
+            if empty_summary:
+                run_file.file_status = "warning"
+                run_file.gate_result = EMPTY_EXTRACT_GATE
+                run_file.error_text = str(empty_summary.get("message") or EMPTY_EXTRACT_GATE)[:2000]
+                run_file.result_summary_json = result
+                db.commit()
+                return {
+                    "ok": False,
+                    "warning": True,
+                    "empty_extract": True,
+                    "empty_extract_summary": empty_summary,
+                    "result": result,
+                }
+
         run_file.file_status = "ok"
         run_file.gate_result = None
         run_file.error_text = None
@@ -2194,6 +2217,254 @@ class WorkflowService:
         )
 
     @staticmethod
+    def _refresh_bank_file_status_from_pages(run_file: WorkflowRunFile) -> None:
+        """Set file_status from page-level empty-extract flags (no whole-file Passed while amber)."""
+        from app.services.bank_empty_extract import (
+            EMPTY_EXTRACT_GATE,
+            summarize_empty_extract_for_file,
+        )
+
+        payload = run_file.result_summary_json
+        if not isinstance(payload, dict):
+            return
+        pages = payload.get("pages")
+        summary = summarize_empty_extract_for_file(pages)
+        if summary:
+            run_file.file_status = "warning"
+            run_file.gate_result = EMPTY_EXTRACT_GATE
+            run_file.error_text = str(summary.get("message") or EMPTY_EXTRACT_GATE)[:2000]
+        elif run_file.file_status != "failed":
+            # Clear EMPTY_EXTRACT soft warning only; leave other failures alone.
+            if run_file.gate_result in (None, EMPTY_EXTRACT_GATE) or run_file.gate_result == "":
+                run_file.file_status = "ok"
+                run_file.gate_result = None
+                run_file.error_text = None
+        if isinstance(pages, list):
+            from app.api.ocr import recompute_ocr_job_outcome_from_pages
+
+            payload = dict(payload)
+            payload["ocr_job_outcome"] = recompute_ocr_job_outcome_from_pages(pages)
+            run_file.result_summary_json = payload
+
+    @staticmethod
+    async def retry_bank_empty_extract_page(
+        db: Session,
+        run: WorkflowRun,
+        task_file_id: str,
+        page_num: int,
+    ) -> WorkflowRun:
+        """Re-run Re-VLM extract for one bank PDF page flagged as dense empty-extract miss."""
+        from app.api.ocr import retry_scenario_d_pdf_page
+        from app.services.bank_empty_extract import page_has_pending_empty_extract
+        from app.services.file_storage import read_stored_bytes
+
+        if _run_has_locked_approved_table(run):
+            raise HTTPException(status_code=409, detail=RE_VLM_LOCKED_DETAIL)
+        if (run.processing_mode or "").upper() != "BANK":
+            raise HTTPException(status_code=400, detail="Empty-extract page retry is BANK-only")
+        if page_num < 1:
+            raise HTTPException(status_code=400, detail="page must be >= 1")
+
+        run_file = (
+            db.query(WorkflowRunFile)
+            .filter(
+                WorkflowRunFile.run_id == run.id,
+                WorkflowRunFile.task_file_id == task_file_id,
+            )
+            .first()
+        )
+        if not run_file:
+            raise HTTPException(status_code=404, detail="Run file not found")
+        task_file = (
+            db.query(TaskFile)
+            .filter(TaskFile.id == task_file_id, TaskFile.deleted_at.is_(None))
+            .first()
+        )
+        if not task_file or not task_file.storage_path:
+            raise HTTPException(status_code=404, detail="File missing on disk")
+
+        payload = run_file.result_summary_json
+        if not isinstance(payload, dict) or not isinstance(payload.get("pages"), list):
+            raise HTTPException(status_code=400, detail="No multi-page extract result on this file")
+        pages = list(payload["pages"])
+        target = next(
+            (
+                p
+                for p in pages
+                if isinstance(p, dict) and int(p.get("page", -1)) == page_num
+            ),
+            None,
+        )
+        if target is None:
+            raise HTTPException(status_code=404, detail=f"Page {page_num} not found in extract")
+        if not page_has_pending_empty_extract(target) and target.get("status") != "error":
+            raise HTTPException(
+                status_code=400,
+                detail="Page is not flagged for empty-extract retry",
+            )
+
+        # Write bytes to a temp PDF path for Scenario D single-page retry.
+        import tempfile
+
+        content = read_stored_bytes(task_file.storage_path)
+        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        try:
+            tmp.write(content)
+            tmp.flush()
+            tmp.close()
+            new_rows = await retry_scenario_d_pdf_page(
+                pdf_path=tmp.name,
+                page_num=page_num,
+                processing_mode="BANK",
+                multi_receipt_confirmed=False,
+                company_id=run.company_id,
+                trace_id=str(uuid.uuid4()),
+                filename=task_file.original_filename or "upload.pdf",
+                db=db,
+                background_job_id=None,
+            )
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+
+        kept = [
+            p
+            for p in pages
+            if not (isinstance(p, dict) and int(p.get("page", -1)) == page_num)
+        ]
+        merged_pages = kept + [r for r in new_rows if isinstance(r, dict)]
+        merged_pages.sort(key=lambda p: int(p.get("page") or 0))
+        updated = dict(payload)
+        updated["pages"] = merged_pages
+        from app.api.ocr import recompute_ocr_job_outcome_from_pages
+
+        updated["ocr_job_outcome"] = recompute_ocr_job_outcome_from_pages(merged_pages)
+        hist = updated.get("empty_extract_retry_history")
+        if not isinstance(hist, list):
+            hist = []
+        hist.append(
+            {
+                "page": page_num,
+                "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "ok": not any(
+                    page_has_pending_empty_extract(r) for r in new_rows if isinstance(r, dict)
+                ),
+            }
+        )
+        updated["empty_extract_retry_history"] = hist
+        run_file.result_summary_json = updated
+        WorkflowService._refresh_bank_file_status_from_pages(run_file)
+
+        all_run_files = (
+            db.query(WorkflowRunFile).filter(WorkflowRunFile.run_id == run.id).all()
+        )
+        ok_count = sum(1 for rf in all_run_files if rf.file_status == "ok")
+        warn_count = sum(1 for rf in all_run_files if rf.file_status == "warning")
+        merged = _merge_run_files_ocr(all_run_files)
+        _finalize_run_after_vlm(
+            run,
+            all_run_files,
+            ok_count=ok_count,
+            warn_count=warn_count,
+            console_message=(
+                f"Retry page {page_num} on {task_file.original_filename or task_file_id}: "
+                f"{len(merged)} row(s) in table."
+            ),
+        )
+        db.commit()
+        db.refresh(run)
+        return run
+
+    @staticmethod
+    def mark_bank_page_reviewed_with_no_rows(
+        db: Session,
+        run: WorkflowRun,
+        task_file_id: str,
+        page_num: int,
+    ) -> WorkflowRun:
+        """Rare secondary action: user confirms they checked the PDF and accept no rows."""
+        from app.services.bank_empty_extract import (
+            mark_page_reviewed_with_no_rows,
+            page_has_pending_empty_extract,
+        )
+
+        if _run_has_locked_approved_table(run):
+            raise HTTPException(status_code=409, detail=RE_VLM_LOCKED_DETAIL)
+        if (run.processing_mode or "").upper() != "BANK":
+            raise HTTPException(status_code=400, detail="Mark-reviewed is BANK-only")
+        if page_num < 1:
+            raise HTTPException(status_code=400, detail="page must be >= 1")
+
+        run_file = (
+            db.query(WorkflowRunFile)
+            .filter(
+                WorkflowRunFile.run_id == run.id,
+                WorkflowRunFile.task_file_id == task_file_id,
+            )
+            .first()
+        )
+        if not run_file:
+            raise HTTPException(status_code=404, detail="Run file not found")
+        payload = run_file.result_summary_json
+        if not isinstance(payload, dict) or not isinstance(payload.get("pages"), list):
+            raise HTTPException(status_code=400, detail="No multi-page extract result on this file")
+
+        pages = [dict(p) if isinstance(p, dict) else p for p in payload["pages"]]
+        found = False
+        for i, p in enumerate(pages):
+            if not isinstance(p, dict):
+                continue
+            try:
+                pn = int(p.get("page", -1))
+            except (TypeError, ValueError):
+                continue
+            if pn != page_num:
+                continue
+            if not page_has_pending_empty_extract(p):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Page is not flagged for empty-extract review",
+                )
+            # Only offer mark-reviewed after auto-retry already failed (rare secondary).
+            if not p.get("empty_extract_auto_retried"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Retry this page first before marking as reviewed with no rows",
+                )
+            pages[i] = mark_page_reviewed_with_no_rows(p)
+            found = True
+            break
+        if not found:
+            raise HTTPException(status_code=404, detail=f"Page {page_num} not found in extract")
+
+        updated = dict(payload)
+        updated["pages"] = pages
+        run_file.result_summary_json = updated
+        WorkflowService._refresh_bank_file_status_from_pages(run_file)
+
+        all_run_files = (
+            db.query(WorkflowRunFile).filter(WorkflowRunFile.run_id == run.id).all()
+        )
+        ok_count = sum(1 for rf in all_run_files if rf.file_status == "ok")
+        warn_count = sum(1 for rf in all_run_files if rf.file_status == "warning")
+        merged = _merge_run_files_ocr(all_run_files)
+        _finalize_run_after_vlm(
+            run,
+            all_run_files,
+            ok_count=ok_count,
+            warn_count=warn_count,
+            console_message=(
+                f"Page {page_num} marked as reviewed with no rows "
+                f"({task_file_id})."
+            ),
+        )
+        db.commit()
+        db.refresh(run)
+        return run
+
+    @staticmethod
     async def deploy_approved_coa(
         db: Session,
         run: WorkflowRun,
@@ -2419,6 +2690,27 @@ class WorkflowService:
                         detail=(
                             f"{len(misplaced)} row(s) need checking: date or amount looks "
                             "misplaced. Fix or delete them before approving."
+                        ),
+                    )
+                from app.services.bank_empty_extract import (
+                    EMPTY_EXTRACT_TITLE,
+                    summarize_empty_extract_for_file,
+                )
+
+                pending_extract: list[int] = []
+                for rf in run_files:
+                    payload = rf.result_summary_json
+                    if not isinstance(payload, dict):
+                        continue
+                    summary = summarize_empty_extract_for_file(payload.get("pages"))
+                    if summary:
+                        pending_extract.extend(int(p) for p in summary.get("pending_pages") or [])
+                if pending_extract:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"{len(sorted(set(pending_extract)))} page(s) still need retry: "
+                            f"{EMPTY_EXTRACT_TITLE}"
                         ),
                     )
 
