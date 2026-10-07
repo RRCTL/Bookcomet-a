@@ -24,6 +24,10 @@ EMPTY_EXTRACT_MARK_REVIEWED_CONFIRM = (
     "Only use this if you have checked the PDF and this page really has no "
     "transactions to extract."
 )
+# Neutral Live-output label after Confirm — not Passed, not amber warning.
+REVIEWED_NO_ROWS_STATUS = "reviewed_no_rows"
+REVIEWED_NO_ROWS_LABEL = "Reviewed — no rows"
+REVIEWED_NO_ROWS_GATE = "REVIEWED_NO_ROWS"
 # Back-compat alias used in logs / gate summaries (title is the user-facing string).
 EMPTY_EXTRACT_UI_MESSAGE = EMPTY_EXTRACT_TITLE
 EMPTY_EXTRACT_GATE = "EMPTY_EXTRACT"
@@ -359,19 +363,164 @@ def summarize_empty_extract_for_file(pages: Any) -> dict[str, Any] | None:
     }
 
 
+def page_is_reviewed_no_rows(page: Any) -> bool:
+    """True when the user confirmed this page has no rows to extract."""
+    if not isinstance(page, dict):
+        return False
+    if page.get("empty_extract_acknowledged") is True:
+        return True
+    return page.get("status") == REVIEWED_NO_ROWS_STATUS
+
+
+def collect_reviewed_no_rows_pages(pages: Any) -> list[dict[str, Any]]:
+    if not isinstance(pages, list):
+        return []
+    return [p for p in pages if page_is_reviewed_no_rows(p)]
+
+
+def _page_num(page: dict[str, Any]) -> int | None:
+    try:
+        n = int(page.get("page"))
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 1 else None
+
+
+def live_page_status_label(page: dict[str, Any]) -> str | None:
+    """One Live-output fragment for a page (None = quiet success / not notable)."""
+    n = _page_num(page)
+    if n is None:
+        return None
+    if page_is_reviewed_no_rows(page):
+        return f"Page {n}: {REVIEWED_NO_ROWS_LABEL}"
+    if page_has_pending_empty_extract(page):
+        return f"Page {n}: needs retry"
+    status = str(page.get("status") or "").lower()
+    if status == "error":
+        return f"Page {n}: error"
+    if status in ("running", "processing", "pending"):
+        return f"Page {n}: Processing"
+    return None
+
+
+def format_live_output_page_statuses(
+    pages: Any,
+    *,
+    file_status: str | None = None,
+    page_count: int | None = None,
+) -> str:
+    """Per-page Live output: 'Page 1: Reviewed — no rows · Page 2: needs retry'."""
+    dict_pages = [p for p in pages if isinstance(p, dict)] if isinstance(pages, list) else []
+    parts: list[str] = []
+    seen: set[int] = set()
+    for page in sorted(dict_pages, key=lambda p: _page_num(p) or 0):
+        label = live_page_status_label(page)
+        n = _page_num(page)
+        if n is not None:
+            seen.add(n)
+        if label:
+            parts.append(label)
+    # While the file is still processing, surface pages not yet present as Processing.
+    if (file_status or "").lower() == "running" and page_count and page_count > 0:
+        for n in range(1, int(page_count) + 1):
+            if n not in seen:
+                parts.append(f"Page {n}: Processing")
+    return " · ".join(parts)
+
+
+def summarize_reviewed_no_rows_for_file(pages: Any) -> dict[str, Any] | None:
+    """Live-output summary when amber is cleared via mark-reviewed (not Passed)."""
+    reviewed = collect_reviewed_no_rows_pages(pages)
+    if not reviewed:
+        return None
+    page_nums = sorted({n for p in reviewed if (n := _page_num(p)) is not None})
+    message = format_live_output_page_statuses(pages) or REVIEWED_NO_ROWS_LABEL
+    return {
+        "gate": REVIEWED_NO_ROWS_GATE,
+        "reviewed_pages": page_nums,
+        "count": len(page_nums) or len(reviewed),
+        "label": REVIEWED_NO_ROWS_LABEL,
+        "message": message,
+    }
+
+
+def preserve_user_reviewed_pages(
+    existing_pages: Any,
+    incoming_pages: Any,
+) -> list[dict[str, Any]]:
+    """Mark wins: late VLM must not overwrite acknowledged / reviewed_no_rows pages.
+
+    Matches by 1-based page number. Reviewed pages from ``existing`` replace any
+    incoming page with the same number; reviewed pages missing from incoming are
+    kept. Non-reviewed incoming pages pass through unchanged.
+    """
+    import copy
+
+    existing = [p for p in existing_pages if isinstance(p, dict)] if isinstance(existing_pages, list) else []
+    incoming = [p for p in incoming_pages if isinstance(p, dict)] if isinstance(incoming_pages, list) else []
+
+    reviewed_by_page: dict[int, dict[str, Any]] = {}
+    for p in existing:
+        if not page_is_reviewed_no_rows(p):
+            continue
+        n = _page_num(p)
+        if n is None:
+            continue
+        reviewed_by_page[n] = copy.deepcopy(p)
+
+    out: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for p in incoming:
+        n = _page_num(p)
+        if n is not None and n in seen:
+            continue
+        if n is not None and n in reviewed_by_page:
+            out.append(reviewed_by_page[n])
+            seen.add(n)
+        else:
+            out.append(copy.deepcopy(p))
+            if n is not None:
+                seen.add(n)
+    for n, p in sorted(reviewed_by_page.items()):
+        if n not in seen:
+            out.append(p)
+            seen.add(n)
+    out.sort(key=lambda p: _page_num(p) or 0)
+    return out
+
+
+def merge_result_preserving_reviewed(
+    prior: dict[str, Any] | None,
+    incoming: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge a VLM result into prior summary without clearing user mark-reviewed pages."""
+    if not isinstance(prior, dict):
+        return dict(incoming)
+    merged = dict(incoming)
+    merged["pages"] = preserve_user_reviewed_pages(prior.get("pages"), incoming.get("pages"))
+    # Keep prior reviewed summary keys if pages still include marks.
+    reviewed = summarize_reviewed_no_rows_for_file(merged.get("pages"))
+    if reviewed:
+        merged["reviewed_no_rows_summary"] = reviewed
+    else:
+        merged.pop("reviewed_no_rows_summary", None)
+    return merged
+
+
 def mark_page_reviewed_with_no_rows(page: dict[str, Any]) -> dict[str, Any]:
     """User explicitly confirms they checked the PDF and accept no extracted rows.
 
     Rare secondary action — only after auto/manual retry still returns no rows.
     Does not invent transactions; journals stay draft until Approve.
+    Persists as acknowledged so refresh does not revive the amber banner.
     """
     page["empty_extract_acknowledged"] = True
     page["empty_extract"] = False
-    if page.get("status") == EMPTY_EXTRACT_STATUS:
-        page["status"] = "success"
+    page["status"] = REVIEWED_NO_ROWS_STATUS
     page["empty_extract_title"] = EMPTY_EXTRACT_TITLE
     page["empty_extract_body"] = EMPTY_EXTRACT_BODY
-    page["empty_extract_message"] = "Marked as reviewed with no rows"
+    page["empty_extract_message"] = REVIEWED_NO_ROWS_LABEL
+    page["empty_extract_reviewed_label"] = REVIEWED_NO_ROWS_LABEL
     return page
 
 

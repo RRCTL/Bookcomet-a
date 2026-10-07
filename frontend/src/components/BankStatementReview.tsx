@@ -20,9 +20,11 @@ import {
   EMPTY_EXTRACT_MARK_CONFIRM,
   EMPTY_EXTRACT_RETRY_ACTION,
   EMPTY_EXTRACT_TITLE,
+  VIEW_PDF_ACTION,
   emptyExtractBannerText,
   type EmptyExtractPageFlag,
 } from '../utils/bankEmptyExtract'
+import { ConfirmDialog } from '../features/nodeWorkspace/shell/ConfirmDialog'
 
 const EMPTY_LOCK_KEYS: ReadonlySet<string> = new Set()
 
@@ -91,6 +93,8 @@ interface Props {
   emptyExtractPages?: EmptyExtractPageFlag[]
   onRetryEmptyExtractPage?: (flag: EmptyExtractPageFlag) => void
   onMarkEmptyExtractReviewed?: (flag: EmptyExtractPageFlag) => void
+  /** Open this run's stored PDF for the flagged page (in-app preview). */
+  onViewEmptyExtractPdf?: (flag: EmptyExtractPageFlag) => void
   emptyExtractBusy?: boolean
   hideReceiptCurrency?: boolean
   onCompanyAmountClick?: (row: BankTransaction) => void
@@ -257,10 +261,12 @@ export function BankStatementReview({
   emptyExtractPages = [],
   onRetryEmptyExtractPage,
   onMarkEmptyExtractReviewed,
+  onViewEmptyExtractPdf,
   emptyExtractBusy = false,
   hideReceiptCurrency = false,
   onCompanyAmountClick,
 }: Props) {
+  const [markConfirmFlag, setMarkConfirmFlag] = useState<EmptyExtractPageFlag | null>(null)
   const prepareRows = useCallback(
     (source: BankTransaction[]) => {
       const coalesced = coalesceBankAccountTypeRows(
@@ -489,7 +495,11 @@ export function BankStatementReview({
     !hasPlacementFlags &&
     !hasEmptyExtractFlags
   const rebuildEnabled =
-    Boolean(canRebuild) && !rebuildInFlight && !approveBusy && !extractRetryInFlight
+    Boolean(canRebuild) &&
+    !rebuildInFlight &&
+    !approveBusy &&
+    !extractRetryInFlight &&
+    !hasEmptyExtractFlags
 
   const { isMobile } = useViewport()
   const S = useMemo(() => resolveBankStyles(isMobile), [isMobile])
@@ -581,12 +591,44 @@ export function BankStatementReview({
               data-empty-extract-page={flag.page}
             >
               <div style={{ fontWeight: 700 }}>
-                {flag.filename} · page {flag.page}: {flag.title || EMPTY_EXTRACT_TITLE}
+                {onViewEmptyExtractPdf ? (
+                  <button
+                    type="button"
+                    className="erp-link bank-empty-extract-pdf-link"
+                    style={{
+                      background: 'none',
+                      border: 0,
+                      padding: 0,
+                      font: 'inherit',
+                      fontWeight: 700,
+                      color: '#1d4ed8',
+                      textDecoration: 'underline',
+                      cursor: 'pointer',
+                    }}
+                    title={`${VIEW_PDF_ACTION}: ${flag.filename} page ${flag.page}`}
+                    onClick={() => onViewEmptyExtractPdf(flag)}
+                  >
+                    {flag.filename}
+                  </button>
+                ) : (
+                  <span>{flag.filename}</span>
+                )}{' '}
+                · page {flag.page}: {flag.title || EMPTY_EXTRACT_TITLE}
               </div>
               <div style={{ marginTop: 4, fontWeight: 500 }}>
                 {flag.body || EMPTY_EXTRACT_BODY}
               </div>
               <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {onViewEmptyExtractPdf && (
+                  <button
+                    type="button"
+                    className="erp-btn"
+                    style={{ ...S.btn, color: '#1d4ed8', border: '1px solid #93c5fd' }}
+                    onClick={() => onViewEmptyExtractPdf(flag)}
+                  >
+                    {VIEW_PDF_ACTION}
+                  </button>
+                )}
                 {onRetryEmptyExtractPage && (
                   <button
                     type="button"
@@ -612,11 +654,7 @@ export function BankStatementReview({
                     style={{ ...S.btn, opacity: extractRetryInFlight ? 0.6 : 1 }}
                     disabled={extractRetryInFlight || readOnly}
                     title={EMPTY_EXTRACT_MARK_CONFIRM}
-                    onClick={() => {
-                      if (window.confirm(EMPTY_EXTRACT_MARK_CONFIRM)) {
-                        onMarkEmptyExtractReviewed(flag)
-                      }
-                    }}
+                    onClick={() => setMarkConfirmFlag(flag)}
                   >
                     {EMPTY_EXTRACT_MARK_ACTION}
                   </button>
@@ -626,6 +664,20 @@ export function BankStatementReview({
           ))}
         </div>
       )}
+
+      <ConfirmDialog
+        open={markConfirmFlag != null}
+        title={EMPTY_EXTRACT_MARK_ACTION}
+        message={EMPTY_EXTRACT_MARK_CONFIRM}
+        confirmLabel="Confirm"
+        cancelLabel="Cancel"
+        onCancel={() => setMarkConfirmFlag(null)}
+        onConfirm={() => {
+          const flag = markConfirmFlag
+          setMarkConfirmFlag(null)
+          if (flag && onMarkEmptyExtractReviewed) onMarkEmptyExtractReviewed(flag)
+        }}
+      />
 
       {hasPlacementFlags && (
         <div

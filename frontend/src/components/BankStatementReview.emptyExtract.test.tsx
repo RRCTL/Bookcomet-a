@@ -7,6 +7,7 @@ import {
   EMPTY_EXTRACT_MARK_CONFIRM,
   EMPTY_EXTRACT_RETRY_ACTION,
   EMPTY_EXTRACT_TITLE,
+  VIEW_PDF_ACTION,
 } from '../utils/bankEmptyExtract'
 
 vi.mock('../hooks/useViewport', () => ({
@@ -62,9 +63,43 @@ describe('BankStatementReview empty-extract amber flags', () => {
     expect(onRetry).toHaveBeenCalledTimes(1)
   })
 
-  it('shows Mark as reviewed with no rows only after auto-retry, with confirm', () => {
+  it('shows View PDF link that stays enabled and opens the run file page', () => {
+    const onView = vi.fn()
+    render(
+      <BankStatementReview
+        transactions={[]}
+        onApprove={() => undefined}
+        canApprove={true}
+        emptyExtractBusy={false}
+        emptyExtractPages={[
+          {
+            page: 2,
+            taskFileId: 'tf-fictional',
+            filename: 'Fictional-Statement.pdf',
+            autoRetried: true,
+            title: EMPTY_EXTRACT_TITLE,
+            body: EMPTY_EXTRACT_BODY,
+          },
+        ]}
+        onViewEmptyExtractPdf={onView}
+        onRetryEmptyExtractPage={() => undefined}
+        onMarkEmptyExtractReviewed={() => undefined}
+      />,
+    )
+    const viewButtons = screen.getAllByRole('button', { name: VIEW_PDF_ACTION })
+    expect(viewButtons.length).toBeGreaterThan(0)
+    expect(viewButtons[0]).not.toBeDisabled()
+    const filenameLink = screen.getByRole('button', { name: 'Fictional-Statement.pdf' })
+    expect(filenameLink).not.toBeDisabled()
+    fireEvent.click(filenameLink)
+    expect(onView).toHaveBeenCalledWith(
+      expect.objectContaining({ taskFileId: 'tf-fictional', page: 2 }),
+    )
+  })
+
+  it('uses in-app Confirm dialog for Mark as reviewed (Cancel / Confirm)', () => {
     const onMark = vi.fn()
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const confirmSpy = vi.spyOn(window, 'confirm')
     render(
       <BankStatementReview
         transactions={[]}
@@ -85,7 +120,13 @@ describe('BankStatementReview empty-extract amber flags', () => {
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: EMPTY_EXTRACT_MARK_ACTION }))
-    expect(confirmSpy).toHaveBeenCalledWith(EMPTY_EXTRACT_MARK_CONFIRM)
+    expect(confirmSpy).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog')).toHaveTextContent(EMPTY_EXTRACT_MARK_CONFIRM)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(onMark).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: EMPTY_EXTRACT_MARK_ACTION }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
     expect(onMark).toHaveBeenCalledTimes(1)
     confirmSpy.mockRestore()
   })

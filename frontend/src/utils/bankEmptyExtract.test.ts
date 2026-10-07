@@ -5,8 +5,11 @@ import {
   EMPTY_EXTRACT_MARK_CONFIRM,
   EMPTY_EXTRACT_RETRY_ACTION,
   EMPTY_EXTRACT_TITLE,
+  REVIEWED_NO_ROWS_LABEL,
   collectEmptyExtractPagesFromRunFiles,
+  collectLivePageStatusesForFile,
   emptyExtractBannerText,
+  formatLiveOutputPageStatuses,
   hasPendingEmptyExtractPages,
 } from './bankEmptyExtract'
 
@@ -64,5 +67,35 @@ describe('collectEmptyExtractPagesFromRunFiles', () => {
       },
     ])).toBe(true)
     expect(emptyExtractBannerText(2)).toContain(EMPTY_EXTRACT_TITLE)
+  })
+
+  it('formats mixed per-page Live output statuses', () => {
+    const file = {
+      task_file_id: 'tf-fictional-1',
+      original_filename: 'Fictional-Statement.pdf',
+      file_status: 'warning',
+      result_summary_json: {
+        pages: [
+          {
+            page: 1,
+            status: 'reviewed_no_rows',
+            empty_extract_acknowledged: true,
+          },
+          {
+            page: 2,
+            status: 'needs_retry',
+            empty_extract: true,
+          },
+        ],
+      },
+    }
+    const statuses = collectLivePageStatusesForFile(file)
+    expect(statuses.map(s => s.label)).toEqual([
+      `Page 1: ${REVIEWED_NO_ROWS_LABEL}`,
+      'Page 2: needs retry',
+    ])
+    expect(formatLiveOutputPageStatuses(file)).toBe(
+      `Page 1: ${REVIEWED_NO_ROWS_LABEL} · Page 2: needs retry`,
+    )
   })
 })
