@@ -192,11 +192,15 @@ async def test_resume_run_accepts_rows_for_current_run_files():
         "bankTransactions": [
             {
                 "source_file": "A.pdf P1",
+                "date": "2024-06-01",
                 "deposit": 13,
+                "withdrawal": None,
+                "balance": 100,
                 "currency": "HKD",
                 "company_currency": "HKD",
                 "company_amount": 13,
                 "exchange_rate": 1,
+                "particulars": "fictional owned row",
             }
         ]
     }

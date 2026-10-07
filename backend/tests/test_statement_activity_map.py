@@ -210,10 +210,53 @@ def test_placement_issues_flag_empty_date_and_bad_currency():
     assert bank_row_placement_issues(good) == []
 
 
+def _resume_db_with_bank_file(task_id: str = "task-1", task_file_id: str = "tf-bea"):
+    """Minimal db mock so resume ownership checks see one owned run file."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    task = SimpleNamespace(id=task_id)
+    run_file = SimpleNamespace(
+        task_file_id=task_file_id,
+        original_filename="Fictional-BEA.pdf",
+        run_id="run-bea",
+    )
+    task_file = SimpleNamespace(id=task_file_id, original_filename="Fictional-BEA.pdf")
+    db = MagicMock()
+    db.commit = MagicMock()
+    db.refresh = MagicMock()
+
+    class _Chain:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def filter(self, *_a, **_k):
+            return self
+
+        def all(self):
+            return self._rows
+
+        def first(self):
+            return self._rows[0] if self._rows else None
+
+    def query_side_effect(model):
+        name = getattr(model, "__name__", str(model))
+        if name == "ChatTask":
+            return _Chain([task])
+        if name == "WorkflowRunFile":
+            return _Chain([run_file])
+        if name == "TaskFile":
+            return _Chain([task_file])
+        return _Chain([])
+
+    db.query.side_effect = query_side_effect
+    return db
+
+
 @pytest.mark.asyncio
 async def test_resume_rejects_bank_rows_with_placement_issues():
     from types import SimpleNamespace
-    from unittest.mock import AsyncMock, MagicMock, patch
+    from unittest.mock import AsyncMock, patch
 
     from app.graph.workflow_service import WorkflowService
 
@@ -226,23 +269,21 @@ async def test_resume_rejects_bank_rows_with_placement_issues():
         node_states_json={},
         console_log_json=[],
     )
-    task = SimpleNamespace(id="task-1")
-    db = MagicMock()
-    db.commit = MagicMock()
-    db.refresh = MagicMock()
-    query_mock = MagicMock()
-    query_mock.filter.return_value.first.return_value = task
-    db.query.return_value = query_mock
+    db = _resume_db_with_bank_file()
 
     payload = {
         "bankTransactions": [
             {
+                "source_file": "Fictional-BEA.pdf P1",
                 "date": "",
                 "currency": "2020-08-11",
                 "deposit": None,
                 "withdrawal": 4600,
                 "balance": None,
                 "description": "fictional shifted row",
+                "company_currency": "HKD",
+                "company_amount": 4600,
+                "exchange_rate": 1,
             }
         ]
     }
@@ -263,7 +304,7 @@ async def test_resume_rejects_bank_rows_with_placement_issues():
 @pytest.mark.asyncio
 async def test_resume_accepts_repaired_bank_rows():
     from types import SimpleNamespace
-    from unittest.mock import AsyncMock, MagicMock, patch
+    from unittest.mock import AsyncMock, patch
 
     from app.graph.workflow_service import WorkflowService
 
@@ -276,23 +317,21 @@ async def test_resume_accepts_repaired_bank_rows():
         node_states_json={},
         console_log_json=[],
     )
-    task = SimpleNamespace(id="task-1")
-    db = MagicMock()
-    db.commit = MagicMock()
-    db.refresh = MagicMock()
-    query_mock = MagicMock()
-    query_mock.filter.return_value.first.return_value = task
-    db.query.return_value = query_mock
+    db = _resume_db_with_bank_file()
 
     payload = {
         "bankTransactions": [
             {
+                "source_file": "Fictional-BEA.pdf P1",
                 "date": "2020-08-11",
                 "currency": "HKD",
                 "deposit": None,
                 "withdrawal": 1250.0,
                 "balance": 8750.0,
                 "description": "fictional ok row",
+                "company_currency": "HKD",
+                "company_amount": 1250.0,
+                "exchange_rate": 1,
             }
         ]
     }

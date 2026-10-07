@@ -101,7 +101,8 @@ describe('BankStatementReview rebuild from run files', () => {
         rebuildBusy={false}
       />,
     )
-    expect(screen.getByText('fictional bleed row from another file')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('fictional bleed row from another file')).toBeInTheDocument()
+    expect(screen.getByText('2 transactions')).toBeInTheDocument()
 
     // Parent clears transactions as soon as rebuild begins.
     rerender(
@@ -114,7 +115,8 @@ describe('BankStatementReview rebuild from run files', () => {
         rebuildBusy={true}
       />,
     )
-    expect(screen.queryByText('fictional bleed row from another file')).not.toBeInTheDocument()
+    expect(screen.queryByDisplayValue('fictional bleed row from another file')).not.toBeInTheDocument()
+    expect(screen.getByText('0 transactions')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Rebuilding…' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Approve' })).toBeDisabled()
   })
