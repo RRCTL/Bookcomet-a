@@ -1535,6 +1535,15 @@ class WorkflowService:
                     "result": result,
                 }
 
+        # Preserve user mark-reviewed pages: a late VLM finish must not restore
+        # EMPTY_EXTRACT or Passed over an acknowledged page on this file.
+        if isinstance(result, dict):
+            from app.services.bank_empty_extract import merge_result_preserving_reviewed
+
+            prior_summary = run_file.result_summary_json
+            if isinstance(prior_summary, dict):
+                result = merge_result_preserving_reviewed(prior_summary, result)
+
         # Dense-OCR extract miss: do not report whole-file Passed while any page
         # still needs retry (amber). Journals stay draft until explicit Approve.
         if (run.processing_mode or "").upper() == "BANK" and isinstance(result, dict):
@@ -1547,8 +1556,8 @@ class WorkflowService:
             if empty_summary:
                 run_file.file_status = "warning"
                 run_file.gate_result = EMPTY_EXTRACT_GATE
-                run_file.error_text = str(empty_summary.get("message") or EMPTY_EXTRACT_GATE)[:2000]
                 run_file.result_summary_json = result
+                WorkflowService._refresh_bank_file_status_from_pages(run_file)
                 db.commit()
                 return {
                     "ok": False,
@@ -1557,6 +1566,12 @@ class WorkflowService:
                     "empty_extract_summary": empty_summary,
                     "result": result,
                 }
+
+            # No pending amber — still stamp per-page Live output (incl. reviewed).
+            run_file.result_summary_json = result
+            WorkflowService._refresh_bank_file_status_from_pages(run_file)
+            db.commit()
+            return {"ok": run_file.file_status == "ok", "result": result}
 
         run_file.file_status = "ok"
         run_file.gate_result = None
@@ -2218,10 +2233,14 @@ class WorkflowService:
 
     @staticmethod
     def _refresh_bank_file_status_from_pages(run_file: WorkflowRunFile) -> None:
-        """Set file_status from page-level empty-extract flags (no whole-file Passed while amber)."""
+        """Set file_status from page-level flags (per-page Live output; mark wins)."""
         from app.services.bank_empty_extract import (
             EMPTY_EXTRACT_GATE,
+            REVIEWED_NO_ROWS_GATE,
+            REVIEWED_NO_ROWS_LABEL,
+            format_live_output_page_statuses,
             summarize_empty_extract_for_file,
+            summarize_reviewed_no_rows_for_file,
         )
 
         payload = run_file.result_summary_json
@@ -2229,21 +2248,56 @@ class WorkflowService:
             return
         pages = payload.get("pages")
         summary = summarize_empty_extract_for_file(pages)
+        reviewed = summarize_reviewed_no_rows_for_file(pages)
+        page_count = None
+        try:
+            if payload.get("total_pages") is not None:
+                page_count = int(payload.get("total_pages"))
+        except (TypeError, ValueError):
+            page_count = None
+        live_detail = format_live_output_page_statuses(
+            pages,
+            file_status=run_file.file_status,
+            page_count=page_count,
+        )
         if summary:
+            # File stays Needs review while any page is still empty-extract.
             run_file.file_status = "warning"
             run_file.gate_result = EMPTY_EXTRACT_GATE
-            run_file.error_text = str(summary.get("message") or EMPTY_EXTRACT_GATE)[:2000]
+            run_file.error_text = (live_detail or str(summary.get("message") or EMPTY_EXTRACT_GATE))[
+                :2000
+            ]
         elif run_file.file_status != "failed":
             # Clear EMPTY_EXTRACT soft warning only; leave other failures alone.
-            if run_file.gate_result in (None, EMPTY_EXTRACT_GATE) or run_file.gate_result == "":
+            if run_file.gate_result in (
+                None,
+                EMPTY_EXTRACT_GATE,
+                REVIEWED_NO_ROWS_GATE,
+                "",
+            ):
+                # Whole file looks clear only when every page is extracted / marked.
                 run_file.file_status = "ok"
-                run_file.gate_result = None
-                run_file.error_text = None
+                if reviewed:
+                    run_file.gate_result = REVIEWED_NO_ROWS_GATE
+                    run_file.error_text = (
+                        live_detail or str(reviewed.get("message") or REVIEWED_NO_ROWS_LABEL)
+                    )[:2000]
+                else:
+                    run_file.gate_result = None
+                    run_file.error_text = None
         if isinstance(pages, list):
             from app.api.ocr import recompute_ocr_job_outcome_from_pages
 
             payload = dict(payload)
             payload["ocr_job_outcome"] = recompute_ocr_job_outcome_from_pages(pages)
+            if reviewed:
+                payload["reviewed_no_rows_summary"] = reviewed
+            else:
+                payload.pop("reviewed_no_rows_summary", None)
+            if live_detail:
+                payload["live_page_statuses"] = live_detail
+            else:
+                payload.pop("live_page_statuses", None)
             run_file.result_summary_json = payload
 
     @staticmethod
@@ -2385,7 +2439,13 @@ class WorkflowService:
         page_num: int,
     ) -> WorkflowRun:
         """Rare secondary action: user confirms they checked the PDF and accept no rows."""
+        import copy
+        import json
+
+        from sqlalchemy.orm.attributes import flag_modified
+
         from app.services.bank_empty_extract import (
+            REVIEWED_NO_ROWS_LABEL,
             mark_page_reviewed_with_no_rows,
             page_has_pending_empty_extract,
         )
@@ -2411,7 +2471,8 @@ class WorkflowService:
         if not isinstance(payload, dict) or not isinstance(payload.get("pages"), list):
             raise HTTPException(status_code=400, detail="No multi-page extract result on this file")
 
-        pages = [dict(p) if isinstance(p, dict) else p for p in payload["pages"]]
+        # Deep-copy so SQLAlchemy JSON columns always see a new persisted payload.
+        pages = [copy.deepcopy(p) if isinstance(p, dict) else p for p in payload["pages"]]
         found = False
         for i, p in enumerate(pages):
             if not isinstance(p, dict):
@@ -2439,10 +2500,19 @@ class WorkflowService:
         if not found:
             raise HTTPException(status_code=404, detail=f"Page {page_num} not found in extract")
 
-        updated = dict(payload)
-        updated["pages"] = pages
+        # Round-trip through JSON so the ORM cannot treat nested mutations as unchanged.
+        updated = json.loads(json.dumps({**payload, "pages": pages}, default=str))
         run_file.result_summary_json = updated
+        try:
+            flag_modified(run_file, "result_summary_json")
+        except Exception:
+            # Non-mapped test doubles / detached instances still get the assignment.
+            pass
         WorkflowService._refresh_bank_file_status_from_pages(run_file)
+        try:
+            flag_modified(run_file, "result_summary_json")
+        except Exception:
+            pass
 
         all_run_files = (
             db.query(WorkflowRunFile).filter(WorkflowRunFile.run_id == run.id).all()
@@ -2456,12 +2526,17 @@ class WorkflowService:
             ok_count=ok_count,
             warn_count=warn_count,
             console_message=(
-                f"Page {page_num} marked as reviewed with no rows "
+                f"Page {page_num} {REVIEWED_NO_ROWS_LABEL.lower()} "
                 f"({task_file_id})."
             ),
         )
+        db.add(run_file)
         db.commit()
         db.refresh(run)
+        try:
+            db.refresh(run_file)
+        except Exception:
+            pass
         return run
 
     @staticmethod

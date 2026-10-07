@@ -125,7 +125,8 @@ def test_apply_flags_and_mark_reviewed() -> None:
     mark_page_reviewed_with_no_rows(page)
     assert page_has_pending_empty_extract(page) is False
     assert page["empty_extract_acknowledged"] is True
-    assert page["status"] == "success"
+    assert page["status"] == "reviewed_no_rows"
+    assert page["empty_extract_message"] == "Reviewed — no rows"
 
 
 def test_ocr_job_outcome_partial_when_extract_miss() -> None:
