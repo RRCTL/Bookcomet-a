@@ -464,9 +464,18 @@ export function shouldIgnoreRunRefreshAfterStop(
 
 /** Optimistic UI while hard Stop is in flight (matches backend cancel reset). */
 export function applyRunStoppedLocally(run: WorkflowRun): WorkflowRun {
-  const files = run.files.map(f =>
-    f.file_status === 'running' ? { ...f, file_status: 'pending', error_text: null } : f,
-  )
+  const files = run.files.map(f => {
+    const status = (f.file_status ?? '').toLowerCase()
+    if (status === 'running') {
+      // Interrupted in-flight page — keep the row on the grid with Stopped.
+      return { ...f, file_status: 'stopped', error_text: null }
+    }
+    if (status === 'pending' || status === 'queued') {
+      // Never started — Cancelled so Live output matches the stop dialog.
+      return { ...f, file_status: 'cancelled', error_text: null }
+    }
+    return f
+  })
   const nodeStates: Record<string, unknown> = { ...(run.node_states_json ?? {}) }
   delete nodeStates.cancel_requested
   for (const [nodeId, raw] of Object.entries(nodeStates)) {
