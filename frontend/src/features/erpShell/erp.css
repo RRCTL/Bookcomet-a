@@ -294,13 +294,28 @@
 .erp-proc-toolbar .field { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--erp-text-mute); }
 .erp-proc-toolbar select, .erp-proc-toolbar input { font: inherit; font-size: 12px; padding: 5px 7px; border: 1px solid var(--erp-border-strong); border-radius: 6px; color: var(--erp-text); background: #fff; }
 .erp-proc-toolbar select:disabled { background: #f3f4f6; color: var(--erp-text-mute); cursor: not-allowed; }
+.erp-proc-toolbar-actions-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  margin-left: auto;
+  flex-shrink: 0;
+  max-width: min(420px, 100%);
+}
 .erp-proc-toolbar-actions {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-left: auto;
   flex-shrink: 0;
   flex-wrap: nowrap;
+}
+.erp-proc-other-run-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--erp-text-mute);
+  text-align: right;
 }
 .erp-proc-cloud-ai-notice {
   flex: 1 1 100%;
@@ -429,6 +444,8 @@ body.resizing {
 .erp-fstatus-row .fst.failed { color: #b42318; }
 .erp-fstatus-row .fst.warning { color: #b54708; }
 .erp-fstatus-row .fst.running { color: var(--erp-accent); }
+.erp-fstatus-row .fst.stopped { color: #b54708; }
+.erp-fstatus-row .fst.cancelled { color: var(--erp-text-mute); }
 .erp-fstatus-row .fre { flex-basis: 100%; font-size: 11px; color: var(--erp-text-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .erp-set-row label { display: block; font-size: 11px; color: var(--erp-text-mute); margin-bottom: 3px; }
 .erp-set-row select, .erp-set-row input[type=text] { width: 100%; padding: 6px 8px; border: 1px solid var(--erp-border-strong); border-radius: 6px; font: inherit; font-size: 12px; }

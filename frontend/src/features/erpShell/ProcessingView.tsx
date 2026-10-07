@@ -15,6 +15,15 @@ import {
   type WorkflowNodeCatalogEntry,
 } from '../nodeWorkspace/workflowApi'
 import {
+  ANOTHER_RUN_PROCESSING_HINT,
+  anotherRunIsProcessing,
+  canExecuteOnActiveRun,
+  canReVlmOnActiveRun,
+  canStopActiveRun,
+  canUploadOnActiveRun,
+  RUNNING_RUN_STATUSES as GATE_RUNNING_RUN_STATUSES,
+} from './processingActionGates'
+import {
   NODE_IO,
   graphWithDoubleCheckEnabled,
   graphWithDoubleCheckDisabled,
@@ -150,7 +159,7 @@ type NodeState = {
 }
 type StatusKind = 'done' | 'run' | 'pend' | 'fail'
 
-const RUNNING_RUN_STATUSES = new Set(['executing', 'coa_running', 'running', 'queued'])
+const RUNNING_RUN_STATUSES = GATE_RUNNING_RUN_STATUSES
 
 const PROC_RAIL_WIDTH_KEY = 'erp.proc.railWidth'
 const PROC_RIGHT_WIDTH_KEY = 'erp.proc.rightWidth'
@@ -277,6 +286,10 @@ function fileStatusLabel(status: string, gate?: string | null): string {
     case 'pending':
     case 'queued':
       return 'Queued'
+    case 'stopped':
+      return 'Stopped'
+    case 'cancelled':
+      return 'Cancelled'
     default:
       return status || '-'
   }
@@ -382,7 +395,9 @@ export function ProcessingView() {
   const [error, setError] = useState<string | null>(null)
   const [showModePicker, setShowModePicker] = useState(false)
   const [creating, setCreating] = useState(false)
-  const [busy, setBusy] = useState(false)
+  /** Per-run in-flight HTTP (upload / execute / re-vlm / stop) — never blocks sibling runs. */
+  const [busyRunId, setBusyRunId] = useState<string | null>(null)
+  const [stopConfirmOpen, setStopConfirmOpen] = useState(false)
   const [approving, setApproving] = useState(false)
   const [rebuilding, setRebuilding] = useState(false)
   const [emptyExtractBusy, setEmptyExtractBusy] = useState(false)
@@ -655,6 +670,21 @@ export function ProcessingView() {
     }
   }, [activeRunId, runStatus, companyId, reloadRuns, applyRunFromServer])
 
+  const siblingRunProcessing = anotherRunIsProcessing(runs, activeRunId, busyRunId)
+  // When a sibling run is Processing, refresh the rail so Run/Re-VLM unlock without a full page reload.
+  useEffect(() => {
+    if (!siblingRunProcessing) return
+    let cancelled = false
+    const poll = window.setInterval(() => {
+      if (cancelled) return
+      void reloadRuns().catch(() => {})
+    }, 2500)
+    return () => {
+      cancelled = true
+      window.clearInterval(poll)
+    }
+  }, [siblingRunProcessing, reloadRuns])
+
   useWorkflowRunEvents({
     runId: activeRunId,
     runStatus: activeRun?.run_status,
@@ -726,7 +756,7 @@ export function ProcessingView() {
       const label = r.title || 'Untitled'
       const msg = `Remove "${label}" permanently? This deletes the run, uploaded files, and unreconciled module rows derived from it. Reconciled rows are kept.`
       if (!window.confirm(msg)) return
-      setBusy(true)
+      setBusyRunId(r.id)
       setError(null)
       try {
         await workflowApi.deleteRun(companyId, r.id)
@@ -735,7 +765,7 @@ export function ProcessingView() {
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Could not remove the run.')
       } finally {
-        setBusy(false)
+        setBusyRunId(prev => (prev === r.id ? null : prev))
       }
     },
     [companyId, reloadRuns, activeRunId, assignActiveRunId],
@@ -820,9 +850,9 @@ export function ProcessingView() {
   const runAction = useCallback(
     async (action: 'execute' | 'cancel') => {
       if (!activeRun) return
-      setBusy(true)
-      setError(null)
       const runId = activeRun.id
+      setBusyRunId(runId)
+      setError(null)
       if (action === 'execute') markRunExecuting(runId)
       try {
         const updated = await workflowApi[action](companyId, runId)
@@ -837,20 +867,20 @@ export function ProcessingView() {
             .catch(() => {})
         }
       } finally {
-        setBusy(false)
+        setBusyRunId(prev => (prev === runId ? null : prev))
       }
     },
     [activeRun, companyId, reloadRuns, markRunExecuting, applyRunFromServer],
   )
 
-  const stopRun = useCallback(async () => {
+  const performStop = useCallback(async () => {
     if (!activeRun) return
-    const label = activeRun.title?.trim() || 'Untitled'
-    const msg = `Stop all processing on "${label}"? In-progress files will be reset. Partial results may remain for review.`
-    if (!window.confirm(msg)) return
-    setBusy(true)
+    setStopConfirmOpen(false)
     setError(null)
     const runId = activeRun.id
+    // Clear this run's busy so Run/Re-VLM unlock after stop even if a prior
+    // execute/re-vlm HTTP is still draining.
+    setBusyRunId(prev => (prev === runId ? null : prev))
     stopGuardRunIdRef.current = runId
     applyRunFromServer(applyRunStoppedLocally(activeRun), true)
     try {
@@ -868,10 +898,13 @@ export function ProcessingView() {
           if (!runLooksProcessing(run)) stopGuardRunIdRef.current = null
         })
         .catch(() => {})
-    } finally {
-      setBusy(false)
     }
   }, [activeRun, companyId, reloadRuns, applyRunFromServer])
+
+  const stopRun = useCallback(() => {
+    if (!activeRun) return
+    setStopConfirmOpen(true)
+  }, [activeRun])
 
   const handleUpload = useCallback(
     async (files: FileList | null) => {
@@ -881,20 +914,21 @@ export function ProcessingView() {
         setError('Files already uploaded for this task. Use Re-VLM to retry failed files.')
         return
       }
-      setBusy(true)
+      const runId = activeRun.id
+      setBusyRunId(runId)
       setError(null)
       try {
         const uploadBatchId = safeRandomUUID()
         const uploadedAt = new Date().toISOString()
         for (const file of Array.from(files)) {
-          await workflowApi.uploadFile(companyId, activeRun.id, file, { uploadBatchId, uploadedAt })
+          await workflowApi.uploadFile(companyId, runId, file, { uploadBatchId, uploadedAt })
         }
-        await loadActiveRun(activeRun.id)
+        await loadActiveRun(runId)
         void reloadRuns()
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Could not upload files.')
       } finally {
-        setBusy(false)
+        setBusyRunId(prev => (prev === runId ? null : prev))
       }
     },
     [activeRun, companyId, loadActiveRun, reloadRuns],
@@ -907,7 +941,7 @@ export function ProcessingView() {
   }, [activeRun])
 
   const rebuildFromRunFiles = useCallback(async () => {
-    if (!activeRun || rebuilding || busy || approving) return
+    if (!activeRun || rebuilding || busyRunId === activeRun.id || approving) return
     if (runHasLockedApprovedTable(activeRun)) {
       setError(
         'Approved and loaded into modules — rebuild is disabled to avoid conflicting updates.',
@@ -943,7 +977,7 @@ export function ProcessingView() {
     activeRun,
     approving,
     applyRunFromServer,
-    busy,
+    busyRunId,
     companyId,
     rebuilding,
     reloadRuns,
@@ -957,7 +991,7 @@ export function ProcessingView() {
       expectedReceiptCount,
       workflow,
     }: ReVlmConfirmPayload) => {
-      if (!activeRun || taskFileIds.length === 0 || busy) return
+      if (!activeRun || taskFileIds.length === 0 || busyRunId === activeRun.id) return
       if (runHasLockedApprovedTable(activeRun)) {
         setError(
           'Approved and loaded into modules — Re-VLM is disabled to avoid conflicting updates.',
@@ -968,7 +1002,8 @@ export function ProcessingView() {
       }
       setShowReVlm(false)
       setReVlmInitialFileIds([])
-      setBusy(true)
+      const runId = activeRun.id
+      setBusyRunId(runId)
       setError(null)
       const revlmLocalOpts = {
         rescanReasons,
@@ -989,7 +1024,7 @@ export function ProcessingView() {
           )
         ) {
           const nextGraph = applyWorkflowSettingsToGraph(activeRun.graph_json, templates, workflow)
-          runForReVlm = await workflowApi.patchRun(companyId, activeRun.id, nextGraph)
+          runForReVlm = await workflowApi.patchRun(companyId, runId, nextGraph)
           // Re-apply Re-VLM running state so patchRun does not flash Finished again.
           applyRunFromServer(applyRunReVlmLocally(runForReVlm, taskFileIds, revlmLocalOpts), true)
         }
@@ -1003,14 +1038,14 @@ export function ProcessingView() {
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Could not re-run VLM.')
         void workflowApi
-          .getRun(companyId, activeRun.id)
+          .getRun(companyId, runId)
           .then(run => applyRunFromServer(run, true))
           .catch(() => {})
       } finally {
-        setBusy(false)
+        setBusyRunId(prev => (prev === runId ? null : prev))
       }
     },
-    [activeRun, busy, companyId, reloadRuns, applyRunFromServer, templates],
+    [activeRun, busyRunId, companyId, reloadRuns, applyRunFromServer, templates],
   )
 
   const previewTaskFiles = useMemo(
@@ -1044,7 +1079,8 @@ export function ProcessingView() {
 
   const retryEmptyExtractPage = useCallback(
     async (flag: EmptyExtractPageFlag) => {
-      if (!activeRun || emptyExtractBusy || rebuilding || busy || approving) return
+      if (!activeRun || emptyExtractBusy || rebuilding || busyRunId === activeRun.id || approving)
+        return
       if (runHasLockedApprovedTable(activeRun)) {
         setError(
           'Approved and loaded into modules — page retry is disabled to avoid conflicting updates.',
@@ -1072,7 +1108,7 @@ export function ProcessingView() {
       activeRun,
       applyRunFromServer,
       approving,
-      busy,
+      busyRunId,
       companyId,
       emptyExtractBusy,
       rebuilding,
@@ -1082,7 +1118,8 @@ export function ProcessingView() {
 
   const markEmptyExtractReviewed = useCallback(
     async (flag: EmptyExtractPageFlag) => {
-      if (!activeRun || emptyExtractBusy || rebuilding || busy || approving) return
+      if (!activeRun || emptyExtractBusy || rebuilding || busyRunId === activeRun.id || approving)
+        return
       if (runHasLockedApprovedTable(activeRun)) {
         setError(
           'Approved and loaded into modules — mark-reviewed is disabled to avoid conflicting updates.',
@@ -1112,7 +1149,7 @@ export function ProcessingView() {
       activeRun,
       applyRunFromServer,
       approving,
-      busy,
+      busyRunId,
       companyId,
       emptyExtractBusy,
       rebuilding,
@@ -1292,7 +1329,8 @@ export function ProcessingView() {
       return
     }
     setApproving(true)
-    setBusy(true)
+    const runId = activeRun.id
+    setBusyRunId(runId)
     setError(null)
     try {
       const payload: Record<string, unknown> = { ...combined }
@@ -1311,7 +1349,7 @@ export function ProcessingView() {
       if (foreignCount > 0) {
         setError(RUN_ROW_FOREIGN_HIDDEN_NOTICE)
         setApproving(false)
-        setBusy(false)
+        setBusyRunId(prev => (prev === runId ? null : prev))
         return
       }
       if (
@@ -1320,10 +1358,10 @@ export function ProcessingView() {
       ) {
         setError(RUN_ROW_MISMATCH_MESSAGE)
         setApproving(false)
-        setBusy(false)
+        setBusyRunId(prev => (prev === runId ? null : prev))
         return
       }
-      const updated = await workflowApi.resume(companyId, activeRun.id, scoped, false)
+      const updated = await workflowApi.resume(companyId, runId, scoped, false)
       setActiveRun(updated)
       setPayloads(mapCombinedPayloadToBatches(updated, scoped))
       setTableBoundRunId(updated.id)
@@ -1333,7 +1371,7 @@ export function ProcessingView() {
       setError(err instanceof Error ? err.message : 'Could not approve.')
     } finally {
       setApproving(false)
-      setBusy(false)
+      setBusyRunId(prev => (prev === runId ? null : prev))
     }
   }, [
     activeRun,
@@ -1366,6 +1404,8 @@ export function ProcessingView() {
       ? AP_TABLE_OPTIONS_ORDER.filter(opt => opt === 'default')
       : AP_TABLE_OPTIONS_ORDER
   const isRunning = RUNNING_RUN_STATUSES.has(runStatus)
+  // Busy only for the open run — sibling runs can still upload / edit.
+  const busy = Boolean(activeRunId && busyRunId === activeRunId)
   // A node still showing a running state means the workflow is mid-process even if the
   // run-level status lags (or is wedged); Stop must stay enabled to unstick it.
   const anyNodeRunning = useMemo(
@@ -1381,11 +1421,38 @@ export function ProcessingView() {
   const anyFileRunning = Boolean(activeRun?.files.some(f => f.file_status === 'running'))
   // Live output banner + right-panel spinners stay on while Re-VLM / VLM is in flight.
   const tableProcessing = extracting || anyNodeRunning || anyFileRunning
+  const otherRunProcessing = anotherRunIsProcessing(runs, activeRunId, busyRunId)
+  const canStop = canStopActiveRun({
+    hasActiveRun: Boolean(activeRun),
+    runStatus,
+    files: activeRun?.files ?? [],
+    nodeStates: activeRun?.node_states_json,
+  })
+  const canUpload = canUploadOnActiveRun({
+    hasActiveRun: Boolean(activeRun),
+    fileCount: activeRun?.files.length ?? 0,
+    busyOnActiveRun: busy,
+  })
   // Once approved (CoA posting / completed) the output table is view-only.
   const outputReadOnly = runStatus === 'coa_running' || runStatus === 'completed'
   const reVlmLocked = Boolean(activeRun && runHasLockedApprovedTable(activeRun))
   const reVlmLockedTitle =
     'Approved and loaded into modules — Re-VLM is disabled to avoid conflicting updates.'
+  const canReVlm = canReVlmOnActiveRun({
+    hasActiveRun: Boolean(activeRun),
+    hasProcessedFiles,
+    activeRunProcessing: isRunning,
+    busyOnActiveRun: busy,
+    anotherRunProcessing: otherRunProcessing,
+    reVlmLocked,
+  })
+  const canExecute = canExecuteOnActiveRun({
+    hasActiveRun: Boolean(activeRun),
+    fileCount: activeRun?.files.length ?? 0,
+    activeRunProcessing: isRunning,
+    busyOnActiveRun: busy,
+    anotherRunProcessing: otherRunProcessing,
+  })
   const fxTableRows = (): Record<string, unknown>[] => {
     if (isAsset) return assetRecords as Record<string, unknown>[]
     if (isBank) return safeDisplayBankRows as Record<string, unknown>[]
@@ -1672,8 +1739,14 @@ export function ProcessingView() {
         ) : null}
         <button
           className="erp-btn"
-          disabled={!activeRun || busy || (activeRun?.files.length ?? 0) > 0}
-          title={(activeRun?.files.length ?? 0) > 0 ? 'Files already uploaded for this task' : 'Upload files (one batch per task)'}
+          disabled={!canUpload}
+          title={
+            (activeRun?.files.length ?? 0) > 0
+              ? 'Files already uploaded for this task'
+              : otherRunProcessing
+                ? 'Upload files on this run while another run processes'
+                : 'Upload files (one batch per task)'
+          }
           onClick={() => fileInputRef.current?.click()}
         >
           Upload Files
@@ -1691,29 +1764,44 @@ export function ProcessingView() {
         <p className="erp-proc-cloud-ai-notice" role="note">
           {CLOUD_AI_DATA_NOTICE}
         </p>
-        <div className="erp-proc-toolbar-actions">
-          <button
-            className="erp-btn"
-            disabled={!activeRun || isRunning || busy || !hasProcessedFiles || reVlmLocked}
-            onClick={() => openReVlmModal()}
-            title={
-              reVlmLocked
-                ? reVlmLockedTitle
-                : 'Re-run VLM on selected files (choose files and correction hints)'
-            }
-          >
-            Re-VLM
-          </button>
-          <button className="erp-btn" disabled={!activeRun || (!isRunning && !anyNodeRunning) || busy} onClick={() => void stopRun()}>
-            Stop
-          </button>
-          <button
-            className="erp-btn primary"
-            disabled={!activeRun || isRunning || busy || (activeRun?.files.length ?? 0) === 0}
-            onClick={() => void runAction('execute')}
-          >
-            Run
-          </button>
+        <div className="erp-proc-toolbar-actions-wrap">
+          <div className="erp-proc-toolbar-actions">
+            <button
+              className="erp-btn"
+              disabled={!canReVlm}
+              onClick={() => openReVlmModal()}
+              title={
+                reVlmLocked
+                  ? reVlmLockedTitle
+                  : otherRunProcessing
+                    ? ANOTHER_RUN_PROCESSING_HINT
+                    : 'Re-run VLM on selected files (choose files and correction hints)'
+              }
+            >
+              Re-VLM
+            </button>
+            <button
+              className="erp-btn"
+              disabled={!canStop}
+              onClick={() => stopRun()}
+              title={canStop ? 'Stop this run' : 'Nothing to stop on this run'}
+            >
+              Stop
+            </button>
+            <button
+              className="erp-btn primary"
+              disabled={!canExecute}
+              onClick={() => void runAction('execute')}
+              title={otherRunProcessing ? ANOTHER_RUN_PROCESSING_HINT : 'Run this workflow'}
+            >
+              Run
+            </button>
+          </div>
+          {otherRunProcessing && !isRunning ? (
+            <p className="erp-proc-other-run-hint" role="note">
+              {ANOTHER_RUN_PROCESSING_HINT}
+            </p>
+          ) : null}
         </div>
       </div>
 
@@ -2136,6 +2224,17 @@ export function ProcessingView() {
         confirmLabel="Apply change"
         onConfirm={() => headerChangeConfirm?.onConfirm()}
         onCancel={() => headerChangeConfirm?.onCancel()}
+      />
+
+      <ConfirmDialog
+        open={stopConfirmOpen}
+        title="Stop this run?"
+        message="Pages already extracted stay on the grid. Queued pages will not run."
+        confirmLabel="Stop"
+        cancelLabel="Cancel"
+        destructive
+        onConfirm={() => void performStop()}
+        onCancel={() => setStopConfirmOpen(false)}
       />
     </div>
   )

@@ -67,10 +67,14 @@ from app.services.re_vlm_hints import (
 
 logger = logging.getLogger(__name__)
 
-_PROCESSABLE_FILE_STATUSES = frozenset({"pending", "warning", "failed"})
-_DRAFT_RESET_FILE_STATUSES = frozenset({"running", "ok"})
+# stopped/cancelled are re-runnable after a mid-batch Stop (Run / Re-VLM).
+_PROCESSABLE_FILE_STATUSES = frozenset(
+    {"pending", "warning", "failed", "stopped", "cancelled"}
+)
+_DRAFT_RESET_FILE_STATUSES = frozenset({"running", "ok", "stopped", "cancelled"})
 _CANCEL_REQUESTED_KEY = "cancel_requested"
 _VLM_NODE_TYPES = frozenset({"VLM_API", "VLMDoubleCheck", "VLMProposer"})
+_QUEUED_FILE_STATUSES = frozenset({"pending", "queued"})
 
 
 def _clear_run_cancel(run: WorkflowRun) -> None:
@@ -179,8 +183,14 @@ async def _finish_vlm_after_cancel(
         db.query(WorkflowRunFile).filter(WorkflowRunFile.run_id == run.id).all()
     )
     for rf in run_files:
-        if rf.file_status == "running":
-            rf.file_status = "pending"
+        status = (rf.file_status or "").lower()
+        if status == "running":
+            # Interrupted page stays on the grid as Stopped.
+            rf.file_status = "stopped"
+            rf.error_text = None
+        elif status in _QUEUED_FILE_STATUSES:
+            # Queued pages that never started — Cancelled.
+            rf.file_status = "cancelled"
             rf.error_text = None
 
     ok_count = sum(1 for rf in run_files if rf.file_status == "ok")
@@ -192,7 +202,8 @@ async def _finish_vlm_after_cancel(
     _append_console(
         run,
         "warn",
-        f"Stopped by user: {ok_count} ok, {warn_count} warning(s); in-progress files reset.",
+        f"Stopped by user: {ok_count} ok, {warn_count} warning(s); "
+        "in-progress page Stopped, queued pages Cancelled.",
     )
 
     if ok_count or warn_count or merged:
@@ -1472,7 +1483,7 @@ class WorkflowService:
                         expected_receipt_count=expected_count,
                     )
         except WorkflowRunCancelled:
-            run_file.file_status = "pending"
+            run_file.file_status = "stopped"
             run_file.error_text = None
             db.commit()
             return {"ok": False, "cancelled": True}
@@ -1491,7 +1502,7 @@ class WorkflowService:
             return {"ok": False, "error": run_file.error_text}
 
         if workflow_run_should_abort_processing(run.id):
-            run_file.file_status = "pending"
+            run_file.file_status = "stopped"
             run_file.error_text = None
             db.commit()
             return {"ok": False, "cancelled": True}

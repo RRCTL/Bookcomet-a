@@ -186,6 +186,7 @@ export default function NodeWorkspace() {
     Record<string, Record<string, unknown>>
   >({})
   const [busyRunId, setBusyRunId] = useState<string | null>(null)
+  const [stopConfirmOpen, setStopConfirmOpen] = useState(false)
   const [coaBusy, setCoaBusy] = useState(false)
   const [apiError, setApiError] = useState<string | null>(null)
   const [showNotice, setShowNotice] = useState(shouldShowCutoverNotice)
@@ -1344,20 +1345,20 @@ export default function NodeWorkspace() {
     }
   }
 
-  const handleStop = async () => {
+  const performStop = async () => {
     const run = activeRunRef.current
     if (!run || !companyId) return
-    if (busyRunId !== run.id && run.run_status !== 'executing') return
-    const label = run.title?.trim() || 'Untitled'
-    const msg = `Stop all processing on "${label}"? In-progress files will be reset. Partial results may remain for review.`
-    if (!window.confirm(msg)) return
+    if (busyRunId !== run.id && !runLooksProcessing(run)) return
+    setStopConfirmOpen(false)
     clearExecutePoll()
-    stopGuardRunIdRef.current = run.id
+    const runId = run.id
+    setBusyRunId(prev => (prev === runId ? null : prev))
+    stopGuardRunIdRef.current = runId
     const stopped = applyRunStoppedLocally(run)
     setFullRunFromServer(stopped)
     syncNodes(stopped, undefined, true)
     try {
-      const r = await workflowApi.cancel(companyId, run.id)
+      const r = await workflowApi.cancel(companyId, runId)
       setFullRunFromServer(r)
       syncNodes(r, undefined, true)
       if (r.run_status === 'awaiting_review') {
@@ -1367,7 +1368,7 @@ export default function NodeWorkspace() {
     } catch (err) {
       reportApiError(err)
       void workflowApi
-        .getRun(companyId, run.id)
+        .getRun(companyId, runId)
         .then(fresh => {
           if (shouldIgnoreRunRefreshAfterStop(stopGuardRunIdRef.current, fresh)) return
           setFullRunFromServer(fresh)
@@ -1376,6 +1377,13 @@ export default function NodeWorkspace() {
         })
         .catch(() => {})
     }
+  }
+
+  const handleStop = () => {
+    const run = activeRunRef.current
+    if (!run || !companyId) return
+    if (busyRunId !== run.id && !runLooksProcessing(run)) return
+    setStopConfirmOpen(true)
   }
 
   const handleReVlm = async ({
@@ -2128,6 +2136,17 @@ export default function NodeWorkspace() {
           if (deleteRunTarget) void deleteRun(deleteRunTarget.id)
           setDeleteRunTarget(null)
         }}
+      />
+
+      <ConfirmDialog
+        open={stopConfirmOpen}
+        title="Stop this run?"
+        message="Pages already extracted stay on the grid. Queued pages will not run."
+        confirmLabel="Stop"
+        cancelLabel="Cancel"
+        destructive
+        onCancel={() => setStopConfirmOpen(false)}
+        onConfirm={() => void performStop()}
       />
 
       {incompleteWorkflowItems.length > 0 ? (
