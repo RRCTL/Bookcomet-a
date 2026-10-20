@@ -1909,7 +1909,11 @@ export function ProcessingView() {
       <div
         ref={bodyRef}
         className="erp-proc-body"
-        style={{ gridTemplateColumns: `${railWidth}px 5px minmax(280px, 1fr) 5px ${rightWidth}px` }}
+        style={{
+          gridTemplateColumns: `${railWidth}px 5px minmax(280px, 1fr) 5px ${
+            cropGateTarget ? Math.max(rightWidth, 420) : rightWidth
+          }px`,
+        }}
       >
         <aside className="erp-proc-rail">
           <div className="erp-proc-railhead">
@@ -2222,64 +2226,81 @@ export function ProcessingView() {
         />
 
         <aside className="erp-proc-right">
-          <div className="erp-proc-canvas erp-proc-canvas--side">
-            {!activeRun ? (
-              <div className="erp-empty">Select or create a run.</div>
-            ) : orderedNodes.length === 0 ? (
-              <div className="erp-empty">This run has no workflow nodes.</div>
-            ) : (
-              nodeRows.map((row, i) => (
-                <div key={row.key}>
-                  {i > 0 && <div className="erp-connector" />}
-                  {row.nodes.length > 1 ? (
-                    <div className="erp-node-row">{row.nodes.map(renderNodeCard)}</div>
-                  ) : (
-                    renderNodeCard(row.nodes[0]!)
-                  )}
-                </div>
-              ))
-            )}
-            {activeRun && orderedNodes.length > 0 && (
-              <div className="erp-branch-note">
-                Advanced: add Proposer / Judge / Vote / Manager Review branch nodes in the legacy workspace.
-              </div>
-            )}
-          </div>
-          <div className="erp-proc-side-settings">
-            <NodeSettings
-              node={selectedNode}
-              nodeState={selectedNode ? nodeStateOf(activeRun, selectedNode.id) : undefined}
-              processingMode={activeRun?.processing_mode ?? ''}
-              providerOptions={workflowProviderOptions}
-              onPatch={patchNodeData}
-              onToggleCross={toggleCrossVlm}
-              crossOn={Boolean(activeRun?.graph_json.nodes.some(n => n.type === 'VLMDoubleCheck'))}
-              busy={busy}
+          {cropGateTarget && activeRun?.task_id ? (
+            <MvduCropPreviewGate
+              open
+              taskId={activeRun.task_id}
+              taskFileId={cropGateTarget.taskFileId}
+              companyId={companyId}
+              filename={cropGateTarget.filename}
+              preview={cropGateTarget.preview}
+              busy={cropGateBusy}
+              onConfirm={boxes => void handleCropGateConfirm(boxes)}
+              onSkip={() => void handleCropGateSkip()}
+              onCancel={() => void handleCropGateCancel()}
             />
-            {activeRun && (
-              <ul className="erp-tl">
-                <div className="lab">Run timeline</div>
-                {orderedNodes.map(node => {
-                  const state = nodeStateOf(activeRun, node.id)
-                  const kind = statusKind(state?.status)
-                  const cls = kind === 'done' ? 'ok' : kind === 'run' ? 'now' : kind === 'fail' ? 'fail' : 'wait'
-                  const v = state?.duration_ms != null ? fmtDuration(state.duration_ms) : kind === 'run' ? '\u2026' : '\u2014'
-                  const label = String((node.data as Record<string, unknown>)?.label ?? node.type)
-                  const fb = nodeDetailLines(state)[0]
-                  return (
-                    <li key={node.id} className={cls}>
-                      <span className="c" />
-                      <span className="g">
-                        {label}
-                        {fb ? <span className="erp-tl-fb">{fb.v}</span> : null}
-                      </span>
-                      <span className="v">{v}</span>
-                    </li>
-                  )
-                })}
-              </ul>
-            )}
-          </div>
+          ) : (
+            <>
+              <div className="erp-proc-canvas erp-proc-canvas--side">
+                {!activeRun ? (
+                  <div className="erp-empty">Select or create a run.</div>
+                ) : orderedNodes.length === 0 ? (
+                  <div className="erp-empty">This run has no workflow nodes.</div>
+                ) : (
+                  nodeRows.map((row, i) => (
+                    <div key={row.key}>
+                      {i > 0 && <div className="erp-connector" />}
+                      {row.nodes.length > 1 ? (
+                        <div className="erp-node-row">{row.nodes.map(renderNodeCard)}</div>
+                      ) : (
+                        renderNodeCard(row.nodes[0]!)
+                      )}
+                    </div>
+                  ))
+                )}
+                {activeRun && orderedNodes.length > 0 && (
+                  <div className="erp-branch-note">
+                    Advanced: add Proposer / Judge / Vote / Manager Review branch nodes in the legacy workspace.
+                  </div>
+                )}
+              </div>
+              <div className="erp-proc-side-settings">
+                <NodeSettings
+                  node={selectedNode}
+                  nodeState={selectedNode ? nodeStateOf(activeRun, selectedNode.id) : undefined}
+                  processingMode={activeRun?.processing_mode ?? ''}
+                  providerOptions={workflowProviderOptions}
+                  onPatch={patchNodeData}
+                  onToggleCross={toggleCrossVlm}
+                  crossOn={Boolean(activeRun?.graph_json.nodes.some(n => n.type === 'VLMDoubleCheck'))}
+                  busy={busy}
+                />
+                {activeRun && (
+                  <ul className="erp-tl">
+                    <div className="lab">Run timeline</div>
+                    {orderedNodes.map(node => {
+                      const state = nodeStateOf(activeRun, node.id)
+                      const kind = statusKind(state?.status)
+                      const cls = kind === 'done' ? 'ok' : kind === 'run' ? 'now' : kind === 'fail' ? 'fail' : 'wait'
+                      const v = state?.duration_ms != null ? fmtDuration(state.duration_ms) : kind === 'run' ? '\u2026' : '\u2014'
+                      const label = String((node.data as Record<string, unknown>)?.label ?? node.type)
+                      const fb = nodeDetailLines(state)[0]
+                      return (
+                        <li key={node.id} className={cls}>
+                          <span className="c" />
+                          <span className="g">
+                            {label}
+                            {fb ? <span className="erp-tl-fb">{fb.v}</span> : null}
+                          </span>
+                          <span className="v">{v}</span>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                )}
+              </div>
+            </>
+          )}
         </aside>
       </div>
 
@@ -2325,21 +2346,6 @@ export function ProcessingView() {
             setShowReVlm(false)
             setReVlmInitialFileIds([])
           }}
-        />
-      ) : null}
-
-      {cropGateTarget && activeRun?.task_id ? (
-        <MvduCropPreviewGate
-          open
-          taskId={activeRun.task_id}
-          taskFileId={cropGateTarget.taskFileId}
-          companyId={companyId}
-          filename={cropGateTarget.filename}
-          preview={cropGateTarget.preview}
-          busy={cropGateBusy}
-          onConfirm={boxes => void handleCropGateConfirm(boxes)}
-          onSkip={() => void handleCropGateSkip()}
-          onCancel={() => void handleCropGateCancel()}
         />
       ) : null}
 

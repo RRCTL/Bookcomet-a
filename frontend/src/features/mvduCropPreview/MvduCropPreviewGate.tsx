@@ -193,13 +193,15 @@ export function MvduCropPreviewGate({
   const emptyHint = boxes.length === 0
 
   return (
-    <div className="mvdu-crop-gate" role="dialog" aria-modal="true" aria-label="Crop preview">
+    <div className="mvdu-crop-gate" role="region" aria-label="Crop preview">
       <div className="mvdu-crop-gate__panel">
         <header className="mvdu-crop-gate__head">
           <div>
-            <div className="mvdu-crop-gate__title">Crop preview</div>
+            <div className="mvdu-crop-gate__title">
+              Crop preview · page {preview.page}
+            </div>
             <div className="mvdu-crop-gate__sub">
-              {filename ?? 'Upload'} · page {preview.page}
+              {filename ?? 'Upload'}
               {extracting ? ' · extracting…' : ''}
             </div>
           </div>
@@ -261,16 +263,7 @@ export function MvduCropPreviewGate({
         <div className="mvdu-crop-gate__body">
           <div className="mvdu-crop-gate__stage-wrap">
             {pageError && <div className="mvdu-crop-gate__err">{pageError}</div>}
-            <div
-              ref={stageRef}
-              className="mvdu-crop-gate__stage"
-              style={{
-                aspectRatio:
-                  preview.image_width > 0 && preview.image_height > 0
-                    ? `${preview.image_width} / ${preview.image_height}`
-                    : '4 / 3',
-              }}
-            >
+            <div ref={stageRef} className="mvdu-crop-gate__stage">
               {pageUrl ? (
                 <img src={pageUrl} alt="Full page" className="mvdu-crop-gate__page" draggable={false} />
               ) : (
@@ -388,11 +381,11 @@ export function MvduCropPreviewGate({
           </button>
           <button
             type="button"
-            className="erp-btn primary"
+            className="erp-btn primary mvdu-crop-gate__confirm"
             disabled={busy || extracting || emptyHint}
             onClick={() => onConfirm(boxesForApi(boxes))}
           >
-            Confirm crops & extract
+            Confirm crops & extract →
           </button>
         </footer>
       </div>

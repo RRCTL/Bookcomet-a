@@ -84,6 +84,7 @@ The live workspace pipeline runs through **`ocr_test_core`** in `backend/app/api
 - Workflow UI: `POST /api/workflows/runs/{id}/files/{task_file_id}/confirm-crops` with `action=confirm|skip|cancel`.
 - Cancel clears the gate without writing extract rows. Skip re-runs Detect then extract. Confirm extracts the submitted boxes.
 - During extract, `crop_preview.phase=extracting` updates per-box `extract_status` (pending/running/done/error) for the strip + active-box highlight.
+- **UI placement:** the crop-preview gate docks in Processing’s **right document panel** only (`MvduCropPreviewGate` inside `erp-proc-right`). Left run list and center Live output stay visible — not a fullscreen modal overlay.
 
 **2) Cut and process each region**
 
