@@ -160,11 +160,16 @@ async def test_crop_loop_persists_each_result_including_timeout(monkeypatch, tmp
         ocr_prompt_override=None,
         processing_mode="AP",
         confirmed=True,
+        skip_crop_preview=True,
         pdf_page_num=6,
     )
     assert result is not None
-    assert len(persists) == 3
-    assert all(len(p.get("pages") or []) == 1 for p in persists)
+    # One strip-progress snapshot (pages=[]) plus one persist per finished crop.
+    page_persists = [p for p in persists if (p.get("pages") or [])]
+    progress_persists = [p for p in persists if p.get("crop_preview") and not (p.get("pages") or [])]
+    assert len(progress_persists) >= 1
+    assert len(page_persists) == 3
+    assert all(len(p.get("pages") or []) == 1 for p in page_persists)
     pages = result.get("pages") or []
     assert len(pages) == 3
     by_idx = {p.get("receipt_index"): p for p in pages}
@@ -172,3 +177,4 @@ async def test_crop_loop_persists_each_result_including_timeout(monkeypatch, tmp
     assert by_idx[2]["error_code"] == VLM_CROP_TIMEOUT_CODE
     assert by_idx[2]["ai_enhanced"]["tsv_rows"][0]["memo"] == OCR_TIMEOUT_MEMO
     assert by_idx[3]["ai_enhanced"]["tsv_rows"][0]["voucher_no"] == "C3"
+    assert result.get("crop_preview", {}).get("phase") == "done"
