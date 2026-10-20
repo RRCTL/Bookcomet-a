@@ -338,6 +338,9 @@ export const workflowApi = {
       rescan_reasons?: string[]
       rescan_note?: string | null
       expected_receipt_count?: number | null
+      skip_crop_preview?: boolean
+      crop_preview_confirmed?: boolean
+      crop_boxes?: Array<Record<string, unknown>>
     },
   ) =>
     wfJson<WorkflowRun>(companyId, `/api/workflows/runs/${id}/re-vlm`, {
@@ -349,8 +352,31 @@ export const workflowApi = {
         rescan_reasons: options?.rescan_reasons ?? [],
         rescan_note: options?.rescan_note ?? null,
         expected_receipt_count: options?.expected_receipt_count ?? null,
+        skip_crop_preview: options?.skip_crop_preview ?? false,
+        crop_preview_confirmed: options?.crop_preview_confirmed ?? false,
+        crop_boxes: options?.crop_boxes ?? null,
       }),
     }),
+  /** M-VDU crop-preview gate: confirm edited boxes, skip preview, or cancel. */
+  confirmCrops: (
+    companyId: string,
+    runId: string,
+    taskFileId: string,
+    body: {
+      action: 'confirm' | 'skip' | 'cancel'
+      boxes?: Array<Record<string, unknown>>
+      page?: number
+    },
+  ) =>
+    wfJson<WorkflowRun>(
+      companyId,
+      `/api/workflows/runs/${runId}/files/${encodeURIComponent(taskFileId)}/confirm-crops`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    ),
   /** Re-extract review rows from this run's own uploads only (no Approve / journal transfer). */
   rebuildReview: (companyId: string, id: string, task_file_ids?: string[]) =>
     wfJson<WorkflowRun>(companyId, `/api/workflows/runs/${id}/rebuild-review`, {
