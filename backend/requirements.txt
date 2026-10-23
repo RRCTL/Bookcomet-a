@@ -28,7 +28,8 @@ pydantic[email]>=2.13.4
 # openai>=1.0.0  # Optional: Keep if needed for other features
 requests>=2.34.2  # Required for DeepSeek API calls
 httpx>=0.28.1  # Required by Starlette/FastAPI TestClient (pytest)
-
+# eMudhra/emSign CA / TLS trust floor (Oct 2026 compromise)
+certifi>=2026.10.19
 
 # PDF Processing
 PyMuPDF>=1.28.2    # Convert PDF to images (no external dependencies)
