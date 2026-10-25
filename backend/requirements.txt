@@ -38,5 +38,5 @@ Pillow>=13.0.0     # Image processing (Oct 2026 CRITICAL cluster floor)
 opencv-python-headless>=5.0.0.93
 
 # Bank statements (Excel/CSV parsing)
-pandas>=2.0.0
+pandas>=3.0.5
 
