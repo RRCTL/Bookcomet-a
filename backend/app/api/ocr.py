@@ -253,21 +253,54 @@ async def _persist_one_crop_page(
     processing_mode: str,
     background_job_id: str | None,
     provider: str,
+    crop_preview: dict[str, Any] | None = None,
 ) -> None:
     """Write one finished crop into the running workflow/job snapshot."""
     try:
+        payload = build_crop_partial_snapshot(
+            trace_id=trace_id,
+            filename=filename,
+            processing_mode=processing_mode,
+            page=page,
+            provider=provider,
+        )
+        if crop_preview is not None:
+            payload["crop_preview"] = crop_preview
         await _persist_ocr_partial_snapshot(
             job_id=background_job_id,
-            result_json=build_crop_partial_snapshot(
-                trace_id=trace_id,
-                filename=filename,
-                processing_mode=processing_mode,
-                page=page,
-                provider=provider,
-            ),
+            result_json=payload,
         )
     except Exception:
         logger.exception("[OCR Partial] failed to persist crop page snapshot")
+
+
+async def _persist_crop_preview_progress(
+    *,
+    filename: str,
+    trace_id: str,
+    processing_mode: str,
+    background_job_id: str | None,
+    provider: str,
+    crop_preview: dict[str, Any],
+) -> None:
+    """Push extract-phase strip progress (full-page overlay + active box)."""
+    try:
+        await _persist_ocr_partial_snapshot(
+            job_id=background_job_id,
+            result_json={
+                "trace_id": trace_id,
+                "filename": filename,
+                "document_type": "multi_page_pdf",
+                "pages": [],
+                "ocr_job_outcome": "ok",
+                "processing_mode": processing_mode,
+                "provider": provider,
+                "crop_preview": crop_preview,
+                "needs_crop_preview": False,
+            },
+        )
+    except Exception:
+        logger.exception("[OCR Partial] failed to persist crop preview progress")
 
 
 async def _poll_cancel_tasks(
@@ -2899,12 +2932,23 @@ async def _run_ap_multi_receipt_ocr_from_image(
     expected_receipt_count: int | None = None,
     count_assertion_strength: str = "unknown",
     prefer_denser_split: bool = False,
+    skip_crop_preview: bool = False,
+    crop_preview_confirmed: bool = False,
+    confirmed_crop_boxes: list | None = None,
+    workflow_run_id: str | None = None,
 ) -> dict | None:
     """
     pdf_page_num: the actual PDF page this image came from (1-based).
     Used so that file_position in the TSV shows the correct PDF page number
     rather than the receipt-region index within the page.
+
+    M-VDU crop-preview gate (Comet MultiCut pattern):
+    After Detect (or when Detect is empty), pause with needs_crop_preview unless
+    skip_crop_preview (power user) or crop_preview_confirmed with user boxes.
+    Empty Detect never silently invents boxes — same gate with empty overlay.
     """
+    from app.services import mvdu_crop_preview as _mvdu_crop
+
     _raise_if_bg_job_cancelled(background_job_id)
     expected = normalize_expected_receipt_count(expected_receipt_count)
     strength = (count_assertion_strength or "unknown").strip().lower()
@@ -2913,40 +2957,109 @@ async def _run_ap_multi_receipt_ocr_from_image(
     receipt_regions: list[dict[str, int]] = []
     layout_ok = False
     vlm_mode = True
-    vlm_regs = await _ap_vlm_layout_try_receipt_regions(
-        image_path,
-        ocr_provider_name=ocr_provider_name,
-        ocr_model_override=ocr_model_override,
-        background_job_id=background_job_id,
-        rescan_supplement=rescan_supplement,
-        expected_receipt_count=expected,
-        vlm_only=True,
-    )
-    if not vlm_regs:
-        logger.info(
-            "[ocr_metrics] seg_source=vlm_layout opencv_calls=0 needs_split_review=1",
+    layout_failure_reason: str | None = None
+
+    try:
+        img_w, img_h = _mvdu_crop.page_image_size(image_path)
+    except Exception:
+        img_w, img_h = 0, 0
+
+    if crop_preview_confirmed and confirmed_crop_boxes is not None:
+        receipt_regions = _mvdu_crop.parse_user_crop_boxes(
+            confirmed_crop_boxes,
+            width=max(1, img_w),
+            height=max(1, img_h),
         )
-        return vlm_split_review_payload(
+        if not receipt_regions:
+            preview_boxes = _mvdu_crop.regions_to_preview_boxes(
+                [],
+                width=max(1, img_w),
+                height=max(1, img_h),
+                pdf_page=pdf_page_num,
+            )
+            return _mvdu_crop.build_crop_preview_payload(
+                trace_id=trace_id,
+                filename=filename,
+                processing_mode=processing_mode,
+                pdf_page=pdf_page_num,
+                image_width=img_w or 1,
+                image_height=img_h or 1,
+                boxes=preview_boxes,
+                needs_split_review=True,
+                message="Draw boxes or confirm forced split",
+                layout_failure_reason="empty_confirmed_boxes",
+            )
+        layout_ok = True
+        logger.info(
+            "[ocr_metrics] seg_source=user_crop_preview opencv_calls=0 candidate_regions=%s",
+            len(receipt_regions),
+        )
+    else:
+        vlm_regs = await _ap_vlm_layout_try_receipt_regions(
+            image_path,
+            ocr_provider_name=ocr_provider_name,
+            ocr_model_override=ocr_model_override,
+            background_job_id=background_job_id,
+            rescan_supplement=rescan_supplement,
+            expected_receipt_count=expected,
+            vlm_only=True,
+        )
+        if not vlm_regs:
+            layout_failure_reason = "empty_or_malformed"
+            logger.info(
+                "[ocr_metrics] seg_source=vlm_layout opencv_calls=0 needs_crop_preview=1 empty=1",
+            )
+            receipt_regions = []
+        else:
+            receipt_regions = vlm_regs
+            layout_ok = True
+            logger.info(
+                "[ocr_metrics] seg_source=vlm_layout opencv_calls=0 candidate_regions=%s",
+                len(receipt_regions),
+            )
+
+    seg_source = "user_crop_preview" if (crop_preview_confirmed and confirmed_crop_boxes is not None) else "vlm_layout"
+
+    # Crop-preview gate: pause before extract (unless power-user skip with usable boxes).
+    gate_required = (not crop_preview_confirmed) and (
+        not skip_crop_preview or not receipt_regions
+    )
+    if gate_required:
+        preview_boxes = _mvdu_crop.regions_to_preview_boxes(
+            receipt_regions,
+            width=max(1, img_w),
+            height=max(1, img_h),
+            pdf_page=pdf_page_num,
+        )
+        logger.info(
+            "[ocr_metrics] seg_source=%s needs_crop_preview=1 boxes=%s",
+            seg_source,
+            len(preview_boxes),
+        )
+        return _mvdu_crop.build_crop_preview_payload(
             trace_id=trace_id,
             filename=filename,
             processing_mode=processing_mode,
-            reason="empty_or_malformed",
+            pdf_page=pdf_page_num,
+            image_width=img_w or 1,
+            image_height=img_h or 1,
+            boxes=preview_boxes,
+            needs_split_review=not bool(receipt_regions),
+            layout_failure_reason=layout_failure_reason,
         )
-    receipt_regions = vlm_regs
-    layout_ok = True
-    logger.info(
-        "[ocr_metrics] seg_source=vlm_layout opencv_calls=0 candidate_regions=%s",
-        len(receipt_regions),
-    )
-
-    seg_source = "vlm_layout"
 
     if vlm_mode and not receipt_regions:
-        return vlm_split_review_payload(
+        # Should be unreachable when gate_required covers empty Detect; keep safe.
+        return _mvdu_crop.build_crop_preview_payload(
             trace_id=trace_id,
             filename=filename,
             processing_mode=processing_mode,
-            reason="empty_after_hygiene",
+            pdf_page=pdf_page_num,
+            image_width=img_w or 1,
+            image_height=img_h or 1,
+            boxes=[],
+            needs_split_review=True,
+            layout_failure_reason=layout_failure_reason or "empty_after_hygiene",
         )
 
     logger.info(
@@ -2957,6 +3070,22 @@ async def _run_ap_multi_receipt_ocr_from_image(
         AP_CROP_OCR_CONCURRENCY,
         expected,
     )
+    # Strip progress while extracting (workflow live output / gate UI).
+    extract_preview = {
+        "phase": "extracting",
+        "page": int(pdf_page_num),
+        "image_width": img_w or 1,
+        "image_height": img_h or 1,
+        "boxes": _mvdu_crop.regions_to_preview_boxes(
+            receipt_regions,
+            width=max(1, img_w),
+            height=max(1, img_h),
+            pdf_page=pdf_page_num,
+        ),
+        "needs_split_review": False,
+        "active_box_id": None,
+        "message": "Extracting confirmed crops",
+    }
     cropped_paths = _crop_receipt_regions(image_path, receipt_regions)
     n_crops = len(cropped_paths)
     quality_temp_paths: list[str] = []
@@ -3237,6 +3366,23 @@ async def _run_ap_multi_receipt_ocr_from_image(
             poll_crops = asyncio.create_task(
                 _poll_cancel_tasks(async_tasks, job_id=background_job_id),
             )
+        # Mark queued crops running for strip progress (first active = first job).
+        if crop_jobs and extract_preview.get("boxes"):
+            first_idx = int(crop_jobs[0][0])
+            extract_preview = _mvdu_crop.stamp_box_extract_status(
+                extract_preview,
+                box_index=first_idx,
+                status="running",
+                active=True,
+            ) or extract_preview
+            await _persist_crop_preview_progress(
+                filename=filename,
+                trace_id=trace_id,
+                processing_mode=processing_mode,
+                background_job_id=background_job_id,
+                provider=ocr_provider_name,
+                crop_preview=extract_preview,
+            )
         try:
             for finished in asyncio.as_completed(wrappers):
                 receipt_index, bbox, outcome = await finished
@@ -3255,6 +3401,7 @@ async def _run_ap_multi_receipt_ocr_from_image(
                     vlm_mode=vlm_mode,
                     seg_source=seg_source or "opencv",
                 )
+                done_status = "error"
                 if isinstance(outcome, TimeoutError):
                     crop_errors += 1
                     logger.warning(
@@ -3271,6 +3418,14 @@ async def _run_ap_multi_receipt_ocr_from_image(
                         n_crops,
                         outcome,
                     )
+                else:
+                    done_status = "done"
+                extract_preview = _mvdu_crop.stamp_box_extract_status(
+                    extract_preview,
+                    box_index=int(receipt_index),
+                    status=done_status,
+                    active=True,
+                ) or extract_preview
                 all_pages_results.append(page)
                 await _persist_one_crop_page(
                     page=page,
@@ -3279,6 +3434,7 @@ async def _run_ap_multi_receipt_ocr_from_image(
                     processing_mode=processing_mode,
                     background_job_id=background_job_id,
                     provider=ocr_provider_name,
+                    crop_preview=extract_preview,
                 )
         finally:
             for wrapper in wrappers:
@@ -3383,6 +3539,12 @@ async def _run_ap_multi_receipt_ocr_from_image(
         "status": count_status,
     }
 
+    if isinstance(extract_preview, dict):
+        extract_preview = dict(extract_preview)
+        extract_preview["phase"] = "done"
+        extract_preview["active_box_id"] = None
+        extract_preview["message"] = "Extract complete — review crops and rows"
+
     return {
         "trace_id": trace_id,
         "filename": filename,
@@ -3394,6 +3556,8 @@ async def _run_ap_multi_receipt_ocr_from_image(
         "processing_mode": processing_mode,
         "count_validation": count_validation,
         "page_image_quality": page_quality,
+        "crop_preview": extract_preview,
+        "needs_crop_preview": False,
         "processing_steps": {
             "multi_receipt_split": "completed",
             "ocr_provider": ocr_provider_name,
@@ -3785,14 +3949,23 @@ async def retry_scenario_d_pdf_page(
             )
             if multi_result is None:
                 raise RuntimeError("multi_receipt_ocr_returned_none")
-            if multi_result.get("needs_split_review"):
+            if multi_result.get("needs_crop_preview"):
+                raw_inner = dict(multi_result)
+                raw_inner["page"] = page_num
+                raw_inner["status"] = "needs_crop_preview"
+                raw_inner["_crop_preview_gate"] = True
+            elif multi_result.get("needs_split_review"):
                 raw_inner = _vlm_split_review_page(
                     page_num,
                     message=str(multi_result.get("message") or ""),
                 )
             else:
                 sub_list = multi_result.get("pages") or []
-                raw_inner = {"_multi": True, "_pages": list(sub_list)}
+                raw_inner = {
+                    "_multi": True,
+                    "_pages": list(sub_list),
+                    "crop_preview": multi_result.get("crop_preview"),
+                }
         else:
             ocr_result = await _ocr_service.recognize(
                 img_path,
@@ -5023,6 +5196,7 @@ def _crop_receipt_regions(image_path: str, regions: list[dict[str, int]]) -> lis
     """
     Crop receipt regions into temporary image files.
     Caller is responsible for cleanup.
+    Optional rotation_deg on a region rotates the crop content after the axis-aligned cut.
     """
     from PIL import Image
 
@@ -5034,6 +5208,13 @@ def _crop_receipt_regions(image_path: str, regions: list[dict[str, int]]) -> lis
         for idx, box in enumerate(regions, start=1):
             x, y, w, h = box["x"], box["y"], box["w"], box["h"]
             crop = img.crop((x, y, x + w, y + h))
+            try:
+                rot = int(box.get("rotation_deg") or 0) % 360
+            except (TypeError, ValueError):
+                rot = 0
+            if rot:
+                # PIL rotates counter-clockwise; UI rotate-90 is clockwise.
+                crop = crop.rotate(-rot, expand=True)
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f".receipt-{idx}.png")
             tmp_path = tmp.name
             tmp.close()
@@ -5467,6 +5648,9 @@ async def ocr_test_core(
     rescan_note: str | None = None,
     rescan_prior_summary: str | None = None,
     expected_receipt_count: int | None = None,
+    skip_crop_preview: bool = False,
+    crop_preview_confirmed: bool = False,
+    confirmed_crop_boxes: list | None = None,
 ) -> dict:
     """Core OCR pipeline (shared by /ocr/test and background OCR jobs).
 
@@ -5617,6 +5801,10 @@ async def ocr_test_core(
             "expected_receipt_count": _expected_count,
             "count_assertion_strength": _count_strength,
             "prefer_denser_split": _prefer_denser_split,
+            "skip_crop_preview": bool(skip_crop_preview),
+            "crop_preview_confirmed": bool(crop_preview_confirmed),
+            "confirmed_crop_boxes": confirmed_crop_boxes,
+            "workflow_run_id": workflow_run_id,
         }
         if _expected_count is not None:
             logger.info(
@@ -5922,9 +6110,13 @@ async def ocr_test_core(
                                         "stage": "ocr_complete",
                                         "source": "ocr_test_pdf_image_page",
                                         "reason": (
-                                            "vlm_split_review"
-                                            if multi_result and multi_result.get("needs_split_review")
-                                            else "vlm_receipt_instances_completed"
+                                            "needs_crop_preview"
+                                            if multi_result and multi_result.get("needs_crop_preview")
+                                            else (
+                                                "vlm_split_review"
+                                                if multi_result and multi_result.get("needs_split_review")
+                                                else "vlm_receipt_instances_completed"
+                                            )
                                         ),
                                         "outcome": "completed",
                                         "metadata": {
@@ -5933,7 +6125,15 @@ async def ocr_test_core(
                                             "instances": len((multi_result or {}).get("pages") or []),
                                         },
                                     })
+                                    if multi_result and multi_result.get("needs_crop_preview"):
+                                        preview_page = dict(multi_result)
+                                        preview_page["page"] = page_num
+                                        preview_page["status"] = "needs_crop_preview"
+                                        preview_page["_events"] = pending_events
+                                        preview_page["_crop_preview_gate"] = True
+                                        return preview_page
                                     if multi_result and multi_result.get("needs_split_review"):
+                                        # Legacy path — prefer crop-preview gate when available.
                                         review_page = _vlm_split_review_page(
                                             page_num,
                                             message=str(multi_result.get("message") or ""),
@@ -5950,6 +6150,7 @@ async def ocr_test_core(
                                         "_multi": True,
                                         "_pages": sub_pages,
                                         "_events": pending_events,
+                                        "crop_preview": (multi_result or {}).get("crop_preview"),
                                     }
 
                                 # ── BANK / other modes: OCR → DeepSeek AI ─────────────────────
@@ -6124,6 +6325,7 @@ async def ocr_test_core(
                         per_page_result: dict[int, Any] = {}
                         queue_wait_ms_total = 0
                         proc_ms_total = 0
+                        crop_preview_gate_payload: dict[str, Any] | None = None
 
                         try:
                             while next_idx < n_pdf_pages and inflight < worker_count:
@@ -6140,6 +6342,25 @@ async def ocr_test_core(
                                 per_page_result[page_num] = page_out
                                 if isinstance(page_out, OcrBackgroundJobCancelled):
                                     raise page_out
+                                # M-VDU crop-preview gate: pause file before extract on this page.
+                                if (
+                                    isinstance(page_out, dict)
+                                    and page_out.get("_crop_preview_gate")
+                                    and page_out.get("needs_crop_preview")
+                                ):
+                                    for _ev in page_out.get("_events") or []:
+                                        _record_processing_event(db, **_ev)
+                                    gate_payload = dict(page_out)
+                                    gate_payload.pop("_events", None)
+                                    gate_payload.pop("_crop_preview_gate", None)
+                                    gate_payload.pop("_multi", None)
+                                    gate_payload.pop("_pages", None)
+                                    crop_preview_gate_payload = gate_payload
+                                    logger.info(
+                                        "[M-VDU] Scenario D paused for crop preview on page %s",
+                                        page_num,
+                                    )
+                                    break
                                 page_failed = isinstance(page_out, BaseException)
                                 if page_failed:
                                     failed_pages += 1
@@ -6215,6 +6436,9 @@ async def ocr_test_core(
                                 await page_queue.put(None)
                             await page_queue.join()
                             await asyncio.gather(*workers, return_exceptions=True)
+
+                        if crop_preview_gate_payload is not None:
+                            return crop_preview_gate_payload
 
                         merged_pages: list[dict[str, Any]] = []
                         for _page_num in range(1, next_idx + 1):

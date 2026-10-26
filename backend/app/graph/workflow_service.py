@@ -1427,6 +1427,9 @@ class WorkflowService:
         rescan_reasons: list[str] | None = None,
         rescan_note: str | None = None,
         expected_receipt_count: int | None = None,
+        skip_crop_preview: bool = False,
+        crop_preview_confirmed: bool = False,
+        confirmed_crop_boxes: list | None = None,
     ) -> dict[str, Any]:
         from app.services.abuse_guard import company_ocr_concurrency
 
@@ -1481,6 +1484,9 @@ class WorkflowService:
                         rescan_note=safe_note or None,
                         rescan_prior_summary=prior_summary or None,
                         expected_receipt_count=expected_count,
+                        skip_crop_preview=skip_crop_preview,
+                        crop_preview_confirmed=crop_preview_confirmed,
+                        confirmed_crop_boxes=confirmed_crop_boxes,
                     )
         except WorkflowRunCancelled:
             run_file.file_status = "stopped"
@@ -1522,6 +1528,18 @@ class WorkflowService:
             run_file.result_summary_json = result
             db.commit()
             return {"ok": False, "warning": True, "needs_confirmation": True, "result": result}
+
+        if result.get("needs_crop_preview"):
+            run_file.file_status = "warning"
+            run_file.error_text = "needs_crop_preview"
+            run_file.result_summary_json = result
+            db.commit()
+            return {
+                "ok": False,
+                "warning": True,
+                "needs_crop_preview": True,
+                "result": result,
+            }
 
         count_val = result.get("count_validation") if isinstance(result, dict) else None
         if isinstance(count_val, dict):
@@ -2059,6 +2077,9 @@ class WorkflowService:
         rescan_reasons: list[str] | None = None,
         rescan_note: str | None = None,
         expected_receipt_count: int | None = None,
+        skip_crop_preview: bool = False,
+        crop_preview_confirmed: bool = False,
+        confirmed_crop_boxes: list | None = None,
     ) -> WorkflowRun:
         if _run_has_locked_approved_table(run):
             raise HTTPException(status_code=409, detail=RE_VLM_LOCKED_DETAIL)
@@ -2147,6 +2168,9 @@ class WorkflowService:
                         rescan_reasons=validated_reasons,
                         rescan_note=safe_note,
                         expected_receipt_count=expected_count,
+                        skip_crop_preview=skip_crop_preview,
+                        crop_preview_confirmed=crop_preview_confirmed,
+                        confirmed_crop_boxes=confirmed_crop_boxes,
                         **vlm_kwargs,
                     )
                 )
@@ -2204,6 +2228,48 @@ class WorkflowService:
             rescan_focus=rescan_focus,
             rescan_note=rescan_note_persist,
         )
+        db.commit()
+        db.refresh(run)
+        return run
+
+    @staticmethod
+    def cancel_crop_preview(
+        db: Session,
+        run: WorkflowRun,
+        task_file_id: str,
+    ) -> WorkflowRun:
+        """Dismiss crop-preview gate without writing extract rows."""
+        if _run_has_locked_approved_table(run):
+            raise HTTPException(status_code=409, detail=RE_VLM_LOCKED_DETAIL)
+        rf = (
+            db.query(WorkflowRunFile)
+            .filter(
+                WorkflowRunFile.run_id == run.id,
+                WorkflowRunFile.task_file_id == task_file_id,
+            )
+            .first()
+        )
+        if not rf:
+            raise HTTPException(status_code=404, detail="Run file not found")
+        summary = rf.result_summary_json if isinstance(rf.result_summary_json, dict) else {}
+        if not summary.get("needs_crop_preview") and rf.error_text != "needs_crop_preview":
+            raise HTTPException(status_code=400, detail="File is not awaiting crop preview")
+        rf.file_status = "pending"
+        rf.error_text = None
+        rf.gate_result = None
+        rf.result_summary_json = None
+        _append_console(run, "info", f"Crop preview cancelled for {rf.task_file_id[:8]}…")
+        # If no other files still need attention, leave run draft/awaiting as-is.
+        live = db.query(WorkflowRunFile).filter(WorkflowRunFile.run_id == run.id).all()
+        if run.run_status == "executing":
+            any_running = any((x.file_status or "") == "running" for x in live)
+            if not any_running:
+                warn_n = sum(1 for x in live if (x.file_status or "") == "warning")
+                ok_n = sum(1 for x in live if (x.file_status or "") == "ok")
+                if warn_n == 0 and ok_n == 0:
+                    run.run_status = "draft"
+                elif ok_n or warn_n:
+                    run.run_status = "awaiting_review"
         db.commit()
         db.refresh(run)
         return run

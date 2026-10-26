@@ -52,6 +52,9 @@ function resolveBatchPayloads(
   return mergeBatchTablePayloads(run, reconciled, built)
 }
 import { ARAPReview, type ARAPTransaction } from '../../components/ARAPReview'
+import { MvduCropPreviewGate } from '../mvduCropPreview/MvduCropPreviewGate'
+import { parseCropPreviewFromSummary } from '../mvduCropPreview/boxOps'
+import type { CropPreviewPayload } from '../mvduCropPreview/types'
 import { BankStatementReview, type BankTransaction } from '../../components/BankStatementReview'
 import { OtherTable } from '../../components/OtherTable'
 import { CompanyFxToolbar } from '../../components/CompanyFxToolbar'
@@ -426,6 +429,7 @@ export function ProcessingView() {
   const [renameDraft, setRenameDraft] = useState('')
   const [showReVlm, setShowReVlm] = useState(false)
   const [reVlmInitialFileIds, setReVlmInitialFileIds] = useState<string[]>([])
+  const [cropGateBusy, setCropGateBusy] = useState(false)
   const [headerChangeConfirm, setHeaderChangeConfirm] = useState<{
     onConfirm: () => void
     onCancel: () => void
@@ -1590,6 +1594,103 @@ export function ProcessingView() {
   ).length
   const totalFileCount = activeRun?.files.length ?? 0
 
+  const cropGateTarget = useMemo(() => {
+    if (!activeRun?.task_id) return null
+    const mode = (activeRun.processing_mode ?? '').toUpperCase()
+    if (mode !== 'AP' && mode !== 'AR') return null
+    for (const f of activeRun.files ?? []) {
+      const summary = (f.result_summary_json ?? null) as Record<string, unknown> | null
+      const parsed = parseCropPreviewFromSummary(summary)
+      if (
+        (f.error_text === 'needs_crop_preview' || parsed.needsGate) &&
+        parsed.preview &&
+        (parsed.preview.phase === 'preview' || parsed.preview.phase === 'extracting')
+      ) {
+        return {
+          taskFileId: f.task_file_id,
+          filename: f.original_filename,
+          preview: parsed.preview as CropPreviewPayload,
+        }
+      }
+    }
+    return null
+  }, [activeRun])
+
+  const reviewCropBoxes = useMemo(() => {
+    for (const f of activeRun?.files ?? []) {
+      const summary = f.result_summary_json as Record<string, unknown> | null | undefined
+      const cp = summary?.crop_preview
+      if (cp && typeof cp === 'object') {
+        const boxes = (cp as Record<string, unknown>).boxes
+        if (Array.isArray(boxes) && boxes.length > 0) return boxes
+      }
+    }
+    return undefined
+  }, [activeRun])
+
+  const handleCropGateConfirm = useCallback(
+    async (boxes: Array<Record<string, unknown>>) => {
+      if (!activeRun || !cropGateTarget || cropGateBusy) return
+      setCropGateBusy(true)
+      setError(null)
+      try {
+        const updated = await workflowApi.confirmCrops(
+          companyId,
+          activeRun.id,
+          cropGateTarget.taskFileId,
+          { action: 'confirm', boxes },
+        )
+        applyRunFromServer(updated, true)
+        void reloadRuns()
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Could not confirm crops.')
+      } finally {
+        setCropGateBusy(false)
+      }
+    },
+    [activeRun, cropGateTarget, cropGateBusy, companyId, applyRunFromServer, reloadRuns],
+  )
+
+  const handleCropGateSkip = useCallback(async () => {
+    if (!activeRun || !cropGateTarget || cropGateBusy) return
+    setCropGateBusy(true)
+    setError(null)
+    try {
+      const updated = await workflowApi.confirmCrops(
+        companyId,
+        activeRun.id,
+        cropGateTarget.taskFileId,
+        { action: 'skip' },
+      )
+      applyRunFromServer(updated, true)
+      void reloadRuns()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not skip crop preview.')
+    } finally {
+      setCropGateBusy(false)
+    }
+  }, [activeRun, cropGateTarget, cropGateBusy, companyId, applyRunFromServer, reloadRuns])
+
+  const handleCropGateCancel = useCallback(async () => {
+    if (!activeRun || !cropGateTarget || cropGateBusy) return
+    setCropGateBusy(true)
+    setError(null)
+    try {
+      const updated = await workflowApi.confirmCrops(
+        companyId,
+        activeRun.id,
+        cropGateTarget.taskFileId,
+        { action: 'cancel' },
+      )
+      applyRunFromServer(updated, true)
+      void reloadRuns()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not cancel crop preview.')
+    } finally {
+      setCropGateBusy(false)
+    }
+  }, [activeRun, cropGateTarget, cropGateBusy, companyId, applyRunFromServer, reloadRuns])
+
   const renderNodeCard = (node: GraphNode) => {
     const state = nodeStateOf(activeRun, node.id)
     const kind = statusKind(state?.status)
@@ -1808,7 +1909,11 @@ export function ProcessingView() {
       <div
         ref={bodyRef}
         className="erp-proc-body"
-        style={{ gridTemplateColumns: `${railWidth}px 5px minmax(280px, 1fr) 5px ${rightWidth}px` }}
+        style={{
+          gridTemplateColumns: `${railWidth}px 5px minmax(280px, 1fr) 5px ${
+            cropGateTarget ? Math.max(rightWidth, 420) : rightWidth
+          }px`,
+        }}
       >
         <aside className="erp-proc-rail">
           <div className="erp-proc-railhead">
@@ -1931,7 +2036,16 @@ export function ProcessingView() {
                       const livePages = formatLiveOutputPageStatuses(f)
                       const reason =
                         livePages ||
-                        [f.gate_result ? `gate: ${f.gate_result}` : '', f.error_text ?? '']
+                        [
+                          f.error_text === 'needs_crop_preview'
+                            ? 'Crop preview — confirm boxes before extract'
+                            : f.gate_result
+                              ? `gate: ${f.gate_result}`
+                              : '',
+                          f.error_text && f.error_text !== 'needs_crop_preview'
+                            ? f.error_text
+                            : '',
+                        ]
                           .filter(Boolean)
                           .join(' \u00B7 ')
                       const canRetry = f.file_status === 'failed' || f.file_status === 'warning'
@@ -2074,6 +2188,7 @@ export function ProcessingView() {
                                   taskFileId: f.task_file_id,
                                   originalFilename: f.original_filename,
                                 })),
+                                previewBoxes: reviewCropBoxes,
                               }
                             : null
                         }
@@ -2111,64 +2226,81 @@ export function ProcessingView() {
         />
 
         <aside className="erp-proc-right">
-          <div className="erp-proc-canvas erp-proc-canvas--side">
-            {!activeRun ? (
-              <div className="erp-empty">Select or create a run.</div>
-            ) : orderedNodes.length === 0 ? (
-              <div className="erp-empty">This run has no workflow nodes.</div>
-            ) : (
-              nodeRows.map((row, i) => (
-                <div key={row.key}>
-                  {i > 0 && <div className="erp-connector" />}
-                  {row.nodes.length > 1 ? (
-                    <div className="erp-node-row">{row.nodes.map(renderNodeCard)}</div>
-                  ) : (
-                    renderNodeCard(row.nodes[0]!)
-                  )}
-                </div>
-              ))
-            )}
-            {activeRun && orderedNodes.length > 0 && (
-              <div className="erp-branch-note">
-                Advanced: add Proposer / Judge / Vote / Manager Review branch nodes in the legacy workspace.
-              </div>
-            )}
-          </div>
-          <div className="erp-proc-side-settings">
-            <NodeSettings
-              node={selectedNode}
-              nodeState={selectedNode ? nodeStateOf(activeRun, selectedNode.id) : undefined}
-              processingMode={activeRun?.processing_mode ?? ''}
-              providerOptions={workflowProviderOptions}
-              onPatch={patchNodeData}
-              onToggleCross={toggleCrossVlm}
-              crossOn={Boolean(activeRun?.graph_json.nodes.some(n => n.type === 'VLMDoubleCheck'))}
-              busy={busy}
+          {cropGateTarget && activeRun?.task_id ? (
+            <MvduCropPreviewGate
+              open
+              taskId={activeRun.task_id}
+              taskFileId={cropGateTarget.taskFileId}
+              companyId={companyId}
+              filename={cropGateTarget.filename}
+              preview={cropGateTarget.preview}
+              busy={cropGateBusy}
+              onConfirm={boxes => void handleCropGateConfirm(boxes)}
+              onSkip={() => void handleCropGateSkip()}
+              onCancel={() => void handleCropGateCancel()}
             />
-            {activeRun && (
-              <ul className="erp-tl">
-                <div className="lab">Run timeline</div>
-                {orderedNodes.map(node => {
-                  const state = nodeStateOf(activeRun, node.id)
-                  const kind = statusKind(state?.status)
-                  const cls = kind === 'done' ? 'ok' : kind === 'run' ? 'now' : kind === 'fail' ? 'fail' : 'wait'
-                  const v = state?.duration_ms != null ? fmtDuration(state.duration_ms) : kind === 'run' ? '\u2026' : '\u2014'
-                  const label = String((node.data as Record<string, unknown>)?.label ?? node.type)
-                  const fb = nodeDetailLines(state)[0]
-                  return (
-                    <li key={node.id} className={cls}>
-                      <span className="c" />
-                      <span className="g">
-                        {label}
-                        {fb ? <span className="erp-tl-fb">{fb.v}</span> : null}
-                      </span>
-                      <span className="v">{v}</span>
-                    </li>
-                  )
-                })}
-              </ul>
-            )}
-          </div>
+          ) : (
+            <>
+              <div className="erp-proc-canvas erp-proc-canvas--side">
+                {!activeRun ? (
+                  <div className="erp-empty">Select or create a run.</div>
+                ) : orderedNodes.length === 0 ? (
+                  <div className="erp-empty">This run has no workflow nodes.</div>
+                ) : (
+                  nodeRows.map((row, i) => (
+                    <div key={row.key}>
+                      {i > 0 && <div className="erp-connector" />}
+                      {row.nodes.length > 1 ? (
+                        <div className="erp-node-row">{row.nodes.map(renderNodeCard)}</div>
+                      ) : (
+                        renderNodeCard(row.nodes[0]!)
+                      )}
+                    </div>
+                  ))
+                )}
+                {activeRun && orderedNodes.length > 0 && (
+                  <div className="erp-branch-note">
+                    Advanced: add Proposer / Judge / Vote / Manager Review branch nodes in the legacy workspace.
+                  </div>
+                )}
+              </div>
+              <div className="erp-proc-side-settings">
+                <NodeSettings
+                  node={selectedNode}
+                  nodeState={selectedNode ? nodeStateOf(activeRun, selectedNode.id) : undefined}
+                  processingMode={activeRun?.processing_mode ?? ''}
+                  providerOptions={workflowProviderOptions}
+                  onPatch={patchNodeData}
+                  onToggleCross={toggleCrossVlm}
+                  crossOn={Boolean(activeRun?.graph_json.nodes.some(n => n.type === 'VLMDoubleCheck'))}
+                  busy={busy}
+                />
+                {activeRun && (
+                  <ul className="erp-tl">
+                    <div className="lab">Run timeline</div>
+                    {orderedNodes.map(node => {
+                      const state = nodeStateOf(activeRun, node.id)
+                      const kind = statusKind(state?.status)
+                      const cls = kind === 'done' ? 'ok' : kind === 'run' ? 'now' : kind === 'fail' ? 'fail' : 'wait'
+                      const v = state?.duration_ms != null ? fmtDuration(state.duration_ms) : kind === 'run' ? '\u2026' : '\u2014'
+                      const label = String((node.data as Record<string, unknown>)?.label ?? node.type)
+                      const fb = nodeDetailLines(state)[0]
+                      return (
+                        <li key={node.id} className={cls}>
+                          <span className="c" />
+                          <span className="g">
+                            {label}
+                            {fb ? <span className="erp-tl-fb">{fb.v}</span> : null}
+                          </span>
+                          <span className="v">{v}</span>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                )}
+              </div>
+            </>
+          )}
         </aside>
       </div>
 
