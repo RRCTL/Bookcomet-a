@@ -17,6 +17,7 @@ import {
 import {
   ANOTHER_RUN_PROCESSING_HINT,
   anotherRunIsProcessing,
+  canActOnEmptyExtractPage,
   canExecuteOnActiveRun,
   canReVlmOnActiveRun,
   canStopActiveRun,
@@ -1083,8 +1084,19 @@ export function ProcessingView() {
 
   const retryEmptyExtractPage = useCallback(
     async (flag: EmptyExtractPageFlag) => {
-      if (!activeRun || emptyExtractBusy || rebuilding || busyRunId === activeRun.id || approving)
+      // Do not gate on busyRunId: amber appears mid-batch while execute HTTP is
+      // still open; Retry must still call the API (same as Mark Confirm).
+      if (
+        !canActOnEmptyExtractPage({
+          hasActiveRun: Boolean(activeRun),
+          emptyExtractBusy,
+          rebuilding,
+          approving,
+        })
+      ) {
         return
+      }
+      if (!activeRun) return
       if (runHasLockedApprovedTable(activeRun)) {
         setError(
           'Approved and loaded into modules — page retry is disabled to avoid conflicting updates.',
@@ -1112,7 +1124,6 @@ export function ProcessingView() {
       activeRun,
       applyRunFromServer,
       approving,
-      busyRunId,
       companyId,
       emptyExtractBusy,
       rebuilding,
@@ -1122,8 +1133,19 @@ export function ProcessingView() {
 
   const markEmptyExtractReviewed = useCallback(
     async (flag: EmptyExtractPageFlag) => {
-      if (!activeRun || emptyExtractBusy || rebuilding || busyRunId === activeRun.id || approving)
+      // Do not gate on busyRunId: Confirm would close the dialog then silently
+      // no-op while this run's execute/Re-VLM HTTP is still in flight.
+      if (
+        !canActOnEmptyExtractPage({
+          hasActiveRun: Boolean(activeRun),
+          emptyExtractBusy,
+          rebuilding,
+          approving,
+        })
+      ) {
         return
+      }
+      if (!activeRun) return
       if (runHasLockedApprovedTable(activeRun)) {
         setError(
           'Approved and loaded into modules — mark-reviewed is disabled to avoid conflicting updates.',
@@ -1153,7 +1175,6 @@ export function ProcessingView() {
       activeRun,
       applyRunFromServer,
       approving,
-      busyRunId,
       companyId,
       emptyExtractBusy,
       rebuilding,

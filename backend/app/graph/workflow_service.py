@@ -2585,28 +2585,47 @@ class WorkflowService:
         except Exception:
             # Non-mapped test doubles / detached instances still get the assignment.
             pass
+
+        console_message = (
+            f"Page {page_num} {REVIEWED_NO_ROWS_LABEL.lower()} "
+            f"({task_file_id})."
+        )
+        # Mid-batch mark: execute/Re-VLM still owns run_status and node states.
+        # Only persist the page acknowledgment so the amber banner can clear.
+        still_processing = (run.run_status or "").lower() in (
+            "executing",
+            "running",
+            "queued",
+        )
+        prior_file_status = run_file.file_status
         WorkflowService._refresh_bank_file_status_from_pages(run_file)
+        if still_processing and (prior_file_status or "").lower() in (
+            "running",
+            "pending",
+            "queued",
+        ):
+            # Keep Live output mid-batch; do not flash Passed while pages remain.
+            run_file.file_status = prior_file_status
         try:
             flag_modified(run_file, "result_summary_json")
         except Exception:
             pass
 
-        all_run_files = (
-            db.query(WorkflowRunFile).filter(WorkflowRunFile.run_id == run.id).all()
-        )
-        ok_count = sum(1 for rf in all_run_files if rf.file_status == "ok")
-        warn_count = sum(1 for rf in all_run_files if rf.file_status == "warning")
-        merged = _merge_run_files_ocr(all_run_files)
-        _finalize_run_after_vlm(
-            run,
-            all_run_files,
-            ok_count=ok_count,
-            warn_count=warn_count,
-            console_message=(
-                f"Page {page_num} {REVIEWED_NO_ROWS_LABEL.lower()} "
-                f"({task_file_id})."
-            ),
-        )
+        if still_processing:
+            _append_console(run, "info", console_message)
+        else:
+            all_run_files = (
+                db.query(WorkflowRunFile).filter(WorkflowRunFile.run_id == run.id).all()
+            )
+            ok_count = sum(1 for rf in all_run_files if rf.file_status == "ok")
+            warn_count = sum(1 for rf in all_run_files if rf.file_status == "warning")
+            _finalize_run_after_vlm(
+                run,
+                all_run_files,
+                ok_count=ok_count,
+                warn_count=warn_count,
+                console_message=console_message,
+            )
         db.add(run_file)
         db.commit()
         db.refresh(run)
