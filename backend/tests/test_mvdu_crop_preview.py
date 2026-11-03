@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from app.services.mvdu_crop_preview import (
     build_crop_preview_payload,
+    filter_boxes_for_page,
+    merge_multipage_crop_gates,
     merge_neighbor_boxes,
     nudge_pixel_box,
     parse_user_crop_boxes,
@@ -119,3 +121,90 @@ def test_stamp_box_extract_status() -> None:
     assert next_p["active_box_id"] == "b"
     assert next_p["boxes"][1]["extract_status"] == "running"
     assert next_p["boxes"][0]["extract_status"] == "pending"
+
+
+def test_build_crop_preview_includes_page_entries() -> None:
+    preview = regions_to_preview_boxes(
+        [{"x": 0, "y": 0, "w": 40, "h": 40}],
+        width=100,
+        height=100,
+        pdf_page=1,
+    )
+    payload = build_crop_preview_payload(
+        trace_id="t3",
+        filename="p1.png",
+        processing_mode="AP",
+        pdf_page=1,
+        image_width=100,
+        image_height=100,
+        boxes=preview,
+    )
+    pages = payload["crop_preview"]["pages"]
+    assert len(pages) == 1
+    assert pages[0]["page"] == 1
+    assert pages[0]["status"] == "pending"
+    assert len(pages[0]["boxes"]) == 1
+    # OCR outcome pages remain empty while gated.
+    assert payload["pages"] == []
+
+
+def test_filter_boxes_for_page() -> None:
+    boxes = [
+        {"page": 1, "region_norm": {"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2}},
+        {"page": 2, "region_norm": {"x": 0.3, "y": 0.3, "w": 0.2, "h": 0.2}},
+        {"region_norm": {"x": 0.5, "y": 0.5, "w": 0.1, "h": 0.1}},  # legacy → page 1
+    ]
+    p1 = filter_boxes_for_page(boxes, pdf_page=1)
+    p2 = filter_boxes_for_page(boxes, pdf_page=2)
+    assert len(p1) == 2
+    assert len(p2) == 1
+    assert int(p2[0]["page"]) == 2
+
+
+def test_merge_multipage_crop_gates() -> None:
+    g1 = build_crop_preview_payload(
+        trace_id="t",
+        filename="doc.pdf",
+        processing_mode="AP",
+        pdf_page=1,
+        image_width=200,
+        image_height=200,
+        boxes=regions_to_preview_boxes(
+            [{"x": 10, "y": 10, "w": 50, "h": 50}],
+            width=200,
+            height=200,
+            pdf_page=1,
+        ),
+    )
+    g2 = build_crop_preview_payload(
+        trace_id="t",
+        filename="doc.pdf",
+        processing_mode="AP",
+        pdf_page=2,
+        image_width=200,
+        image_height=200,
+        boxes=regions_to_preview_boxes(
+            [{"x": 20, "y": 20, "w": 60, "h": 60}, {"x": 100, "y": 20, "w": 40, "h": 40}],
+            width=200,
+            height=200,
+            pdf_page=2,
+        ),
+    )
+    merged = merge_multipage_crop_gates(
+        {1: g1, 2: g2},
+        trace_id="t",
+        filename="doc.pdf",
+        processing_mode="AP",
+    )
+    assert merged["needs_crop_preview"] is True
+    assert merged["total_pages"] == 2
+    cp = merged["crop_preview"]
+    assert cp["page"] == 1
+    assert len(cp["boxes"]) == 1
+    assert len(cp["pages"]) == 2
+    assert cp["pages"][0]["page"] == 1
+    assert cp["pages"][1]["page"] == 2
+    assert len(cp["pages"][1]["boxes"]) == 2
+    assert cp["pages"][0]["status"] == "pending"
+    assert cp["pages"][1]["status"] == "pending"
+    assert merged["pages"] == []

@@ -2254,22 +2254,31 @@ class WorkflowService:
         summary = rf.result_summary_json if isinstance(rf.result_summary_json, dict) else {}
         if not summary.get("needs_crop_preview") and rf.error_text != "needs_crop_preview":
             raise HTTPException(status_code=400, detail="File is not awaiting crop preview")
+        # Keep Detect boxes for Retry; clear the live gate so the docked panel closes.
+        # Session page-thumb state is discarded; no extract.
+        kept_preview = None
+        if isinstance(summary, dict):
+            cp = summary.get("crop_preview")
+            if isinstance(cp, dict):
+                kept_preview = dict(cp)
+                kept_preview["phase"] = "preview"
         rf.file_status = "pending"
         rf.error_text = None
         rf.gate_result = None
-        rf.result_summary_json = None
+        if kept_preview is not None:
+            rf.result_summary_json = {
+                "crop_preview": kept_preview,
+                "crop_preview_dismissed": True,
+                "needs_crop_preview": False,
+            }
+        else:
+            rf.result_summary_json = None
         _append_console(run, "info", f"Crop preview cancelled for {rf.task_file_id[:8]}…")
-        # If no other files still need attention, leave run draft/awaiting as-is.
+        # Spec: Cancel leaves awaiting_review (no extract).
         live = db.query(WorkflowRunFile).filter(WorkflowRunFile.run_id == run.id).all()
-        if run.run_status == "executing":
-            any_running = any((x.file_status or "") == "running" for x in live)
-            if not any_running:
-                warn_n = sum(1 for x in live if (x.file_status or "") == "warning")
-                ok_n = sum(1 for x in live if (x.file_status or "") == "ok")
-                if warn_n == 0 and ok_n == 0:
-                    run.run_status = "draft"
-                elif ok_n or warn_n:
-                    run.run_status = "awaiting_review"
+        any_running = any((x.file_status or "") == "running" for x in live)
+        if not any_running:
+            run.run_status = "awaiting_review"
         db.commit()
         db.refresh(run)
         return run

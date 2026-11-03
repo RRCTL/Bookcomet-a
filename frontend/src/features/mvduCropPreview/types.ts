@@ -5,6 +5,12 @@ export type RegionBbox = { x: number; y: number; w: number; h: number }
 
 export type CropExtractStatus = 'pending' | 'running' | 'done' | 'error'
 
+/** Confirm-state stored in crop_preview.pages[].status (RUNNING is viewer-only). */
+export type CropPageConfirmStatus = 'pending' | 'confirmed' | 'empty'
+
+/** Display status for the far-right page thumb rail. */
+export type CropPageThumbStatus = 'RUNNING' | 'PENDING' | 'CONFIRMED' | 'EMPTY'
+
 export type CropPreviewBox = {
   id: string
   index: number
@@ -18,6 +24,17 @@ export type CropPreviewBox = {
 
 export type CropPreviewPhase = 'preview' | 'extracting' | 'done'
 
+export type CropPreviewPageEntry = {
+  page: number
+  status: CropPageConfirmStatus
+  image_width: number
+  image_height: number
+  boxes: CropPreviewBox[]
+  needs_split_review?: boolean
+  message?: string
+  layout_failure_reason?: string
+}
+
 export type CropPreviewPayload = {
   phase: CropPreviewPhase
   page: number
@@ -28,6 +45,8 @@ export type CropPreviewPayload = {
   active_box_id?: string | null
   message?: string
   layout_failure_reason?: string
+  /** Page control entries. Length ≤1 → hide page thumb rail. */
+  pages?: CropPreviewPageEntry[]
 }
 
 export type CropPreviewGateFile = {

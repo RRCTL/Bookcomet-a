@@ -638,6 +638,7 @@ def attach_receipt_region_provenance(
     segmentation_source: str | None = None,
     crop_status: str | None = None,
     receipt_instance_id: str | None = None,
+    skipped_preview: bool | None = None,
 ) -> MutableMapping[str, Any]:
     """
     Store coarse region for audit / future click-to-highlight. bbox is pixel x,y,w,h on parent image.
@@ -671,6 +672,9 @@ def attach_receipt_region_provenance(
         prov["crop_status"] = crop_status
     if receipt_instance_id:
         prov["receipt_instance_id"] = receipt_instance_id
+    if skipped_preview is True:
+        # Skip preview: Detect boxes used as-is; no silent invent.
+        prov["skipped_preview"] = True
     row["extraction_provenance"] = prov
     return row
 

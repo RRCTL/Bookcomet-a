@@ -219,6 +219,62 @@ def nudge_pixel_box(
     return {"x": x, "y": y, "w": w, "h": h}
 
 
+def _page_gate_entry(
+    *,
+    pdf_page: int,
+    image_width: int,
+    image_height: int,
+    boxes: Sequence[Mapping[str, Any]],
+    needs_split_review: bool = False,
+    message: str | None = None,
+    layout_failure_reason: str | None = None,
+    status: str = "pending",
+) -> dict[str, Any]:
+    """One page in the crop-preview gate set (page thumb + boxes)."""
+    entry: dict[str, Any] = {
+        "page": int(pdf_page),
+        # confirm_status for the gate: pending | confirmed (RUNNING is viewer-only).
+        "status": status if status in ("pending", "confirmed", "empty") else "pending",
+        "image_width": int(image_width),
+        "image_height": int(image_height),
+        "boxes": list(boxes),
+        "needs_split_review": bool(needs_split_review),
+    }
+    if message:
+        entry["message"] = message
+    if layout_failure_reason:
+        entry["layout_failure_reason"] = layout_failure_reason
+    return entry
+
+
+def filter_boxes_for_page(
+    boxes: Sequence[Mapping[str, Any]] | None,
+    *,
+    pdf_page: int,
+) -> list[Mapping[str, Any]]:
+    """Keep confirmed/Detect boxes that belong to this PDF page.
+
+    Boxes without a page field apply only on page 1 (legacy single-page confirm).
+    """
+    if not boxes:
+        return []
+    out: list[Mapping[str, Any]] = []
+    for raw in boxes:
+        if not isinstance(raw, Mapping):
+            continue
+        try:
+            box_page = int(raw.get("page") or 0)
+        except (TypeError, ValueError):
+            box_page = 0
+        if box_page <= 0:
+            if int(pdf_page) == 1:
+                out.append(raw)
+            continue
+        if box_page == int(pdf_page):
+            out.append(raw)
+    return out
+
+
 def build_crop_preview_payload(
     *,
     trace_id: str,
@@ -242,6 +298,16 @@ def build_crop_preview_payload(
         if split_review
         else "Review Detect boxes, then confirm crops & extract"
     )
+    page_entry = _page_gate_entry(
+        pdf_page=pdf_page,
+        image_width=image_width or 1,
+        image_height=image_height or 1,
+        boxes=preview_boxes,
+        needs_split_review=split_review,
+        message=message or default_msg,
+        layout_failure_reason=layout_failure_reason,
+        status="empty" if empty else "pending",
+    )
     crop_preview: dict[str, Any] = {
         "phase": phase,
         "page": int(pdf_page),
@@ -251,6 +317,8 @@ def build_crop_preview_payload(
         "needs_split_review": split_review,
         "active_box_id": None,
         "message": message or default_msg,
+        # Page control (thumb rail). Length 1 → UI hides rail.
+        "pages": [page_entry],
     }
     if layout_failure_reason:
         crop_preview["layout_failure_reason"] = layout_failure_reason
@@ -266,11 +334,108 @@ def build_crop_preview_payload(
         "seg_source": "vlm_layout",
         "opencv_calls": 0,
         "crop_preview": crop_preview,
+        # OCR outcome pages stay empty while gated (distinct from crop_preview.pages).
         "pages": [],
         "processing_steps": {
             "seg_source": "vlm_layout",
             "opencv_calls": 0,
             "multi_receipt_split": "needs_crop_preview",
+        },
+    }
+
+
+def merge_multipage_crop_gates(
+    gate_by_page: Mapping[int, Mapping[str, Any]],
+    *,
+    trace_id: str,
+    filename: str,
+    processing_mode: str,
+) -> dict[str, Any]:
+    """Merge per-page Detect gates into one multipage crop-preview payload.
+
+    Viewer starts on the lowest page index. Top-level OCR ``pages`` stays empty
+    until extract; page thumbs live under ``crop_preview.pages``.
+    """
+    if not gate_by_page:
+        raise ValueError("gate_by_page required")
+    page_entries: list[dict[str, Any]] = []
+    any_split = False
+    for page_num in sorted(int(p) for p in gate_by_page.keys()):
+        raw = gate_by_page[page_num]
+        if not isinstance(raw, Mapping):
+            continue
+        cp = raw.get("crop_preview") if isinstance(raw.get("crop_preview"), Mapping) else {}
+        boxes = list(cp.get("boxes") or []) if isinstance(cp, Mapping) else []
+        split = bool(
+            (cp.get("needs_split_review") if isinstance(cp, Mapping) else False)
+            or raw.get("needs_split_review")
+            or not boxes
+        )
+        any_split = any_split or split
+        msg = None
+        if isinstance(cp, Mapping) and cp.get("message") is not None:
+            msg = str(cp.get("message"))
+        elif raw.get("message") is not None:
+            msg = str(raw.get("message"))
+        failure = None
+        if isinstance(cp, Mapping) and cp.get("layout_failure_reason") is not None:
+            failure = str(cp.get("layout_failure_reason"))
+        iw = int((cp.get("image_width") if isinstance(cp, Mapping) else None) or 1)
+        ih = int((cp.get("image_height") if isinstance(cp, Mapping) else None) or 1)
+        page_entries.append(
+            _page_gate_entry(
+                pdf_page=page_num,
+                image_width=iw,
+                image_height=ih,
+                boxes=boxes,
+                needs_split_review=split,
+                message=msg,
+                layout_failure_reason=failure,
+                status="empty" if not boxes else "pending",
+            )
+        )
+    if not page_entries:
+        raise ValueError("no valid page gates to merge")
+    active = page_entries[0]
+    active_page = int(active["page"])
+    active_boxes = list(active.get("boxes") or [])
+    default_msg = (
+        "Draw boxes or confirm forced split"
+        if any_split and not active_boxes
+        else "Review Detect boxes page by page, then confirm crops & extract"
+    )
+    crop_preview: dict[str, Any] = {
+        "phase": "preview",
+        "page": active_page,
+        "image_width": int(active.get("image_width") or 1),
+        "image_height": int(active.get("image_height") or 1),
+        "boxes": active_boxes,
+        "needs_split_review": bool(active.get("needs_split_review")),
+        "active_box_id": None,
+        "message": str(active.get("message") or default_msg),
+        "pages": page_entries,
+    }
+    if active.get("layout_failure_reason"):
+        crop_preview["layout_failure_reason"] = active["layout_failure_reason"]
+
+    return {
+        "trace_id": trace_id,
+        "filename": filename,
+        "needs_crop_preview": True,
+        "needs_split_review": any_split,
+        "crop_status": "needs_crop_preview",
+        "message": crop_preview["message"],
+        "processing_mode": processing_mode,
+        "seg_source": "vlm_layout",
+        "opencv_calls": 0,
+        "crop_preview": crop_preview,
+        "pages": [],
+        "total_pages": len(page_entries),
+        "processing_steps": {
+            "seg_source": "vlm_layout",
+            "opencv_calls": 0,
+            "multi_receipt_split": "needs_crop_preview",
+            "crop_preview_pages": len(page_entries),
         },
     }
 

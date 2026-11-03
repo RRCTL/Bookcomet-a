@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
   addBox,
+  allBoxesFromPages,
+  confirmPageInSet,
+  countPendingPages,
   deleteBox,
   mergeWithNeighbor,
+  nextPendingPage,
   normalizeIncomingBoxes,
+  normalizePageEntries,
+  pageThumbDisplayStatus,
   parseCropPreviewFromSummary,
   rotateBox90,
   updateBoxNorm,
@@ -71,5 +77,80 @@ describe('mvdu crop preview boxOps', () => {
     expect(needsGate).toBe(true)
     expect(preview?.boxes).toHaveLength(0)
     expect(preview?.message).toMatch(/Draw boxes/)
+  })
+
+  it('parses multipage crop_preview.pages and supports confirm / advance', () => {
+    const { needsGate, preview } = parseCropPreviewFromSummary({
+      needs_crop_preview: true,
+      crop_preview: {
+        phase: 'preview',
+        page: 1,
+        image_width: 200,
+        image_height: 200,
+        boxes: [{ id: 'a', index: 1, page: 1, region_norm: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 } }],
+        pages: [
+          {
+            page: 1,
+            status: 'pending',
+            image_width: 200,
+            image_height: 200,
+            boxes: [{ id: 'a', index: 1, page: 1, region_norm: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 } }],
+          },
+          {
+            page: 2,
+            status: 'pending',
+            image_width: 200,
+            image_height: 200,
+            boxes: [
+              { id: 'b', index: 1, page: 2, region_norm: { x: 0.2, y: 0.2, w: 0.3, h: 0.3 } },
+              { id: 'c', index: 2, page: 2, region_norm: { x: 0.55, y: 0.2, w: 0.3, h: 0.3 } },
+            ],
+          },
+        ],
+      },
+    })
+    expect(needsGate).toBe(true)
+    expect(preview?.pages).toHaveLength(2)
+    const pages = preview!.pages!
+    expect(pageThumbDisplayStatus(pages[0]!, 1)).toBe('RUNNING')
+    expect(pageThumbDisplayStatus(pages[1]!, 1)).toBe('PENDING')
+    expect(countPendingPages(pages)).toBe(2)
+
+    const afterP1 = confirmPageInSet(pages, 1, pages[0]!.boxes)
+    expect(afterP1[0]!.status).toBe('confirmed')
+    expect(pageThumbDisplayStatus(afterP1[0]!, 2)).toBe('CONFIRMED')
+    expect(nextPendingPage(afterP1, 1)).toBe(2)
+    expect(countPendingPages(afterP1)).toBe(1)
+
+    const afterP2 = confirmPageInSet(afterP1, 2, afterP1[1]!.boxes)
+    expect(countPendingPages(afterP2)).toBe(0)
+    expect(nextPendingPage(afterP2, 2)).toBeNull()
+    const all = allBoxesFromPages(afterP2)
+    expect(all).toHaveLength(3)
+    expect(all.filter(b => b.page === 2)).toHaveLength(2)
+  })
+
+  it('dismissed crop preview does not reopen the gate', () => {
+    const { needsGate, preview } = parseCropPreviewFromSummary({
+      crop_preview_dismissed: true,
+      crop_preview: {
+        phase: 'preview',
+        page: 1,
+        boxes: [{ id: 'a', region_norm: { x: 0, y: 0, w: 0.5, h: 0.5 } }],
+      },
+    })
+    expect(needsGate).toBe(false)
+    expect(preview).toBeNull()
+  })
+
+  it('normalizePageEntries falls back to single page from boxes', () => {
+    const pages = normalizePageEntries(undefined, {
+      page: 1,
+      boxes: normalizeIncomingBoxes([{ region_norm: { x: 0, y: 0, w: 0.4, h: 0.4 } }]),
+      image_width: 100,
+      image_height: 100,
+    })
+    expect(pages).toHaveLength(1)
+    expect(pages[0]!.status).toBe('pending')
   })
 })
