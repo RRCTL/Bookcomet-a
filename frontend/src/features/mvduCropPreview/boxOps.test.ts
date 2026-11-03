@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest'
 import {
   addBox,
   allBoxesFromPages,
+  boxesGeometrySignature,
   confirmPageInSet,
   countPendingPages,
   deleteBox,
+  mergeServerBoxStatus,
   mergeWithNeighbor,
   nextPendingPage,
   normalizeIncomingBoxes,
@@ -14,6 +16,7 @@ import {
   rotateBox90,
   updateBoxNorm,
 } from './boxOps'
+import { applyCropConfirmOptimisticRun } from './cropGateConfirm'
 
 describe('mvdu crop preview boxOps', () => {
   it('normalizes and renumbers Detect boxes', () => {
@@ -152,5 +155,62 @@ describe('mvdu crop preview boxOps', () => {
     })
     expect(pages).toHaveLength(1)
     expect(pages[0]!.status).toBe('pending')
+  })
+
+  it('geometry signature ignores extract_status (avoids thumb blob churn on poll)', () => {
+    const a = normalizeIncomingBoxes([
+      {
+        id: 'a',
+        index: 1,
+        region_norm: { x: 0.1, y: 0.1, w: 0.2, h: 0.5 },
+        extract_status: 'pending',
+      },
+    ])
+    const b = normalizeIncomingBoxes([
+      {
+        id: 'a',
+        index: 1,
+        region_norm: { x: 0.1, y: 0.1, w: 0.2, h: 0.5 },
+        extract_status: 'running',
+      },
+    ])
+    expect(boxesGeometrySignature(a)).toBe(boxesGeometrySignature(b))
+    const merged = mergeServerBoxStatus(a, b)
+    expect(merged[0]!.extract_status).toBe('running')
+    expect(merged[0]!.region_norm).toEqual(a[0]!.region_norm)
+  })
+})
+
+describe('applyCropConfirmOptimisticRun', () => {
+  it('marks run executing and file extracting so poll/WS activate (no silent hang)', () => {
+    const run = {
+      id: 'run1',
+      run_status: 'warning',
+      files: [
+        {
+          task_file_id: 'tf1',
+          file_status: 'warning',
+          error_text: 'needs_crop_preview',
+          result_summary_json: {
+            needs_crop_preview: true,
+            crop_preview: {
+              phase: 'preview',
+              page: 1,
+              boxes: [{ id: 'a', region_norm: { x: 0.1, y: 0.1, w: 0.3, h: 0.8 } }],
+            },
+          },
+        },
+      ],
+    }
+    const next = applyCropConfirmOptimisticRun(run, 'tf1', {
+      boxes: [{ id: 'a', region_norm: { x: 0.1, y: 0.1, w: 0.3, h: 0.8 } }],
+      phase: 'extracting',
+    })
+    expect(next.run_status).toBe('executing')
+    expect(next.files[0]!.file_status).toBe('running')
+    expect(next.files[0]!.error_text).toBeNull()
+    const summary = next.files[0]!.result_summary_json!
+    expect(summary.needs_crop_preview).toBe(false)
+    expect((summary.crop_preview as { phase: string }).phase).toBe('extracting')
   })
 })

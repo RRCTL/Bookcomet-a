@@ -249,6 +249,16 @@
   margin-bottom: 8px;
 }
 
+.mvdu-crop-gate__progress {
+  color: #0369a1;
+  font-size: 12px;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  background: #e0f2fe;
+  border: 1px solid #bae6fd;
+  border-radius: 4px;
+}
+
 .mvdu-crop-gate__confirm {
   background: #16a34a !important;
   border-color: #16a34a !important;

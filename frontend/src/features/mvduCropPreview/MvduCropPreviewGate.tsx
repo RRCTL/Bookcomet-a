@@ -4,6 +4,7 @@ import {
   addBox,
   allBoxesFromPages,
   boxesForApi,
+  boxesGeometrySignature,
   confirmPageInSet,
   countPendingPages,
   deleteBox,
@@ -15,7 +16,9 @@ import {
   rotateBox90,
   updateBoxNorm,
 } from './boxOps'
+import { clientPointToRegionNorm, regionNormToStageStyle } from './overlayCoords'
 import type { CropPreviewBox, CropPreviewPageEntry, CropPreviewPayload } from './types'
+import { useContainFitStage } from './useContainFitStage'
 import './mvduCropPreview.css'
 
 type Props = {
@@ -26,9 +29,11 @@ type Props = {
   filename?: string | null
   preview: CropPreviewPayload
   busy?: boolean
-  onConfirm: (boxes: ReturnType<typeof boxesForApi>) => void
-  onSkip: () => void
-  onCancel: () => void
+  /** Optional parent-surfaced action error (confirm/skip/cancel). */
+  actionError?: string | null
+  onConfirm: (boxes: ReturnType<typeof boxesForApi>) => void | Promise<void>
+  onSkip: () => void | Promise<void>
+  onCancel: () => void | Promise<void>
 }
 
 type DragState =
@@ -65,6 +70,7 @@ export function MvduCropPreviewGate({
   filename,
   preview,
   busy = false,
+  actionError = null,
   onConfirm,
   onSkip,
   onCancel,
@@ -89,11 +95,14 @@ export function MvduCropPreviewGate({
   const [pageError, setPageError] = useState<string | null>(null)
   const [thumbUrls, setThumbUrls] = useState<Record<number, string>>({})
   const [boxThumbUrls, setBoxThumbUrls] = useState<Record<string, string>>({})
+  const [localActionError, setLocalActionError] = useState<string | null>(null)
+  const [actionPending, setActionPending] = useState(false)
   const dragRef = useRef<DragState | null>(null)
   const stageRef = useRef<HTMLDivElement | null>(null)
   const gateBootstrapKeyRef = useRef<string>('')
   const extracting = preview.phase === 'extracting'
-  const editable = preview.phase === 'preview' && !busy
+  const editable = preview.phase === 'preview' && !busy && !actionPending
+  const shownError = localActionError || actionError
   const multipage = pageEntries.length > 1
   const pendingCount = countPendingPages(pageEntries)
   const otherPending = pageEntries.filter(
@@ -105,6 +114,17 @@ export function MvduCropPreviewGate({
   const confirmLabel = isLastUnconfirmed
     ? 'Confirm crops & extract →'
     : 'Confirm page →'
+  const blocked = busy || actionPending || extracting
+
+  const { stageSize, fit, onImageLoad } = useContainFitStage({
+    stageRef,
+    fallbackImage: {
+      width: activeEntry?.image_width || preview.image_width || 0,
+      height: activeEntry?.image_height || preview.image_height || 0,
+    },
+    layoutKey: `${open}:${activePage}`,
+    imageKey: pageUrl,
+  })
 
   const gateBootstrapKey = useMemo(() => {
     const pages = preview.pages ?? []
@@ -204,20 +224,21 @@ export function MvduCropPreviewGate({
     }
   }, [open, taskId, taskFileId, companyId, activePage])
 
-  // Page thumbs (multipage rail).
+  // Page thumbs (multipage rail) — revoke previous set only after the next set lands.
   useEffect(() => {
     if (!open || !multipage) return
     let cancelled = false
     const created: string[] = []
+    const snapshot = pageEntries
     const load = async () => {
       const next: Record<number, string> = {}
-      for (const entry of pageEntries) {
+      for (const entry of snapshot) {
         try {
           const blob = await taskApi.downloadReceiptCrop(taskId, taskFileId, {
             page: entry.page,
             companyId,
           })
-          if (cancelled) return
+          if (cancelled) break
           const url = URL.createObjectURL(blob)
           created.push(url)
           next[entry.page] = url
@@ -225,61 +246,99 @@ export function MvduCropPreviewGate({
           /* thumb optional */
         }
       }
-      if (!cancelled) setThumbUrls(next)
+      if (cancelled) {
+        created.forEach(u => URL.revokeObjectURL(u))
+        return
+      }
+      setThumbUrls(prev => {
+        Object.values(prev).forEach(u => URL.revokeObjectURL(u))
+        return next
+      })
     }
     void load()
     return () => {
       cancelled = true
-      created.forEach(u => URL.revokeObjectURL(u))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reload when page set identity changes
   }, [open, multipage, taskId, taskFileId, companyId, pageEntries.map(p => p.page).join(',')])
 
-  // Box strip thumbs (single-page / edit aid).
+  // Box strip thumbs (single-page / edit aid). Debounce geometry to avoid revoke storms while dragging.
+  const [boxThumbKey, setBoxThumbKey] = useState(
+    () => boxesGeometrySignature(boxes) + `|p=${activePage}`,
+  )
+  useEffect(() => {
+    if (multipage) return
+    const next = boxesGeometrySignature(boxes) + `|p=${activePage}`
+    const delay = dragRef.current ? 350 : 80
+    const t = window.setTimeout(() => setBoxThumbKey(next), delay)
+    return () => window.clearTimeout(t)
+  }, [boxes, activePage, multipage])
+
   useEffect(() => {
     if (!open || multipage) return
     let cancelled = false
     const created: string[] = []
+    const snapshot = boxes
     const load = async () => {
       const next: Record<string, string> = {}
-      for (const box of boxes) {
+      for (const box of snapshot) {
         try {
           const blob = await taskApi.downloadReceiptCrop(taskId, taskFileId, {
             page: box.page || activePage || 1,
             regionNorm: box.region_norm,
             companyId,
           })
-          if (cancelled) return
+          if (cancelled) break
           const url = URL.createObjectURL(blob)
           created.push(url)
           next[box.id] = url
         } catch {
-          /* thumb optional */
+          /* thumb optional — do not abort confirm */
         }
       }
-      if (!cancelled) setBoxThumbUrls(next)
+      if (cancelled) {
+        created.forEach(u => URL.revokeObjectURL(u))
+        return
+      }
+      setBoxThumbUrls(prev => {
+        Object.values(prev).forEach(u => URL.revokeObjectURL(u))
+        return next
+      })
     }
     void load()
     return () => {
       cancelled = true
-      created.forEach(u => URL.revokeObjectURL(u))
     }
-  }, [open, multipage, boxes, taskId, taskFileId, companyId, activePage])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- deliberate: keyed by debounced geometry
+  }, [open, multipage, boxThumbKey, taskId, taskFileId, companyId, activePage])
+
+  useEffect(() => {
+    return () => {
+      setThumbUrls(prev => {
+        Object.values(prev).forEach(u => URL.revokeObjectURL(u))
+        return {}
+      })
+      setBoxThumbUrls(prev => {
+        Object.values(prev).forEach(u => URL.revokeObjectURL(u))
+        return {}
+      })
+    }
+  }, [])
 
   const selected = useMemo(
     () => boxes.find(b => b.id === selectedId) ?? null,
     [boxes, selectedId],
   )
 
-  const clientToNorm = useCallback((clientX: number, clientY: number) => {
-    const el = stageRef.current
-    if (!el) return { x: 0, y: 0 }
-    const rect = el.getBoundingClientRect()
-    return {
-      x: (clientX - rect.left) / Math.max(1, rect.width),
-      y: (clientY - rect.top) / Math.max(1, rect.height),
-    }
-  }, [])
+  const clientToNorm = useCallback(
+    (clientX: number, clientY: number) => {
+      const el = stageRef.current
+      if (!el) return { x: 0, y: 0 }
+      const rect = el.getBoundingClientRect()
+      return clientPointToRegionNorm(clientX, clientY, rect, fit)
+    },
+    [fit],
+  )
 
   useEffect(() => {
     if (!editable) return
@@ -368,13 +427,25 @@ export function MvduCropPreviewGate({
     return () => window.removeEventListener('keydown', onKey)
   }, [open, multipage, extracting, pageEntries, activePage, switchToPage])
 
+  const runAction = async (fn: () => void | Promise<void>, fallback: string) => {
+    setLocalActionError(null)
+    setActionPending(true)
+    try {
+      await Promise.resolve(fn())
+    } catch (err) {
+      setLocalActionError(err instanceof Error ? err.message : fallback)
+    } finally {
+      setActionPending(false)
+    }
+  }
+
   if (!open) return null
 
   const emptyHint = boxes.length === 0
   const pageRasterMissing = Boolean(pageError)
 
   const handleConfirmClick = () => {
-    if (busy || extracting || emptyHint || pageRasterMissing) return
+    if (blocked || emptyHint || pageRasterMissing) return
     // Persist current page edits, mark CONFIRMED.
     const withCurrent = pageEntries.map(p =>
       p.page === activePage
@@ -395,11 +466,14 @@ export function MvduCropPreviewGate({
       return
     }
     // Last page (or single-page): extract all CONFIRMED pages' boxes.
-    onConfirm(boxesForApi(allBoxesFromPages(confirmed)))
+    void runAction(
+      () => onConfirm(boxesForApi(allBoxesFromPages(confirmed))),
+      'Could not confirm crops.',
+    )
   }
 
   const handleSkipClick = () => {
-    if (busy || extracting) return
+    if (blocked) return
     const pending = countPendingPages(
       pageEntries.map(p =>
         p.page === activePage
@@ -411,7 +485,7 @@ export function MvduCropPreviewGate({
       const ok = window.confirm(`Skip crop review for ${pending} pages?`)
       if (!ok) return
     }
-    onSkip()
+    void runAction(() => onSkip(), 'Could not skip crop preview.')
   }
 
   return (
@@ -421,7 +495,11 @@ export function MvduCropPreviewGate({
           <div>
             <div className="mvdu-crop-gate__title">
               {filename ?? 'Upload'}
-              {extracting ? ' · extracting…' : ' · awaiting review'}
+              {extracting
+                ? ' · extracting…'
+                : busy || actionPending
+                  ? ' · starting extract…'
+                  : ' · awaiting review'}
             </div>
             <div className="mvdu-crop-gate__sub">
               Crop preview · page {activePage}
@@ -433,7 +511,7 @@ export function MvduCropPreviewGate({
               <button
                 type="button"
                 className="erp-btn"
-                disabled={busy}
+                disabled={blocked}
                 onClick={() => {
                   const next = addBox(boxes, activePage || 1)
                   persistActiveBoxes(next)
@@ -448,7 +526,7 @@ export function MvduCropPreviewGate({
                 <button
                   type="button"
                   className="erp-btn"
-                  disabled={busy}
+                  disabled={blocked}
                   title="Rotate crop 90° clockwise"
                   onClick={() => persistActiveBoxes(rotateBox90(boxes, selected.id))}
                 >
@@ -457,7 +535,7 @@ export function MvduCropPreviewGate({
                 <button
                   type="button"
                   className="erp-btn"
-                  disabled={busy || boxes.length < 2}
+                  disabled={blocked || boxes.length < 2}
                   onClick={() => {
                     const next = mergeWithNeighbor(boxes, selected.id)
                     persistActiveBoxes(next)
@@ -469,7 +547,7 @@ export function MvduCropPreviewGate({
                 <button
                   type="button"
                   className="erp-btn danger"
-                  disabled={busy}
+                  disabled={blocked}
                   onClick={() => {
                     const next = deleteBox(boxes, selected.id)
                     persistActiveBoxes(next)
@@ -493,9 +571,27 @@ export function MvduCropPreviewGate({
                 </div>
               </div>
             )}
+            {shownError && (
+              <div className="mvdu-crop-gate__err" role="alert" data-testid="mvdu-crop-gate-action-error">
+                {shownError}
+              </div>
+            )}
+            {(busy || actionPending || extracting) && (
+              <div className="mvdu-crop-gate__progress" data-testid="mvdu-crop-gate-progress">
+                {extracting
+                  ? 'Extracting receipts from confirmed crops…'
+                  : 'Confirm received — starting extract…'}
+              </div>
+            )}
             <div ref={stageRef} className="mvdu-crop-gate__stage">
               {pageUrl ? (
-                <img src={pageUrl} alt={`Page ${activePage}`} className="mvdu-crop-gate__page" draggable={false} />
+                <img
+                  src={pageUrl}
+                  alt={`Page ${activePage}`}
+                  className="mvdu-crop-gate__page"
+                  draggable={false}
+                  onLoad={e => onImageLoad(e.currentTarget)}
+                />
               ) : (
                 <div className="mvdu-crop-gate__page mvdu-crop-gate__page--placeholder" />
               )}
@@ -509,16 +605,13 @@ export function MvduCropPreviewGate({
                   box.id === selectedId ||
                   (extracting && box.id === preview.active_box_id) ||
                   box.extract_status === 'running'
-                const { x, y, w, h } = box.region_norm
+                const boxStyle = regionNormToStageStyle(box.region_norm, fit, stageSize)
                 return (
                   <div
                     key={box.id}
                     className={`mvdu-crop-gate__box${active ? ' is-active' : ''}`}
                     style={{
-                      left: `${x * 100}%`,
-                      top: `${y * 100}%`,
-                      width: `${w * 100}%`,
-                      height: `${h * 100}%`,
+                      ...boxStyle,
                       borderColor: active ? GREEN_ACTIVE : GREEN,
                     }}
                     onPointerDown={e => {
@@ -632,13 +725,18 @@ export function MvduCropPreviewGate({
         </div>
 
         <footer className="mvdu-crop-gate__foot">
-          <button type="button" className="erp-btn" disabled={busy || extracting} onClick={onCancel}>
+          <button
+            type="button"
+            className="erp-btn"
+            disabled={blocked}
+            onClick={() => void runAction(() => onCancel(), 'Could not cancel crop preview.')}
+          >
             Cancel
           </button>
           <button
             type="button"
             className="erp-btn"
-            disabled={busy || extracting || (emptyHint && pendingCount === 0)}
+            disabled={blocked || (emptyHint && pendingCount === 0)}
             title={
               pendingCount > 1
                 ? `Skip crop review for ${pendingCount} pages`
@@ -651,7 +749,8 @@ export function MvduCropPreviewGate({
           <button
             type="button"
             className="erp-btn primary mvdu-crop-gate__confirm"
-            disabled={busy || extracting || emptyHint || pageRasterMissing}
+            disabled={blocked || emptyHint || pageRasterMissing}
+            data-testid="mvdu-crop-gate-confirm"
             onClick={handleConfirmClick}
           >
             {confirmLabel}

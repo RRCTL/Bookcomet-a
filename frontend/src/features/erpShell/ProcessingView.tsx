@@ -54,6 +54,7 @@ function resolveBatchPayloads(
 import { ARAPReview, type ARAPTransaction } from '../../components/ARAPReview'
 import { MvduCropPreviewGate } from '../mvduCropPreview/MvduCropPreviewGate'
 import { parseCropPreviewFromSummary } from '../mvduCropPreview/boxOps'
+import { applyCropConfirmOptimisticRun } from '../mvduCropPreview/cropGateConfirm'
 import type { CropPreviewPayload } from '../mvduCropPreview/types'
 import { BankStatementReview, type BankTransaction } from '../../components/BankStatementReview'
 import { OtherTable } from '../../components/OtherTable'
@@ -430,6 +431,7 @@ export function ProcessingView() {
   const [showReVlm, setShowReVlm] = useState(false)
   const [reVlmInitialFileIds, setReVlmInitialFileIds] = useState<string[]>([])
   const [cropGateBusy, setCropGateBusy] = useState(false)
+  const [cropGateError, setCropGateError] = useState<string | null>(null)
   const [headerChangeConfirm, setHeaderChangeConfirm] = useState<{
     onConfirm: () => void
     onCancel: () => void
@@ -1601,11 +1603,15 @@ export function ProcessingView() {
     for (const f of activeRun.files ?? []) {
       const summary = (f.result_summary_json ?? null) as Record<string, unknown> | null
       const parsed = parseCropPreviewFromSummary(summary)
-      if (
-        (f.error_text === 'needs_crop_preview' || parsed.needsGate) &&
-        parsed.preview &&
-        (parsed.preview.phase === 'preview' || parsed.preview.phase === 'extracting')
-      ) {
+      if (!parsed.preview) continue
+      const phase = parsed.preview.phase
+      // Keep the docked gate visible through extract progress (phase=extracting),
+      // not only while needs_crop_preview is still true on the summary.
+      const waitingConfirm =
+        phase === 'preview' &&
+        (f.error_text === 'needs_crop_preview' || parsed.needsGate)
+      const extracting = phase === 'extracting'
+      if (waitingConfirm || extracting) {
         return {
           taskFileId: f.task_file_id,
           filename: f.original_filename,
@@ -1630,62 +1636,109 @@ export function ProcessingView() {
 
   const handleCropGateConfirm = useCallback(
     async (boxes: Array<Record<string, unknown>>) => {
-      if (!activeRun || !cropGateTarget || cropGateBusy) return
+      if (!activeRun || !cropGateTarget || cropGateBusy) {
+        throw new Error('Crop preview is not ready to confirm.')
+      }
+      const runId = activeRun.id
+      const taskFileId = cropGateTarget.taskFileId
       setCropGateBusy(true)
+      setBusyRunId(runId)
       setError(null)
+      setCropGateError(null)
+      // Optimistic executing so WS/polling start while confirm-crops HTTP awaits extract.
+      applyRunFromServer(
+        applyCropConfirmOptimisticRun(activeRun, taskFileId, {
+          boxes,
+          phase: 'extracting',
+        }),
+        true,
+      )
       try {
-        const updated = await workflowApi.confirmCrops(
-          companyId,
-          activeRun.id,
-          cropGateTarget.taskFileId,
-          { action: 'confirm', boxes },
-        )
+        const updated = await workflowApi.confirmCrops(companyId, runId, taskFileId, {
+          action: 'confirm',
+          boxes,
+        })
         applyRunFromServer(updated, true)
         void reloadRuns()
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Could not confirm crops.')
+        const message = err instanceof Error ? err.message : 'Could not confirm crops.'
+        setError(message)
+        setCropGateError(message)
+        void workflowApi
+          .getRun(companyId, runId)
+          .then(run => applyRunFromServer(run, true))
+          .catch(() => {})
+        throw err instanceof Error ? err : new Error(message)
       } finally {
         setCropGateBusy(false)
+        setBusyRunId(prev => (prev === runId ? null : prev))
       }
     },
-    [activeRun, cropGateTarget, cropGateBusy, companyId, applyRunFromServer, reloadRuns],
+    [
+      activeRun,
+      cropGateTarget,
+      cropGateBusy,
+      companyId,
+      applyRunFromServer,
+      reloadRuns,
+    ],
   )
 
   const handleCropGateSkip = useCallback(async () => {
-    if (!activeRun || !cropGateTarget || cropGateBusy) return
+    if (!activeRun || !cropGateTarget || cropGateBusy) {
+      throw new Error('Crop preview is not ready to skip.')
+    }
+    const runId = activeRun.id
+    const taskFileId = cropGateTarget.taskFileId
     setCropGateBusy(true)
+    setBusyRunId(runId)
     setError(null)
+    setCropGateError(null)
+    applyRunFromServer(
+      applyCropConfirmOptimisticRun(activeRun, taskFileId, { phase: 'extracting' }),
+      true,
+    )
     try {
-      const updated = await workflowApi.confirmCrops(
-        companyId,
-        activeRun.id,
-        cropGateTarget.taskFileId,
-        { action: 'skip' },
-      )
+      const updated = await workflowApi.confirmCrops(companyId, runId, taskFileId, {
+        action: 'skip',
+      })
       applyRunFromServer(updated, true)
       void reloadRuns()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not skip crop preview.')
+      const message = err instanceof Error ? err.message : 'Could not skip crop preview.'
+      setError(message)
+      setCropGateError(message)
+      void workflowApi
+        .getRun(companyId, runId)
+        .then(run => applyRunFromServer(run, true))
+        .catch(() => {})
+      throw err instanceof Error ? err : new Error(message)
     } finally {
       setCropGateBusy(false)
+      setBusyRunId(prev => (prev === runId ? null : prev))
     }
   }, [activeRun, cropGateTarget, cropGateBusy, companyId, applyRunFromServer, reloadRuns])
 
   const handleCropGateCancel = useCallback(async () => {
-    if (!activeRun || !cropGateTarget || cropGateBusy) return
+    if (!activeRun || !cropGateTarget || cropGateBusy) {
+      throw new Error('Crop preview is not ready to cancel.')
+    }
+    const runId = activeRun.id
+    const taskFileId = cropGateTarget.taskFileId
     setCropGateBusy(true)
     setError(null)
+    setCropGateError(null)
     try {
-      const updated = await workflowApi.confirmCrops(
-        companyId,
-        activeRun.id,
-        cropGateTarget.taskFileId,
-        { action: 'cancel' },
-      )
+      const updated = await workflowApi.confirmCrops(companyId, runId, taskFileId, {
+        action: 'cancel',
+      })
       applyRunFromServer(updated, true)
       void reloadRuns()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not cancel crop preview.')
+      const message = err instanceof Error ? err.message : 'Could not cancel crop preview.'
+      setError(message)
+      setCropGateError(message)
+      throw err instanceof Error ? err : new Error(message)
     } finally {
       setCropGateBusy(false)
     }
@@ -2235,9 +2288,10 @@ export function ProcessingView() {
               filename={cropGateTarget.filename}
               preview={cropGateTarget.preview}
               busy={cropGateBusy}
-              onConfirm={boxes => void handleCropGateConfirm(boxes)}
-              onSkip={() => void handleCropGateSkip()}
-              onCancel={() => void handleCropGateCancel()}
+              actionError={cropGateError}
+              onConfirm={boxes => handleCropGateConfirm(boxes)}
+              onSkip={() => handleCropGateSkip()}
+              onCancel={() => handleCropGateCancel()}
             />
           ) : (
             <>

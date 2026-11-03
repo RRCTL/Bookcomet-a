@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { taskApi } from '../../services/api'
 import { buildReceiptCropRequest, type CropPreviewFile } from '../../utils/imageQualityCrop'
 import type { CropPreviewBox, RegionNorm } from './types'
 import { normalizeIncomingBoxes } from './boxOps'
+import { regionNormToStageStyle } from './overlayCoords'
+import { useContainFitStage } from './useContainFitStage'
 
 type RowLike = Record<string, unknown> & { _id: string | number }
 
@@ -59,6 +61,12 @@ export function MvduReviewPagePane({
   const [mode, setMode] = useState<'full' | 'receipt'>('full')
   const [pageUrl, setPageUrl] = useState<string | null>(null)
   const [cropUrl, setCropUrl] = useState<string | null>(null)
+  const stageRef = useRef<HTMLDivElement | null>(null)
+  const { stageSize, fit, onImageLoad } = useContainFitStage({
+    stageRef,
+    layoutKey: mode,
+    imageKey: pageUrl,
+  })
 
   const boxes: CropPreviewBox[] = useMemo(() => {
     const fromPreview = normalizeIncomingBoxes(previewBoxes)
@@ -178,21 +186,27 @@ export function MvduReviewPagePane({
         </button>
       </div>
       {mode === 'full' ? (
-        <div className="mvdu-review-pane__stage" style={{ gridColumn: '1 / -1' }}>
-          {pageUrl ? <img src={pageUrl} alt="Full page with Detect boxes" /> : null}
+        <div
+          ref={stageRef}
+          className="mvdu-review-pane__stage"
+          style={{ gridColumn: '1 / -1' }}
+          data-testid="mvdu-review-fullpage-stage"
+        >
+          {pageUrl ? (
+            <img
+              src={pageUrl}
+              alt="Full page with Detect boxes"
+              onLoad={e => onImageLoad(e.currentTarget)}
+            />
+          ) : null}
           {boxes.map(box => {
             const active = activeIndex === box.index
-            const { x, y, w, h } = box.region_norm
+            const boxStyle = regionNormToStageStyle(box.region_norm, fit, stageSize)
             return (
               <div
                 key={box.id}
                 className={`mvdu-review-pane__box${active ? ' is-active' : ''}`}
-                style={{
-                  left: `${x * 100}%`,
-                  top: `${y * 100}%`,
-                  width: `${w * 100}%`,
-                  height: `${h * 100}%`,
-                }}
+                style={boxStyle}
                 title={`Receipt ${box.index}`}
                 onClick={() => selectBox(box)}
               >
