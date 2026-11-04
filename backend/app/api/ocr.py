@@ -2965,8 +2965,13 @@ async def _run_ap_multi_receipt_ocr_from_image(
         img_w, img_h = 0, 0
 
     if crop_preview_confirmed and confirmed_crop_boxes is not None:
-        receipt_regions = _mvdu_crop.parse_user_crop_boxes(
+        # Multipage confirm sends all pages' boxes; keep only this PDF page.
+        page_confirmed = _mvdu_crop.filter_boxes_for_page(
             confirmed_crop_boxes,
+            pdf_page=pdf_page_num,
+        )
+        receipt_regions = _mvdu_crop.parse_user_crop_boxes(
+            page_confirmed,
             width=max(1, img_w),
             height=max(1, img_h),
         )
@@ -3231,6 +3236,8 @@ async def _run_ap_multi_receipt_ocr_from_image(
                 rescan_supplement=rescan_supplement,
             )
             instance_id = receipt_instance_id(pdf_page_num, page_num)
+            # Skip preview = Detect boxes as-is with provenance; never invent unseen boxes.
+            skipped_preview = bool(skip_crop_preview) and not bool(crop_preview_confirmed)
             for row in ai_enhanced_fields.get("tsv_rows") or []:
                 if isinstance(row, dict):
                     _extraction_validation.attach_receipt_region_provenance(
@@ -3239,9 +3246,14 @@ async def _run_ap_multi_receipt_ocr_from_image(
                         pdf_page_num=pdf_page_num,
                         parent_image_size=parent_wh,
                         segmentation_mode="vlm_detect" if vlm_mode else None,
-                        segmentation_source="vlm_layout" if vlm_mode else None,
+                        segmentation_source=(
+                            "user_crop_preview"
+                            if crop_preview_confirmed
+                            else ("vlm_layout" if vlm_mode else None)
+                        ),
                         crop_status="verified_vlm_crop" if vlm_mode else None,
                         receipt_instance_id=instance_id,
+                        skipped_preview=True if skipped_preview else None,
                     )
                     _receipt_image_quality.attach_image_quality_provenance(row, quality_audit)
             if not (ai_enhanced_fields.get("tsv_rows") or []):
@@ -6325,7 +6337,9 @@ async def ocr_test_core(
                         per_page_result: dict[int, Any] = {}
                         queue_wait_ms_total = 0
                         proc_ms_total = 0
-                        crop_preview_gate_payload: dict[str, Any] | None = None
+                        # Collect Detect gates across pages so multipage crop preview
+                        # can navigate thumbs before any extract (not stuck on page 1).
+                        crop_preview_gates: dict[int, dict[str, Any]] = {}
 
                         try:
                             while next_idx < n_pdf_pages and inflight < worker_count:
@@ -6342,7 +6356,8 @@ async def ocr_test_core(
                                 per_page_result[page_num] = page_out
                                 if isinstance(page_out, OcrBackgroundJobCancelled):
                                     raise page_out
-                                # M-VDU crop-preview gate: pause file before extract on this page.
+                                # M-VDU crop-preview gate: record page Detect; keep scheduling
+                                # remaining pages so the gate set covers the whole file.
                                 if (
                                     isinstance(page_out, dict)
                                     and page_out.get("_crop_preview_gate")
@@ -6355,12 +6370,25 @@ async def ocr_test_core(
                                     gate_payload.pop("_crop_preview_gate", None)
                                     gate_payload.pop("_multi", None)
                                     gate_payload.pop("_pages", None)
-                                    crop_preview_gate_payload = gate_payload
+                                    crop_preview_gates[int(page_num)] = gate_payload
                                     logger.info(
-                                        "[M-VDU] Scenario D paused for crop preview on page %s",
+                                        "[M-VDU] Scenario D crop preview gate on page %s "
+                                        "(collected=%s/%s)",
                                         page_num,
+                                        len(crop_preview_gates),
+                                        n_pdf_pages,
                                     )
-                                    break
+                                    if terminated_reason is None and next_idx < n_pdf_pages:
+                                        next_idx += 1
+                                        await page_queue.put(
+                                            (
+                                                next_idx,
+                                                image_paths[next_idx - 1],
+                                                time.perf_counter(),
+                                            )
+                                        )
+                                        inflight += 1
+                                    continue
                                 page_failed = isinstance(page_out, BaseException)
                                 if page_failed:
                                     failed_pages += 1
@@ -6437,8 +6465,21 @@ async def ocr_test_core(
                             await page_queue.join()
                             await asyncio.gather(*workers, return_exceptions=True)
 
-                        if crop_preview_gate_payload is not None:
-                            return crop_preview_gate_payload
+                        if crop_preview_gates:
+                            from app.services import mvdu_crop_preview as _mvdu_crop_merge
+
+                            merged_gate = _mvdu_crop_merge.merge_multipage_crop_gates(
+                                crop_preview_gates,
+                                trace_id=trace_id,
+                                filename=file.filename or "",
+                                processing_mode=processing_mode,
+                            )
+                            logger.info(
+                                "[M-VDU] Scenario D paused for multipage crop preview "
+                                "(%s page(s) in gate set)",
+                                len(crop_preview_gates),
+                            )
+                            return merged_gate
 
                         merged_pages: list[dict[str, Any]] = []
                         for _page_num in range(1, next_idx + 1):
@@ -6460,6 +6501,9 @@ async def ocr_test_core(
                                         RuntimeError("PAGE_PROCESSING_FAILED: missing page result"),
                                     )
                                 )
+                                continue
+                            # Skip stray gate payloads if merge path was not taken.
+                            if _r.get("_crop_preview_gate") and _r.get("needs_crop_preview"):
                                 continue
                             for _ev in _r.pop("_events", []):
                                 _record_processing_event(db, **_ev)

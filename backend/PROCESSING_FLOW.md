@@ -81,10 +81,11 @@ The live workspace pipeline runs through **`ocr_test_core`** in `backend/app/api
 - After Detect (or empty Detect), the pipeline pauses with **`needs_crop_preview`** and numbered green boxes on the full page unless:
   - **`skip_crop_preview`** (power user) *and* Detect returned usable boxes, or
   - **`crop_preview_confirmed`** with user-edited **`confirmed_crop_boxes`**.
+- **Multipage (Scenario D):** Detect gates are collected for every PDF page in the gate set, then merged into one payload with **`crop_preview.pages[]`** (page thumbs: pending / confirmed; viewer marks the active page RUNNING). User confirms page-by-page; extract runs only after no PENDING pages remain (or Skip). Confirmed boxes are filtered per PDF page on extract — never invent boxes for unseen pages.
 - Workflow UI: `POST /api/workflows/runs/{id}/files/{task_file_id}/confirm-crops` with `action=confirm|skip|cancel`.
-- Cancel clears the gate without writing extract rows. Skip re-runs Detect then extract. Confirm extracts the submitted boxes.
+- Cancel closes the gate without extract; run stays **`awaiting_review`**; Detect boxes retained for Retry. Skip uses Detect boxes as-is with provenance **`skipped_preview=true`** (confirm dialog when multiple PENDING pages). Confirm extracts submitted boxes for all confirmed pages.
 - During extract, `crop_preview.phase=extracting` updates per-box `extract_status` (pending/running/done/error) for the strip + active-box highlight.
-- **UI placement:** the crop-preview gate docks in Processing’s **right document panel** only (`MvduCropPreviewGate` inside `erp-proc-right`). Left run list and center Live output stay visible — not a fullscreen modal overlay.
+- **UI placement:** the crop-preview gate docks in Processing’s **right document panel** only (`MvduCropPreviewGate` inside `erp-proc-right`). Left run list and center Live output stay visible — not a fullscreen modal overlay. Far-right page thumbs are the page control when `crop_preview.pages.length > 1`.
 
 **2) Cut and process each region**
 
