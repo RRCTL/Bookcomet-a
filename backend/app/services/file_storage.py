@@ -16,7 +16,6 @@ traversal attacks. It is stored in the task_files.original_filename column.
 from __future__ import annotations
 
 import base64
-import errno
 import hashlib
 import logging
 import os
@@ -272,35 +271,25 @@ def write_bytes_atomic(dest: Path, data: bytes, *, root: str | Path | None = Non
     else:
         base = Path(os.path.realpath(os.fspath(dest.parent)))
     dest = resolve_path_under_root(base, dest)
-    dest_s = os.fspath(dest)
-    Path(os.path.dirname(dest_s)).mkdir(parents=True, exist_ok=True)
-    # mkstemp dir=/suffix=/prefix= are path-injection sinks. Use only constant
-    # name fragments and the process temp dir (never dest.suffix / dest.parent).
-    fd, tmp_path = tempfile.mkstemp(prefix=".tmp_", suffix=".tmp")
+    # Rebind mkstemp(dir=...) to a path validated under the trusted root — never
+    # pass dest.parent directly (CodeQL py/path-injection). Suffix/prefix stay constant.
+    tmp_dir = resolve_path_under_root(base, Path(os.path.dirname(os.fspath(dest))))
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=os.fspath(tmp_dir),
+        prefix=".tmp_",
+        suffix=".tmp",
+    )
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
+        os.replace(tmp_path, os.fspath(dest))
+    except Exception:
         try:
-            os.replace(tmp_path, dest_s)
-            tmp_path = ""
-        except OSError as exc:
-            if exc.errno != errno.EXDEV:
-                raise
-            # Cross-device: copy into the already-sanitized destination, then drop temp.
-            with open(tmp_path, "rb") as src, open(dest_s, "wb") as out:
-                out.write(src.read())
-                out.flush()
-                os.fsync(out.fileno())
             os.unlink(tmp_path)
-            tmp_path = ""
-    finally:
-        if tmp_path:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+        except OSError:
+            pass
+        raise
 
 
 @runtime_checkable
