@@ -60,7 +60,7 @@ import {
   normalizeCropGateFile,
   normalizeRunCropGateFiles,
 } from '../mvduCropPreview/cropGateConfirm'
-import type { CropPreviewPayload } from '../mvduCropPreview/types'
+import type { CropPreviewGateNavFile, CropPreviewPayload } from '../mvduCropPreview/types'
 import { BankStatementReview, type BankTransaction } from '../../components/BankStatementReview'
 import { OtherTable } from '../../components/OtherTable'
 import { CompanyFxToolbar } from '../../components/CompanyFxToolbar'
@@ -438,6 +438,7 @@ export function ProcessingView() {
   const [reVlmInitialFileIds, setReVlmInitialFileIds] = useState<string[]>([])
   const [cropGateBusy, setCropGateBusy] = useState(false)
   const [cropGateError, setCropGateError] = useState<string | null>(null)
+  const [activeCropFileId, setActiveCropFileId] = useState<string | null>(null)
   const [headerChangeConfirm, setHeaderChangeConfirm] = useState<{
     onConfirm: () => void
     onCancel: () => void
@@ -1673,10 +1674,11 @@ export function ProcessingView() {
   ).length
   const totalFileCount = activeRun?.files.length ?? 0
 
-  const cropGateTarget = useMemo(() => {
-    if (!activeRun?.task_id) return null
+  const cropGateFiles = useMemo((): CropPreviewGateNavFile[] => {
+    if (!activeRun?.task_id) return []
     const mode = (activeRun.processing_mode ?? '').toUpperCase()
-    if (mode !== 'AP' && mode !== 'AR') return null
+    if (mode !== 'AP' && mode !== 'AR') return []
+    const out: CropPreviewGateNavFile[] = []
     for (const raw of activeRun.files ?? []) {
       // Belt-and-suspenders: never show extracting for a Stopped/ok file.
       const f = normalizeCropGateFile(raw)
@@ -1691,15 +1693,34 @@ export function ProcessingView() {
         (f.error_text === 'needs_crop_preview' || parsed.needsGate)
       const extracting = phase === 'extracting' && (f.file_status ?? '').toLowerCase() === 'running'
       if (waitingConfirm || extracting) {
-        return {
+        out.push({
           taskFileId: f.task_file_id,
           filename: f.original_filename,
           preview: parsed.preview as CropPreviewPayload,
-        }
+        })
       }
     }
-    return null
+    return out
   }, [activeRun])
+
+  useEffect(() => {
+    if (cropGateFiles.length === 0) {
+      setActiveCropFileId(null)
+      return
+    }
+    setActiveCropFileId(prev =>
+      prev && cropGateFiles.some(f => f.taskFileId === prev)
+        ? prev
+        : cropGateFiles[0]!.taskFileId,
+    )
+  }, [cropGateFiles])
+
+  const cropGateTarget = useMemo(() => {
+    if (cropGateFiles.length === 0) return null
+    return (
+      cropGateFiles.find(f => f.taskFileId === activeCropFileId) ?? cropGateFiles[0] ?? null
+    )
+  }, [cropGateFiles, activeCropFileId])
 
   const reviewCropBoxes = useMemo(() => {
     for (const f of activeRun?.files ?? []) {
@@ -2374,8 +2395,10 @@ export function ProcessingView() {
               companyId={companyId}
               filename={cropGateTarget.filename}
               preview={cropGateTarget.preview}
+              gatedFiles={cropGateFiles}
               busy={cropGateBusy}
               actionError={cropGateError}
+              onActiveFileChange={setActiveCropFileId}
               onConfirm={boxes => handleCropGateConfirm(boxes)}
               onSkip={() => handleCropGateSkip()}
               onCancel={() => handleCropGateCancel()}

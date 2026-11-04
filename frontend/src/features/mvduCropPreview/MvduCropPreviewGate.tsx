@@ -18,7 +18,13 @@ import {
   updateBoxNorm,
 } from './boxOps'
 import { clientPointToRegionNorm, regionNormToStageStyle } from './overlayCoords'
-import type { CropPreviewBox, CropPreviewPageEntry, CropPreviewPayload } from './types'
+import type {
+  CropPreviewBox,
+  CropPreviewFileGateMemory,
+  CropPreviewGateNavFile,
+  CropPreviewPageEntry,
+  CropPreviewPayload,
+} from './types'
 import { useContainFitStage } from './useContainFitStage'
 import './mvduCropPreview.css'
 
@@ -29,12 +35,32 @@ type Props = {
   companyId?: string | null
   filename?: string | null
   preview: CropPreviewPayload
+  /**
+   * All files in this run awaiting crop preview (including the active one).
+   * Length ≤ 1 → file control hidden. Parent keeps Confirm/Skip/Cancel scoped
+   * to the active taskFileId.
+   */
+  gatedFiles?: CropPreviewGateNavFile[]
   busy?: boolean
   /** Optional parent-surfaced action error (confirm/skip/cancel). */
   actionError?: string | null
   onConfirm: (boxes: ReturnType<typeof boxesForApi>) => void | Promise<void>
   onSkip: () => void | Promise<void>
   onCancel: () => void | Promise<void>
+  /** Fired when the user picks another gated file (parent updates taskFileId/preview). */
+  onActiveFileChange?: (taskFileId: string) => void
+}
+
+function shortFilename(name: string | null | undefined, max = 18): string {
+  const raw = (name ?? 'Upload').trim() || 'Upload'
+  if (raw.length <= max) return raw
+  const dot = raw.lastIndexOf('.')
+  if (dot > 0 && raw.length - dot <= 5) {
+    const ext = raw.slice(dot)
+    const stem = raw.slice(0, Math.max(1, max - ext.length - 1))
+    return `${stem}…${ext}`
+  }
+  return `${raw.slice(0, max - 1)}…`
 }
 
 type DragState =
@@ -70,11 +96,13 @@ export function MvduCropPreviewGate({
   companyId,
   filename,
   preview,
+  gatedFiles,
   busy = false,
   actionError = null,
   onConfirm,
   onSkip,
   onCancel,
+  onActiveFileChange,
 }: Props) {
   const [pageEntries, setPageEntries] = useState<CropPreviewPageEntry[]>(() =>
     pagesFromPreview(preview),
@@ -101,12 +129,36 @@ export function MvduCropPreviewGate({
   const dragRef = useRef<DragState | null>(null)
   const stageRef = useRef<HTMLDivElement | null>(null)
   const gateBootstrapKeyRef = useRef<string>('')
-  const activePageRef = useRef<number>(activePage)
+  const activeTaskFileIdRef = useRef(taskFileId)
+  const fileMemoryRef = useRef<Map<string, CropPreviewFileGateMemory>>(new Map())
+  const pageEntriesRef = useRef(pageEntries)
+  const boxesRef = useRef(boxes)
+  const activePageRef = useRef(activePage)
+  const selectedIdRef = useRef(selectedId)
+  pageEntriesRef.current = pageEntries
+  boxesRef.current = boxes
   activePageRef.current = activePage
+  selectedIdRef.current = selectedId
+
   const extracting = preview.phase === 'extracting'
   const editable = preview.phase === 'preview' && !busy && !actionPending
   const shownError = localActionError || actionError
   const multipage = pageEntries.length > 1
+  const fileNavList = useMemo(() => {
+    if (gatedFiles && gatedFiles.length > 0) return gatedFiles
+    return [
+      {
+        taskFileId,
+        filename: filename ?? null,
+        preview,
+      } satisfies CropPreviewGateNavFile,
+    ]
+  }, [gatedFiles, taskFileId, filename, preview])
+  const showFileControl = fileNavList.length > 1
+  const activeFileIndex = Math.max(
+    0,
+    fileNavList.findIndex(f => f.taskFileId === taskFileId),
+  )
   const pendingCount = countPendingPages(pageEntries)
   const otherPending = pageEntries.filter(
     p => p.page !== activePage && p.status !== 'confirmed',
@@ -125,7 +177,7 @@ export function MvduCropPreviewGate({
       width: activeEntry?.image_width || preview.image_width || 0,
       height: activeEntry?.image_height || preview.image_height || 0,
     },
-    layoutKey: `${open}:${activePage}`,
+    layoutKey: `${open}:${taskFileId}:${activePage}`,
     imageKey: pageUrl,
   })
 
@@ -135,10 +187,61 @@ export function MvduCropPreviewGate({
     return `${taskFileId}:${preview.phase}:${pageIds}`
   }, [taskFileId, preview.phase, preview.pages, preview.page])
 
-  // Bootstrap from server on new gate / extract phase; keep local CONFIRMED across polls.
+  // Drop memory for files that left the gate (extracted / cancelled).
   useEffect(() => {
+    const live = new Set(fileNavList.map(f => f.taskFileId))
+    for (const id of [...fileMemoryRef.current.keys()]) {
+      if (!live.has(id)) fileMemoryRef.current.delete(id)
+    }
+  }, [fileNavList])
+
+  const applyMemory = useCallback((mem: CropPreviewFileGateMemory) => {
+    setPageEntries(mem.pageEntries)
+    setActivePage(mem.activePage)
+    setBoxes(mem.boxes)
+    setSelectedId(mem.selectedId)
+  }, [])
+
+  const bootstrapFromPreview = useCallback(
+    (nextPreview: CropPreviewPayload, preferFirstPage: boolean) => {
+      const nextPages = pagesFromPreview(nextPreview)
+      const start = preferFirstPage
+        ? (nextPages[0]?.page ?? nextPreview.page ?? 1)
+        : (nextPages.find(p => p.page === nextPreview.page)?.page ??
+          nextPages.find(p => p.status !== 'confirmed')?.page ??
+          nextPages[0]?.page ??
+          1)
+      setPageEntries(nextPages)
+      setActivePage(start)
+      const entry = nextPages.find(p => p.page === start)
+      const nextBoxes = normalizeIncomingBoxes(entry?.boxes ?? nextPreview.boxes, start)
+      setBoxes(nextBoxes)
+      setSelectedId(nextPreview.active_box_id ?? nextBoxes[0]?.id ?? null)
+    },
+    [],
+  )
+
+  // Bootstrap from server on new gate / file switch / extract phase; restore in-memory edits on return.
+  useEffect(() => {
+    const fileChanged = activeTaskFileIdRef.current !== taskFileId
+    if (fileChanged) {
+      activeTaskFileIdRef.current = taskFileId
+      const mem = fileMemoryRef.current.get(taskFileId)
+      if (mem && preview.phase === 'preview') {
+        applyMemory(mem)
+        gateBootstrapKeyRef.current = gateBootstrapKey
+        return
+      }
+      // Fresh visit: page 1 (first gated page) RUNNING, remaining PENDING from Detect.
+      bootstrapFromPreview(preview, true)
+      gateBootstrapKeyRef.current = gateBootstrapKey
+      return
+    }
+
     const nextPages = pagesFromPreview(preview)
     if (preview.phase === 'extracting' || preview.phase === 'done') {
+      // Extracting: drop local memory so we don't resurrect stale CONFIRMED after send.
+      fileMemoryRef.current.delete(taskFileId)
       // Preserve the page the user selected in the thumb rail across extract polls.
       // Previously every poll forced page 1, leaving page-1 overlays after clicking thumb 2.
       const keyChanged = gateBootstrapKeyRef.current !== gateBootstrapKey
@@ -168,18 +271,37 @@ export function MvduCropPreviewGate({
       return
     }
     gateBootstrapKeyRef.current = gateBootstrapKey
-    setPageEntries(nextPages)
-    const start =
-      nextPages.find(p => p.page === preview.page)?.page ??
-      nextPages.find(p => p.status !== 'confirmed')?.page ??
-      nextPages[0]?.page ??
-      1
-    setActivePage(start)
-    const entry = nextPages.find(p => p.page === start)
-    const nextBoxes = normalizeIncomingBoxes(entry?.boxes ?? preview.boxes, start)
-    setBoxes(nextBoxes)
-    setSelectedId(preview.active_box_id ?? nextBoxes[0]?.id ?? null)
-  }, [preview, gateBootstrapKey])
+    bootstrapFromPreview(preview, false)
+  }, [preview, gateBootstrapKey, taskFileId, applyMemory, bootstrapFromPreview])
+
+  const stashActiveFile = useCallback(() => {
+    const id = activeTaskFileIdRef.current
+    const savedPages = pageEntriesRef.current.map(p =>
+      p.page === activePageRef.current
+        ? {
+            ...p,
+            boxes: boxesRef.current.map(b => ({ ...b, page: activePageRef.current })),
+          }
+        : p,
+    )
+    fileMemoryRef.current.set(id, {
+      pageEntries: savedPages,
+      activePage: activePageRef.current,
+      boxes: boxesRef.current.map(b => ({ ...b, page: activePageRef.current })),
+      selectedId: selectedIdRef.current,
+    })
+  }, [])
+
+  const switchToFile = useCallback(
+    (nextFileId: string) => {
+      if (!nextFileId || nextFileId === taskFileId || blocked) return
+      if (!fileNavList.some(f => f.taskFileId === nextFileId)) return
+      stashActiveFile()
+      setLocalActionError(null)
+      onActiveFileChange?.(nextFileId)
+    },
+    [taskFileId, blocked, fileNavList, stashActiveFile, onActiveFileChange],
+  )
 
   const persistActiveBoxes = useCallback(
     (nextBoxes: CropPreviewBox[]) => {
@@ -520,7 +642,12 @@ export function MvduCropPreviewGate({
                   : ' · awaiting review'}
             </div>
             <div className="mvdu-crop-gate__sub">
-              Crop preview · page {activePage}
+              Crop preview
+              {showFileControl
+                ? ` · file ${activeFileIndex + 1} of ${fileNavList.length}`
+                : ''}
+              {' · '}
+              page {activePage}
               {multipage ? ` of ${pageEntries.length}` : ''}
             </div>
           </div>
@@ -579,7 +706,11 @@ export function MvduCropPreviewGate({
           </div>
         </header>
 
-        <div className={`mvdu-crop-gate__body${multipage ? ' mvdu-crop-gate__body--pages' : ''}`}>
+        <div
+          className={`mvdu-crop-gate__body${multipage ? ' mvdu-crop-gate__body--pages' : ''}${
+            showFileControl ? ' mvdu-crop-gate__body--files' : ''
+          }`}
+        >
           <div className="mvdu-crop-gate__stage-wrap">
             {pageError && (
               <div className="mvdu-crop-gate__err">
@@ -626,7 +757,7 @@ export function MvduCropPreviewGate({
                 const boxStyle = regionNormToStageStyle(box.region_norm, fit, stageSize)
                 return (
                   <div
-                    key={box.id}
+                    key={`${taskFileId}:${box.id}`}
                     className={`mvdu-crop-gate__box${active ? ' is-active' : ''}`}
                     style={{
                       ...boxStyle,
@@ -681,14 +812,85 @@ export function MvduCropPreviewGate({
             </div>
           </div>
 
-          {multipage ? (
-            <aside className="mvdu-crop-gate__strip mvdu-crop-gate__strip--pages" aria-label="Page control">
-              {pageEntries.map(entry => {
+          <aside
+            className={`mvdu-crop-gate__strip${multipage ? ' mvdu-crop-gate__strip--pages' : ''}`}
+            aria-label={multipage ? 'Page control' : 'Crop thumbnails'}
+          >
+            {showFileControl && (
+              <div className="mvdu-crop-gate__file-rail" aria-label="File control">
+                <div className="mvdu-crop-gate__file-nav">
+                  <button
+                    type="button"
+                    className="mvdu-crop-gate__file-step"
+                    disabled={blocked || activeFileIndex <= 0}
+                    aria-label="Previous file"
+                    data-testid="mvdu-crop-gate-file-prev"
+                    onClick={() => {
+                      const prev = fileNavList[activeFileIndex - 1]
+                      if (prev) switchToFile(prev.taskFileId)
+                    }}
+                  >
+                    ‹
+                  </button>
+                  <span className="mvdu-crop-gate__file-pos" data-testid="mvdu-crop-gate-file-pos">
+                    {activeFileIndex + 1}/{fileNavList.length}
+                  </span>
+                  <button
+                    type="button"
+                    className="mvdu-crop-gate__file-step"
+                    disabled={blocked || activeFileIndex >= fileNavList.length - 1}
+                    aria-label="Next file"
+                    data-testid="mvdu-crop-gate-file-next"
+                    onClick={() => {
+                      const next = fileNavList[activeFileIndex + 1]
+                      if (next) switchToFile(next.taskFileId)
+                    }}
+                  >
+                    ›
+                  </button>
+                </div>
+                {fileNavList.map((file, idx) => {
+                  const selected = file.taskFileId === taskFileId
+                  const phase = file.preview.phase
+                  return (
+                    <button
+                      key={file.taskFileId}
+                      type="button"
+                      className={`mvdu-crop-gate__file-thumb${selected ? ' is-selected' : ''}${
+                        phase === 'extracting' ? ' is-extracting' : ''
+                      }`}
+                      aria-current={selected ? 'true' : undefined}
+                      title={file.filename ?? `File ${idx + 1}`}
+                      disabled={blocked && !selected}
+                      onClick={() => {
+                        if (selected || blocked) return
+                        switchToFile(file.taskFileId)
+                      }}
+                    >
+                      <span className="mvdu-crop-gate__thumb-idx">{idx + 1}</span>
+                      <span className="mvdu-crop-gate__file-name">
+                        {shortFilename(file.filename)}
+                      </span>
+                      <span
+                        className={`mvdu-crop-gate__status mvdu-crop-gate__status--${
+                          selected ? 'running' : phase === 'extracting' ? 'running' : 'pending'
+                        }`}
+                      >
+                        {selected ? 'ACTIVE' : phase === 'extracting' ? 'EXTRACT' : 'WAITING'}
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+
+            {multipage ? (
+              pageEntries.map(entry => {
                 const display = pageThumbDisplayStatus(entry, activePage)
                 const clickable = display !== 'RUNNING'
                 return (
                   <button
-                    key={entry.page}
+                    key={`${taskFileId}:page:${entry.page}`}
                     type="button"
                     className={`mvdu-crop-gate__thumb mvdu-crop-gate__thumb--page${
                       display === 'RUNNING' ? ' is-selected' : ''
@@ -712,34 +914,30 @@ export function MvduCropPreviewGate({
                     </span>
                   </button>
                 )
-              })}
-            </aside>
-          ) : (
-            <aside className="mvdu-crop-gate__strip" aria-label="Crop thumbnails">
-              {boxes.length === 0 ? (
-                <p className="mvdu-crop-gate__strip-empty">No boxes yet. Add a box for each slip.</p>
-              ) : (
-                boxes.map(box => (
-                  <button
-                    key={box.id}
-                    type="button"
-                    className={`mvdu-crop-gate__thumb${box.id === selectedId ? ' is-selected' : ''}`}
-                    onClick={() => setSelectedId(box.id)}
-                  >
-                    <span className="mvdu-crop-gate__thumb-idx">{box.index}</span>
-                    {boxThumbUrls[box.id] ? (
-                      <img src={boxThumbUrls[box.id]} alt={`Crop ${box.index}`} />
-                    ) : (
-                      <span className="mvdu-crop-gate__thumb-ph" />
-                    )}
-                    <span className={`mvdu-crop-gate__status mvdu-crop-gate__status--${box.extract_status}`}>
-                      {box.extract_status}
-                    </span>
-                  </button>
-                ))
-              )}
-            </aside>
-          )}
+              })
+            ) : boxes.length === 0 ? (
+              <p className="mvdu-crop-gate__strip-empty">No boxes yet. Add a box for each slip.</p>
+            ) : (
+              boxes.map(box => (
+                <button
+                  key={`${taskFileId}:${box.id}`}
+                  type="button"
+                  className={`mvdu-crop-gate__thumb${box.id === selectedId ? ' is-selected' : ''}`}
+                  onClick={() => setSelectedId(box.id)}
+                >
+                  <span className="mvdu-crop-gate__thumb-idx">{box.index}</span>
+                  {boxThumbUrls[box.id] ? (
+                    <img src={boxThumbUrls[box.id]} alt={`Crop ${box.index}`} />
+                  ) : (
+                    <span className="mvdu-crop-gate__thumb-ph" />
+                  )}
+                  <span className={`mvdu-crop-gate__status mvdu-crop-gate__status--${box.extract_status}`}>
+                    {box.extract_status}
+                  </span>
+                </button>
+              ))
+            )}
+          </aside>
         </div>
 
         <footer className="mvdu-crop-gate__foot">

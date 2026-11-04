@@ -54,3 +54,18 @@ export type CropPreviewGateFile = {
   originalFilename?: string | null
   resultSummary: Record<string, unknown>
 }
+
+/** File entry for in-gate file strip (2+ awaiting crop preview). */
+export type CropPreviewGateNavFile = {
+  taskFileId: string
+  filename?: string | null
+  preview: CropPreviewPayload
+}
+
+/** In-memory gate edits kept when switching files mid-review. */
+export type CropPreviewFileGateMemory = {
+  pageEntries: CropPreviewPageEntry[]
+  activePage: number
+  boxes: CropPreviewBox[]
+  selectedId: string | null
+}
