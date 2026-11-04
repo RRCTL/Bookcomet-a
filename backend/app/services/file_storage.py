@@ -264,26 +264,30 @@ def write_bytes_atomic(dest: Path, data: bytes, *, root: str | Path | None = Non
     dest = Path(dest)
     if any(part == ".." for part in dest.parts):
         raise ValueError("Invalid destination path")
-    # Always contain via realpath+commonpath (CodeQL sanitizer). When no root is
-    # passed, contain under the destination directory itself.
-    if root is not None:
-        base = root
-    else:
-        base = Path(os.path.realpath(os.fspath(dest.parent)))
-    dest = resolve_path_under_root(base, dest)
-    # Rebind mkstemp(dir=...) to a path validated under the trusted root — never
-    # pass dest.parent directly (CodeQL py/path-injection). Suffix/prefix stay constant.
-    tmp_dir = resolve_path_under_root(base, Path(os.path.dirname(os.fspath(dest))))
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=os.fspath(tmp_dir),
-        prefix=".tmp_",
-        suffix=".tmp",
-    )
+    # Trusted root must not be derived from dest (that left CodeQL taint intact).
+    # Prefer the caller root; otherwise the configured uploads root.
+    base = os.path.realpath(os.fspath(root if root is not None else uploads_root()))
+    # Inline realpath+commonpath so CodeQL models the sanitizer at this sink
+    # (helper-only checks were not enough for mkstemp(dir=)/os.replace).
+    target = os.path.realpath(os.fspath(dest))
+    try:
+        if os.path.commonpath([base, target]) != base:
+            raise ValueError("Storage path escapes configured directory")
+    except ValueError as exc:
+        raise ValueError("Storage path escapes configured directory") from exc
+    tmp_dir = os.path.realpath(os.path.dirname(target))
+    try:
+        if os.path.commonpath([base, tmp_dir]) != base:
+            raise ValueError("Storage path escapes configured directory")
+    except ValueError as exc:
+        raise ValueError("Storage path escapes configured directory") from exc
+    os.makedirs(tmp_dir, exist_ok=True)
+    # Constant prefix/suffix only; dir rebound to the commonpath-validated parent.
+    fd, tmp_path = tempfile.mkstemp(dir=tmp_dir, prefix=".tmp_", suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
-        os.replace(tmp_path, os.fspath(dest))
+        os.replace(tmp_path, target)
     except Exception:
         try:
             os.unlink(tmp_path)

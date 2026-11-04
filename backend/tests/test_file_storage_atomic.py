@@ -6,7 +6,7 @@ from app.services.file_storage import LocalDiskStorage, write_bytes_atomic
 
 def test_write_bytes_atomic_creates_file(tmp_path):
     dest = tmp_path / "company" / "task" / "abc.pdf"
-    write_bytes_atomic(dest, b"hello")
+    write_bytes_atomic(dest, b"hello", root=tmp_path)
     assert dest.read_bytes() == b"hello"
 
 
@@ -81,10 +81,21 @@ def test_read_stored_bytes_rejects_outside_uploads(tmp_path, monkeypatch):
 def test_write_bytes_atomic_rejects_parent_segments(tmp_path):
     dest = tmp_path / "ok" / ".." / "escape.bin"
     try:
-        write_bytes_atomic(dest, b"nope")
+        write_bytes_atomic(dest, b"nope", root=tmp_path)
         raise AssertionError("expected parent segments to fail")
     except ValueError as exc:
         assert "Invalid destination path" in str(exc)
+
+
+def test_write_bytes_atomic_rejects_outside_trusted_root(tmp_path):
+    inside = tmp_path / "root"
+    inside.mkdir()
+    outside = tmp_path / "outside.bin"
+    try:
+        write_bytes_atomic(outside, b"nope", root=inside)
+        raise AssertionError("expected path outside root to fail")
+    except ValueError as exc:
+        assert "escapes" in str(exc)
 
 
 def test_resolve_path_under_root_rejects_absolute_outside(tmp_path):
