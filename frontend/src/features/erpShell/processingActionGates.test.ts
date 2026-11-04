@@ -84,29 +84,45 @@ describe('cross-run upload vs Run/Re-VLM gates', () => {
     )
   })
 
-  it('allows Upload on a quiet open run while another is Processing', () => {
+  it('allows Upload / append on a quiet open run while another is Processing', () => {
     expect(
       canUploadOnActiveRun({
         hasActiveRun: true,
-        fileCount: 0,
         busyOnActiveRun: false,
+        activeRunProcessing: false,
+      }),
+    ).toBe(true)
+    // Append after Passed: existing files must not grey Upload on an idle run.
+    expect(
+      canUploadOnActiveRun({
+        hasActiveRun: true,
+        busyOnActiveRun: false,
+        activeRunProcessing: false,
+        lockedApproved: false,
       }),
     ).toBe(true)
   })
 
-  it('blocks Upload only for this run busy or when files already staged', () => {
+  it('blocks Upload while this run is busy, processing, or approved-locked', () => {
     expect(
       canUploadOnActiveRun({
         hasActiveRun: true,
-        fileCount: 0,
         busyOnActiveRun: true,
       }),
     ).toBe(false)
     expect(
       canUploadOnActiveRun({
         hasActiveRun: true,
-        fileCount: 2,
         busyOnActiveRun: false,
+        activeRunProcessing: true,
+      }),
+    ).toBe(false)
+    expect(
+      canUploadOnActiveRun({
+        hasActiveRun: true,
+        busyOnActiveRun: false,
+        activeRunProcessing: false,
+        lockedApproved: true,
       }),
     ).toBe(false)
   })

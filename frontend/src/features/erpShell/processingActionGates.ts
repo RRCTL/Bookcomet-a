@@ -77,16 +77,24 @@ export function anotherRunIsProcessing(
   )
 }
 
-/** Staging PDFs on the open run never waits on someone else's VLM. */
+/**
+ * Staging PDFs on the open run (first batch or append) never waits on someone
+ * else's VLM. Block only while THIS run is busy / mid-processing, or after the
+ * review table is approved+locked into modules.
+ */
 export function canUploadOnActiveRun(opts: {
   hasActiveRun: boolean
-  fileCount: number
-  /** True only while THIS run's own upload request is in flight. */
+  /** True only while THIS run's own upload/HTTP request is in flight. */
   busyOnActiveRun: boolean
+  /** True while THIS run's VLM / workflow is executing. */
+  activeRunProcessing?: boolean
+  /** Approved + loaded into modules — do not append conflicting source files. */
+  lockedApproved?: boolean
 }): boolean {
   if (!opts.hasActiveRun) return false
   if (opts.busyOnActiveRun) return false
-  if (opts.fileCount > 0) return false
+  if (opts.activeRunProcessing) return false
+  if (opts.lockedApproved) return false
   return true
 }
 

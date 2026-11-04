@@ -924,15 +924,21 @@ export function ProcessingView() {
   const handleUpload = useCallback(
     async (files: FileList | null) => {
       if (!activeRun || !files || files.length === 0) return
-      // One upload per task: block adding a second batch (avoids max-up bugs).
-      if (activeRun.files.length > 0) {
-        setError('Files already uploaded for this task. Use Re-VLM to retry failed files.')
+      if (runHasLockedApprovedTable(activeRun)) {
+        setError(
+          'Approved and loaded into modules — upload is disabled to avoid conflicting updates.',
+        )
+        return
+      }
+      if (runLooksProcessing(activeRun) || busyRunId === activeRun.id) {
+        setError('Wait for this run to finish processing before uploading more files.')
         return
       }
       const runId = activeRun.id
       setBusyRunId(runId)
       setError(null)
       try {
+        // New batch id per append — backend already supports multi-batch runs.
         const uploadBatchId = safeRandomUUID()
         const uploadedAt = new Date().toISOString()
         for (const file of Array.from(files)) {
@@ -946,7 +952,7 @@ export function ProcessingView() {
         setBusyRunId(prev => (prev === runId ? null : prev))
       }
     },
-    [activeRun, companyId, loadActiveRun, reloadRuns],
+    [activeRun, busyRunId, companyId, loadActiveRun, reloadRuns],
   )
 
   const openReVlmModal = useCallback((taskFileIds: string[] = []) => {
@@ -1443,16 +1449,17 @@ export function ProcessingView() {
     files: activeRun?.files ?? [],
     nodeStates: activeRun?.node_states_json,
   })
-  const canUpload = canUploadOnActiveRun({
-    hasActiveRun: Boolean(activeRun),
-    fileCount: activeRun?.files.length ?? 0,
-    busyOnActiveRun: busy,
-  })
   // Once approved (CoA posting / completed) the output table is view-only.
   const outputReadOnly = runStatus === 'coa_running' || runStatus === 'completed'
   const reVlmLocked = Boolean(activeRun && runHasLockedApprovedTable(activeRun))
   const reVlmLockedTitle =
     'Approved and loaded into modules — Re-VLM is disabled to avoid conflicting updates.'
+  const canUpload = canUploadOnActiveRun({
+    hasActiveRun: Boolean(activeRun),
+    busyOnActiveRun: busy,
+    activeRunProcessing: isRunning,
+    lockedApproved: reVlmLocked,
+  })
   const canReVlm = canReVlmOnActiveRun({
     hasActiveRun: Boolean(activeRun),
     hasProcessedFiles,
@@ -1910,11 +1917,15 @@ export function ProcessingView() {
           className="erp-btn"
           disabled={!canUpload}
           title={
-            (activeRun?.files.length ?? 0) > 0
-              ? 'Files already uploaded for this task'
-              : otherRunProcessing
-                ? 'Upload files on this run while another run processes'
-                : 'Upload files (one batch per task)'
+            reVlmLocked
+              ? 'Approved and loaded into modules — upload is disabled'
+              : isRunning || busy
+                ? 'Wait for this run to finish before uploading more files'
+                : otherRunProcessing
+                  ? 'Upload or append files on this run while another run processes'
+                  : (activeRun?.files.length ?? 0) > 0
+                    ? 'Add more files to this run, then Run / Re-VLM'
+                    : 'Upload files to this run'
           }
           onClick={() => fileInputRef.current?.click()}
         >
