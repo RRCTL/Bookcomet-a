@@ -45,6 +45,29 @@ def _safe_path_segment(value: str, *, field_name: str) -> str:
     return cleaned
 
 
+def resolve_path_under_root(root: str | Path, candidate: str | Path) -> Path:
+    """Resolve *candidate* and require it stay inside *root*.
+
+    Uses os.path.realpath + commonpath so CodeQL models this as a path sanitizer.
+    """
+    raw = Path(candidate)
+    if any(part == ".." for part in raw.parts):
+        raise ValueError("Storage path escapes configured directory")
+    base = os.path.realpath(os.fspath(root))
+    target = os.path.realpath(os.fspath(candidate))
+    try:
+        shared = os.path.commonpath([base, target])
+    except ValueError as exc:
+        raise ValueError("Storage path escapes configured directory") from exc
+    if shared != base:
+        raise ValueError("Storage path escapes configured directory")
+    return Path(target)
+
+
+def uploads_root() -> Path:
+    return Path(os.getenv("UPLOADS_DIR", "./uploads"))
+
+
 def assert_upload_size(data: bytes, *, max_upload_size_mb: int | None = None) -> None:
     """Raise ValueError when payload exceeds MAX_UPLOAD_SIZE_MB."""
     limit_mb = max_upload_size_mb
@@ -76,8 +99,13 @@ ALLOWED_UPLOAD_EXTENSIONS = {
     ".xls",
 }
 
+# Acrobat / ISO 32000: %PDF- may appear anywhere in the first 1024 bytes.
+# Some bank/government/scanner systems prepend a short ASCII reference string.
+PDF_MAGIC = b"%PDF-"
+PDF_HEADER_SEARCH_WINDOW = 1024
+
 _MAGIC_PREFIXES: list[tuple[bytes, frozenset[str]]] = [
-    (b"%PDF", frozenset({".pdf"})),
+    # PDF is handled separately via pdf_header_offset (header may be offset).
     (b"\xff\xd8\xff", frozenset({".jpg", ".jpeg"})),
     (b"\x89PNG\r\n\x1a\n", frozenset({".png"})),
     (b"II*\x00", frozenset({".tif", ".tiff"})),
@@ -88,14 +116,60 @@ _MAGIC_PREFIXES: list[tuple[bytes, frozenset[str]]] = [
 ]
 
 
-def assert_file_type(filename: str, data: bytes) -> None:
-    """Validate extension + magic bytes for uploaded document bytes."""
-    ext = Path(filename or "").suffix.lower()
-    if ext not in ALLOWED_UPLOAD_EXTENSIONS:
+def pdf_header_offset(data: bytes) -> int | None:
+    """Return byte offset of ``%PDF-`` within the first 1024 bytes, else None."""
+    if not data:
+        return None
+    idx = data[:PDF_HEADER_SEARCH_WINDOW].find(PDF_MAGIC)
+    return idx if idx >= 0 else None
+
+
+def normalize_pdf_bytes(data: bytes) -> bytes:
+    """Strip leading junk before ``%PDF-`` so stored/parsed PDFs start at the header.
+
+    PyMuPDF often repairs offset headers, but stripping keeps xref startxref
+    offsets consistent for pickier tools and matches Acrobat's stored form.
+    """
+    offset = pdf_header_offset(data)
+    if offset is None or offset == 0:
+        return data
+    return data[offset:]
+
+
+def safe_upload_temp_suffix(filename: str | None) -> str:
+    """Return an allowlisted tempfile suffix from a user-supplied upload name.
+
+    ``tempfile.NamedTemporaryFile(suffix=...)`` is a CodeQL path-injection sink.
+    Attackers can craft names like ``invoice./../../etc/passwd`` so that
+    ``os.path.splitext`` yields a suffix containing ``..`` / separators while
+    ``Path(...).suffix`` looks empty. Only return a constant from the allowlist.
+    """
+    raw = filename or ""
+    # Prefer basename so absolute / nested names cannot contribute separators.
+    base = os.path.basename(raw.replace("\\", "/"))
+    ext = Path(base).suffix.lower()
+    if not ext or ext not in ALLOWED_UPLOAD_EXTENSIONS:
+        # Fall back to splitext only to produce a clearer error for odd names;
+        # never pass that value through to tempfile.
+        split_ext = os.path.splitext(base)[1].lower()
+        shown = ext or split_ext or "(none)"
         raise ValueError(
-            f"File type {ext or '(none)'} not allowed. "
+            f"File type {shown} not allowed. "
             f"Supported: {', '.join(sorted(ALLOWED_UPLOAD_EXTENSIONS))}"
         )
+    # Equality re-bind so CodeQL ConstCompare clears taint on the returned constant.
+    for allowed in ALLOWED_UPLOAD_EXTENSIONS:
+        if ext == allowed:
+            return allowed
+    raise ValueError(
+        f"File type {ext} not allowed. "
+        f"Supported: {', '.join(sorted(ALLOWED_UPLOAD_EXTENSIONS))}"
+    )
+
+
+def assert_file_type(filename: str, data: bytes) -> None:
+    """Validate extension + magic bytes for uploaded document bytes."""
+    ext = safe_upload_temp_suffix(filename)
     if not data:
         raise ValueError("Uploaded file is empty")
 
@@ -111,6 +185,15 @@ def assert_file_type(filename: str, data: bytes) -> None:
             return
         raise ValueError("File signature mismatch for .webp")
 
+    # PDF: accept %PDF- anywhere in the first 1024 bytes (Acrobat tolerance).
+    if ext == ".pdf":
+        if pdf_header_offset(data) is not None:
+            return
+        raise ValueError(
+            "Unknown or invalid file format for .pdf: "
+            "no %PDF- header within the first 1024 bytes"
+        )
+
     for magic, allowed_exts in _MAGIC_PREFIXES:
         if data.startswith(magic):
             if ext not in allowed_exts:
@@ -120,6 +203,15 @@ def assert_file_type(filename: str, data: bytes) -> None:
             return
 
     raise ValueError(f"Unknown or invalid file format for {ext}")
+
+
+def prepare_upload_bytes(filename: str, data: bytes) -> bytes:
+    """Validate upload bytes and normalize PDFs that have a leading prefix."""
+    assert_file_type(filename, data)
+    ext = safe_upload_temp_suffix(filename)
+    if ext == ".pdf":
+        return normalize_pdf_bytes(data)
+    return data
 
 
 def _fernet_from_env():
@@ -163,11 +255,19 @@ def unwrap_stored_bytes(data: bytes) -> bytes:
 
 def read_stored_bytes(storage_path: str | Path) -> bytes:
     """Read on-disk upload bytes, decrypting when the BCENC1 prefix is present."""
-    return unwrap_stored_bytes(Path(storage_path).read_bytes())
+    path = resolve_path_under_root(uploads_root(), storage_path)
+    return unwrap_stored_bytes(path.read_bytes())
 
 
-def write_bytes_atomic(dest: Path, data: bytes) -> None:
+def write_bytes_atomic(dest: Path, data: bytes, *, root: str | Path | None = None) -> None:
     """Write bytes via temp file + os.replace to avoid partial reads."""
+    dest = Path(dest)
+    if any(part == ".." for part in dest.parts):
+        raise ValueError("Invalid destination path")
+    if root is not None:
+        dest = resolve_path_under_root(root, dest)
+    else:
+        dest = Path(os.path.realpath(os.fspath(dest)))
     dest.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=dest.parent, prefix=".tmp_", suffix=dest.suffix)
     try:
@@ -229,14 +329,11 @@ class LocalDiskStorage:
         norm_ext = (ext or "").lower()
         if not norm_ext.startswith("."):
             norm_ext = f".{norm_ext}" if norm_ext else ""
-        assert_file_type(f"{file_uuid}{norm_ext}", data)
-        dest = self._root / company_id / task_id / f"{file_uuid}{norm_ext}"
-        # Ensure resolved path stays under uploads root (defense in depth).
-        resolved = dest.resolve()
-        root_resolved = self._root.resolve()
-        if not resolved.is_relative_to(root_resolved):
-            raise ValueError("Storage path escapes uploads directory")
-        write_bytes_atomic(dest, wrap_stored_bytes(data))
+        data = prepare_upload_bytes(f"{file_uuid}{norm_ext}", data)
+        dest = resolve_path_under_root(
+            self._root, self._root / company_id / task_id / f"{file_uuid}{norm_ext}"
+        )
+        write_bytes_atomic(dest, wrap_stored_bytes(data), root=self._root)
         logger.debug("[FileStorage] Saved %d bytes → %s", len(data), dest)
         return str(dest)
 
@@ -247,18 +344,21 @@ class LocalDiskStorage:
         norm_ext = (ext or "").lower()
         if not norm_ext.startswith("."):
             norm_ext = f".{norm_ext}" if norm_ext else ""
-        assert_file_type(f"input{norm_ext}", data)
-        dest = self._root / "background_jobs" / job_id / f"input{norm_ext}"
-        write_bytes_atomic(dest, wrap_stored_bytes(data))
+        data = prepare_upload_bytes(f"input{norm_ext}", data)
+        dest = resolve_path_under_root(
+            self._root, self._root / "background_jobs" / job_id / f"input{norm_ext}"
+        )
+        write_bytes_atomic(dest, wrap_stored_bytes(data), root=self._root)
         return str(dest)
 
     def load_path(self, storage_path: str) -> Path:
-        return Path(storage_path)
+        return resolve_path_under_root(self._root, storage_path)
 
     def delete(self, storage_path: str) -> None:
         try:
-            Path(storage_path).unlink(missing_ok=True)
-            logger.debug("[FileStorage] Deleted %s", storage_path)
+            path = resolve_path_under_root(self._root, storage_path)
+            path.unlink(missing_ok=True)
+            logger.debug("[FileStorage] Deleted %s", path)
         except Exception as exc:
             logger.warning("[FileStorage] Could not delete %s: %s", storage_path, exc)
 

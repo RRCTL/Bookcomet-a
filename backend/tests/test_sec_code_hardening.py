@@ -111,6 +111,15 @@ class UploadTypeTest(unittest.TestCase):
     def test_accepts_pdf_magic(self) -> None:
         assert_file_type("stmt.pdf", b"%PDF-1.7\n%")
 
+    def test_accepts_pdf_magic_with_leading_prefix(self) -> None:
+        prefix = b"0000000000-00-0000-0" + b" " * 43  # 64 bytes total
+        assert_file_type("stmt.pdf", prefix + b"%PDF-1.7\n%")
+
+    def test_rejects_pdf_header_beyond_1024(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            assert_file_type("stmt.pdf", (b"Z" * 1025) + b"%PDF-1.7\n%")
+        self.assertIn("1024", str(ctx.exception))
+
 
 class LogRedactionTest(unittest.TestCase):
     def test_masks_api_key_and_bearer(self) -> None:

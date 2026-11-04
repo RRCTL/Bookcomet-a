@@ -8,16 +8,45 @@ import random
 
 import requests
 
-from app.core.config import _DEFAULT_BANK_VLM_MODEL, _DEFAULT_OCR_ALIAS, settings
+from app.core.config import (
+    resolve_layout_classify_model,
+    resolve_ocr_provider,
+    resolve_settings_vlm_model,
+    settings,
+)
+
+
+def resolve_vlm_http_max_retries(ocr_options: dict | None = None) -> int:
+    """ocr_options.http_max_retries, else VLM_HTTP_MAX_RETRIES, else 3."""
+    options = ocr_options or {}
+    if options.get("http_max_retries") is not None:
+        try:
+            return max(1, int(options.get("http_max_retries")))
+        except (TypeError, ValueError):
+            pass
+    raw = (os.getenv("VLM_HTTP_MAX_RETRIES") or "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return 3
 
 
 def _normalize_ocr_base_url(base_url: str) -> str:
-    bu = (base_url or "").strip().rstrip("/")
-    if not bu:
-        bu = "https://www.dmxapi.cn"
-    if not bu.endswith("/v1"):
-        bu = f"{bu}/v1"
-    return bu
+    """Normalize OCR/VLM base URL via shared gateway helper (no vendor default)."""
+    from app.core.gateway_settings import normalize_openai_base_url
+
+    return normalize_openai_base_url(base_url)
+
+
+def resolve_vlm_enable_thinking(ocr_options: dict | None = None) -> bool:
+    """Settings/env thinking flag. Default off. Explicit ocr_options wins. No vendor name match."""
+    options = ocr_options or {}
+    if "enable_thinking" in options:
+        return bool(options["enable_thinking"])
+    raw = (os.getenv("VLM_ENABLE_THINKING") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
 
 
 class DeepSeekOcrProvider(OcrProvider):
@@ -44,7 +73,7 @@ class DeepSeekOcrProvider(OcrProvider):
             else (
                 os.getenv("VLM_BASE_URL")
                 or os.getenv("LLM_BASE_URL")
-                or "https://www.dmxapi.cn"
+                or ""
             )
         )
         self._base_url = _normalize_ocr_base_url(raw_base)
@@ -75,6 +104,11 @@ class DeepSeekOcrProvider(OcrProvider):
         if not (self._api_key or "").strip():
             raise RuntimeError(
                 "VLM OCR API key missing. Set VLM_API_KEY (or LLM_API_KEY) "
+                "in backend/.env or Settings → API before running OCR."
+            )
+        if not (self._base_url or "").strip():
+            raise RuntimeError(
+                "VLM OCR API URL missing. Set VLM_BASE_URL "
                 "in backend/.env or Settings → API before running OCR."
             )
 
@@ -232,7 +266,7 @@ class DeepSeekOcrProvider(OcrProvider):
         profiles = dedup_profiles
 
         import json as _json
-        _max_retries = 3
+        _max_retries = resolve_vlm_http_max_retries(options)
         _retryable = (
             requests.exceptions.ConnectionError,
             requests.exceptions.Timeout,
@@ -256,13 +290,10 @@ class DeepSeekOcrProvider(OcrProvider):
             }
             if "max_tokens" in options:
                 payload["max_tokens"] = int(options["max_tokens"])
-            # Qwen3.x models run chain-of-thought (thinking) by default, generating
-            # thousands of hidden reasoning tokens before the visible JSON output.
-            # On dense bank-statement pages this pushes generation time past 180 s.
-            # Pass enable_thinking=false to suppress the thinking chain and get
-            # direct JSON output, keeping response times well under the timeout.
-            if "enable_thinking" in options:
-                payload["enable_thinking"] = bool(options["enable_thinking"])
+            # Default off (VLM_ENABLE_THINKING). Hidden thinking tokens can hold the
+            # socket until VLM_READ_TIMEOUT / VLM_TIMEOUT and then return empty content.
+            # Callers may still set ocr_options.enable_thinking. No vendor-name match.
+            payload["enable_thinking"] = resolve_vlm_enable_thinking(options)
 
             _payload_bytes = len(_json.dumps(payload).encode("utf-8"))
             logger.info(
@@ -386,22 +417,30 @@ class OcrProviderRegistry:
         self._providers: dict[str, OcrProvider] = {
             "DeepSeek-OCR": provider,
         }
-        self._providers[settings.ocr_provider] = provider
-        self._providers[settings.document_layout_classify_model] = provider
+        self._providers[resolve_ocr_provider()] = provider
+        self._providers[resolve_layout_classify_model()] = provider
         # Dynamically register any model name set via AR_OCR_MODEL env var
         if ar_model and ar_model not in self._providers:
             self._providers[ar_model] = provider
-        # AP payables VLM — same resolution order as app.api.ocr (AP_VLM_MODEL → legacy → default)
-        _ap_vlm = (
-            os.getenv("AP_VLM_MODEL", "").strip()
-            or os.getenv("AP_MULTI_RECEIPT_OCR_MODEL", "").strip()
-            or (os.getenv("AP_VLM_DEFAULT") or "").strip()
-            or _DEFAULT_OCR_ALIAS
+        _settings_vlm = resolve_settings_vlm_model()
+        if _settings_vlm not in self._providers:
+            self._providers[_settings_vlm] = provider
+        # AP payables VLM — same resolution as app.api.ocr (mode env → Settings VLM).
+        _ap_vlm = resolve_settings_vlm_model(
+            os.getenv("AP_VLM_MODEL"),
+            os.getenv("AP_MULTI_RECEIPT_OCR_MODEL"),
         )
         if _ap_vlm not in self._providers:
             self._providers[_ap_vlm] = provider
-        # Bank-statement row extraction — one model id (matches ocr.runtime BANK_VLM_MODEL).
-        _bank_vlm = (os.getenv("BANK_VLM_MODEL") or "").strip() or _DEFAULT_BANK_VLM_MODEL
+        _ar_ocr = resolve_settings_vlm_model(
+            os.getenv("AR_OCR_MODEL"),
+            os.getenv("AP_VLM_MODEL"),
+            os.getenv("AP_MULTI_RECEIPT_OCR_MODEL"),
+        )
+        if _ar_ocr not in self._providers:
+            self._providers[_ar_ocr] = provider
+        # Bank-statement row extraction — BANK_VLM_MODEL or Settings VLM.
+        _bank_vlm = resolve_settings_vlm_model(os.getenv("BANK_VLM_MODEL"))
         if _bank_vlm not in self._providers:
             self._providers[_bank_vlm] = provider
 
@@ -423,11 +462,17 @@ class OcrProviderRegistry:
                         "(OCR registry uses model id as key)."
                     )
                 eff_key = (bank_resolved.get("api_key") or "").strip()
-                eff_base = (bank_resolved.get("api_url") or "").strip() or "https://www.dmxapi.cn"
+                eff_base = (bank_resolved.get("api_url") or "").strip()
                 if not eff_key:
                     raise RuntimeError(
                         "BANK_CROSS_VLM_API_KEY or VLM_API_KEY is required "
                         "for cross-VLM when a separate gateway is configured."
+                    )
+                if not eff_base:
+                    raise RuntimeError(
+                        "BANK_CROSS_VLM_BASE_URL or VLM_BASE_URL is required "
+                        "for cross-VLM when a separate gateway is configured. "
+                        "Set it in Settings → API."
                     )
                 cross_provider = DeepSeekOcrProvider(api_key=eff_key, base_url=eff_base)
                 self._providers[cross_vlm_model] = cross_provider
@@ -443,11 +488,17 @@ class OcrProviderRegistry:
         if ap_cross_model:
             if ap_cross_key or ap_cross_base:
                 eff_key = (ap_resolved.get("api_key") or "").strip()
-                eff_base = (ap_resolved.get("api_url") or "").strip() or "https://www.dmxapi.cn"
+                eff_base = (ap_resolved.get("api_url") or "").strip()
                 if not eff_key:
                     raise RuntimeError(
                         "AP_CROSS_VLM_API_KEY or VLM_API_KEY is required "
                         "for AP cross-VLM when a separate gateway is configured."
+                    )
+                if not eff_base:
+                    raise RuntimeError(
+                        "AP_CROSS_VLM_BASE_URL or VLM_BASE_URL is required "
+                        "for AP cross-VLM when a separate gateway is configured. "
+                        "Set it in Settings → API."
                     )
                 self._providers[ap_cross_model] = DeepSeekOcrProvider(
                     api_key=eff_key, base_url=eff_base

@@ -109,8 +109,16 @@ def render_receipt_crop_jpeg(
     """
     from PIL import Image
 
-    path = str(storage_path)
-    if not path or not Path(path).is_file():
+    from app.services.file_storage import resolve_path_under_root, uploads_root
+
+    if not storage_path:
+        raise FileNotFoundError("source file missing")
+    try:
+        resolved = resolve_path_under_root(uploads_root(), storage_path)
+    except ValueError as exc:
+        raise FileNotFoundError("source file missing") from exc
+    path = str(resolved)
+    if not resolved.is_file():
         raise FileNotFoundError("source file missing")
 
     img = _load_page_image(path, page)

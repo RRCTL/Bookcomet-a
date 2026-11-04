@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Mapping, Optional
 from fastapi import APIRouter, File, HTTPException, UploadFile, Form, Depends
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
+from app.core.config import resolve_layout_classify_model, resolve_settings_vlm_model, settings
 from app.ocr.interfaces import OcrLine, OcrResult
 from app.ocr.runtime import (
     BANK_VLM_MODEL,
@@ -27,12 +27,13 @@ from app.ocr.runtime import (
 from app.database import get_db, SessionLocal
 from app.api.deps import get_current_company_id, get_current_user, get_trace_id
 from app.models.identity import User
-from app.services.file_storage import assert_file_type, assert_upload_size
+from app.services.file_storage import assert_upload_size, prepare_upload_bytes, safe_upload_temp_suffix
 from app.core.db_concurrency import long_running_db_work_slot
 from app.models.company_context import CompanyProfile
 from app.models.compliance import OcrCompletionEvent
 from app.models.background_job import BackgroundJob
 from app.models.rule_memory import CompanyRuleMemory
+from app.services.company_fx import normalize_currency_code
 
 # Only document OCR modes load rule memory into the VLM/deterministic OCR pipeline.
 _OCR_RULE_MEMORY_MODES = frozenset({"AR", "AP", "BANK", "OTHER"})
@@ -67,6 +68,23 @@ from app.services.job_tasks import OcrBackgroundJobCancelled, background_job_can
 from app.services import extraction_validation as _extraction_validation
 from app.services import receipt_image_quality as _receipt_image_quality
 from app.ocr import cross_check as _ocr_cross_check
+from app.ocr.crop_timeout import (
+    build_crop_failure_page,
+    build_crop_partial_snapshot,
+    public_page_for_crop_outcome,
+    resolve_ap_crop_ocr_timeout_s,
+)
+from app.ocr.vlm_layout_detect import (
+    VLM_RECEIPT_DETECT_PROMPT,
+    build_vlm_detect_repair_prompt,
+    is_vlm_detection_backend,
+    needs_vlm_detect_repair,
+    parse_vlm_detect_regions,
+    receipt_instance_id,
+    resolve_ap_detection_backend,
+    safe_parse_json,
+    vlm_split_review_payload,
+)
 from app.services.ap_vlm_cross_merge import (
     _min_tsv_confidence,
     cross_extraction_passes_confidence_gate,
@@ -179,6 +197,11 @@ def _persist_background_job_partial_result(
             return
         if job.status in ("failed", "completed", "cancelled"):
             return
+        prior = job.result_json
+        if isinstance(prior, dict):
+            from app.graph.ocr_partial_merge import merge_partial_ocr_summary
+
+            result_json = merge_partial_ocr_summary(prior, result_json)
         job.result_json = result_json
         if progress_percent is not None:
             job.progress_percent = str(max(0, min(99, int(progress_percent))))
@@ -190,6 +213,94 @@ def _persist_background_job_partial_result(
         logger.exception("[OCR Partial] failed to persist partial snapshot for job %s", job_id)
     finally:
         db.close()
+
+
+async def _persist_ocr_partial_snapshot(
+    *,
+    job_id: str | None,
+    result_json: dict[str, Any],
+    progress_percent: int | None = None,
+    progress_label: str | None = None,
+    workflow_run_id: str | None = None,
+) -> None:
+    """Job + workflow mid-flight snapshots (workflow path has no background_job_id)."""
+    _persist_background_job_partial_result(
+        job_id=job_id,
+        result_json=result_json,
+        progress_percent=progress_percent,
+        progress_label=progress_label,
+    )
+    wf_id = workflow_run_id or _workflow_run_id_cv.get()
+    if not wf_id:
+        return
+    from app.graph.workflow_events import workflow_event_hub
+    from app.graph.workflow_service import persist_workflow_ocr_partial
+
+    snap = persist_workflow_ocr_partial(wf_id, result_json)
+    if snap:
+        await workflow_event_hub.snapshot(
+            wf_id,
+            str(snap.get("run_status") or "executing"),
+            snap.get("node_states_json"),
+        )
+
+
+async def _persist_one_crop_page(
+    *,
+    page: dict[str, Any],
+    filename: str,
+    trace_id: str,
+    processing_mode: str,
+    background_job_id: str | None,
+    provider: str,
+    crop_preview: dict[str, Any] | None = None,
+) -> None:
+    """Write one finished crop into the running workflow/job snapshot."""
+    try:
+        payload = build_crop_partial_snapshot(
+            trace_id=trace_id,
+            filename=filename,
+            processing_mode=processing_mode,
+            page=page,
+            provider=provider,
+        )
+        if crop_preview is not None:
+            payload["crop_preview"] = crop_preview
+        await _persist_ocr_partial_snapshot(
+            job_id=background_job_id,
+            result_json=payload,
+        )
+    except Exception:
+        logger.exception("[OCR Partial] failed to persist crop page snapshot")
+
+
+async def _persist_crop_preview_progress(
+    *,
+    filename: str,
+    trace_id: str,
+    processing_mode: str,
+    background_job_id: str | None,
+    provider: str,
+    crop_preview: dict[str, Any],
+) -> None:
+    """Push extract-phase strip progress (full-page overlay + active box)."""
+    try:
+        await _persist_ocr_partial_snapshot(
+            job_id=background_job_id,
+            result_json={
+                "trace_id": trace_id,
+                "filename": filename,
+                "document_type": "multi_page_pdf",
+                "pages": [],
+                "ocr_job_outcome": "ok",
+                "processing_mode": processing_mode,
+                "provider": provider,
+                "crop_preview": crop_preview,
+                "needs_crop_preview": False,
+            },
+        )
+    except Exception:
+        logger.exception("[OCR Partial] failed to persist crop preview progress")
 
 
 async def _poll_cancel_tasks(
@@ -286,31 +397,47 @@ Quality rules:
 - If text is uncertain, keep best-effort text in place instead of dropping it.
 """
 
-# AP payables: VLM id for both passes (document OCR + structured JSON). Same gateway as BANK/AR.
-# Env order: AP_VLM_MODEL → AP_MULTI_RECEIPT_OCR_MODEL (legacy) → AP_VLM_DEFAULT (config).
-_AP_VLM_ENV = os.getenv("AP_VLM_MODEL", "").strip()
-_AP_VLM_LEGACY = os.getenv("AP_MULTI_RECEIPT_OCR_MODEL", "").strip()
-AP_VLM_MODEL = _AP_VLM_ENV or _AP_VLM_LEGACY or settings.ap_vlm_default
+# AP payables: VLM id for both passes (document OCR + structured JSON).
+# Env order: AP_VLM_MODEL → AP_MULTI_RECEIPT_OCR_MODEL (legacy) → Settings VLM_MODEL.
+def resolve_ap_vlm_model() -> str:
+    return resolve_settings_vlm_model(
+        os.getenv("AP_VLM_MODEL"),
+        os.getenv("AP_MULTI_RECEIPT_OCR_MODEL"),
+    )
+
+
+def resolve_ar_ocr_model() -> str:
+    # AR_OCR_MODEL if set; else same chain as AP (including Settings VLM_MODEL).
+    return resolve_settings_vlm_model(
+        os.getenv("AR_OCR_MODEL"),
+        os.getenv("AP_VLM_MODEL"),
+        os.getenv("AP_MULTI_RECEIPT_OCR_MODEL"),
+    )
+
+
+AP_VLM_MODEL = resolve_ap_vlm_model()
 # Backward-compatible name used throughout this module (same resolved string as AP_VLM_MODEL).
 AP_MULTI_RECEIPT_OCR_MODEL = AP_VLM_MODEL
 # Optional second VLM for manual AP "Double check" only (see POST /api/tasks/.../ap-cross-verify).
 AP_CROSS_VLM_MODEL = os.getenv("AP_CROSS_VLM_MODEL", "").strip()
 
 # Model used for AR mode OCR & AI extraction.
-# Set AR_OCR_MODEL in .env to test a different model for AR without affecting AP.
-AR_OCR_MODEL = os.getenv("AR_OCR_MODEL", AP_VLM_MODEL)
+AR_OCR_MODEL = resolve_ar_ocr_model()
 
-# AP multi-receipt: optional VLM-first page layout (bounding boxes) before OpenCV segmentation.
+# AP multi-receipt: optional VLM-first page layout (legacy flag; AP/AR crop uses Settings VLM Detect).
 _AP_VLM_LAYOUT_FLAG = os.getenv("AP_VLM_LAYOUT_CROP_ENABLED", "").strip().lower()
 AP_VLM_LAYOUT_CROP_ENABLED = _AP_VLM_LAYOUT_FLAG in ("1", "true", "yes", "on")
+# vlm = Settings VLM Detect (default). opencv is not used for AP/AR receipt crop.
+AP_DETECTION_BACKEND = resolve_ap_detection_backend()
 try:
     AP_VLM_LAYOUT_CONFIDENCE_MIN = float(os.getenv("AP_VLM_LAYOUT_CONFIDENCE_MIN", "0.75"))
 except ValueError:
     AP_VLM_LAYOUT_CONFIDENCE_MIN = 0.75
 try:
-    AP_VLM_LAYOUT_THUMB_MAX_SIDE = int(os.getenv("AP_VLM_LAYOUT_THUMB_MAX_SIDE", "800"))
+    AP_VLM_LAYOUT_THUMB_MAX_SIDE = int(os.getenv("AP_VLM_LAYOUT_THUMB_MAX_SIDE", "1600"))
 except ValueError:
-    AP_VLM_LAYOUT_THUMB_MAX_SIDE = 800
+    AP_VLM_LAYOUT_THUMB_MAX_SIDE = 1600
+AP_VLM_LAYOUT_THUMB_MAX_SIDE = max(400, min(AP_VLM_LAYOUT_THUMB_MAX_SIDE, 4096))
 try:
     AP_VLM_LAYOUT_BOX_PAD_PCT = float(os.getenv("AP_VLM_LAYOUT_BOX_PAD_PCT", "0.02"))
 except ValueError:
@@ -319,6 +446,8 @@ try:
     AP_CROP_OCR_CONCURRENCY = max(1, int(os.getenv("AP_CROP_OCR_CONCURRENCY", "8")))
 except ValueError:
     AP_CROP_OCR_CONCURRENCY = 8
+# AP_CROP_OCR_TIMEOUT_S / VLM_READ_TIMEOUT / VLM_HTTP_MAX_RETRIES are read at
+# call time via resolve_ap_crop_ocr_timeout_s and resolve_vlm_http_max_retries.
 try:
     AP_CROP_OCR_IMAGE_MAX_SIDE = max(0, int(os.getenv("AP_CROP_OCR_IMAGE_MAX_SIDE", "0")))
 except ValueError:
@@ -328,6 +457,27 @@ try:
 except ValueError:
     AP_CROP_OCR_JPEG_QUALITY = 90
 AP_CROP_OCR_JPEG_QUALITY = max(1, min(100, AP_CROP_OCR_JPEG_QUALITY))
+def _ap_ocr_structured_only() -> bool:
+    """One structured VLM call per crop/page when on (default). Set false to restore pass-1 parse."""
+    raw = (os.getenv("AP_OCR_STRUCTURED_ONLY") or "true").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _ap_receipt_ocr_image_options() -> dict:
+    """Always JPEG so the provider uses one upload profile, not the 4-step PNG ladder.
+
+    max_side 0 means no resize (provider keeps original pixels as JPEG).
+    """
+    return {
+        "max_side": AP_CROP_OCR_IMAGE_MAX_SIDE,
+        "format": "JPEG",
+        "quality": AP_CROP_OCR_JPEG_QUALITY,
+    }
+
+
+def _ap_receipt_ocr_options(*, temperature: float = 0.0) -> dict[str, Any]:
+    """Receipt/crop structured OCR: one HTTP attempt so the crop cap matches the socket."""
+    return {"temperature": temperature, "http_max_retries": 1}
 try:
     _layout_jq = int(os.getenv("AP_VLM_LAYOUT_JPEG_QUALITY", "88"))
 except ValueError:
@@ -337,6 +487,10 @@ try:
     AP_VLM_LAYOUT_MAX_RETRIES = max(0, int(os.getenv("AP_VLM_LAYOUT_MAX_RETRIES", "1")))
 except ValueError:
     AP_VLM_LAYOUT_MAX_RETRIES = 1
+try:
+    AP_VLM_DETECT_MAX_TOKENS = max(1024, int(os.getenv("AP_VLM_DETECT_MAX_TOKENS", "4096")))
+except ValueError:
+    AP_VLM_DETECT_MAX_TOKENS = 4096
 try:
     AP_STITCH_UPLOAD_MIN_SHORT_EDGE = max(1, int(os.getenv("AP_STITCH_UPLOAD_MIN_SHORT_EDGE", "480")))
 except ValueError:
@@ -848,6 +1002,8 @@ JSON schema to return:
   "tax_amount": "number or null",
   "subtotal_amount": "number or null",
   "currency": "string or null",
+  "printed_company_amount": "number or null — second-currency total printed on the slip (e.g. HKD equivalent). null if only one currency is shown",
+  "printed_company_currency": "3-letter ISO code for printed_company_amount, or null",
   "payment_method": "string or null",
   "confidence": "number (0-100)"
 }}
@@ -858,7 +1014,7 @@ AP_STRUCTURED_CROSS_VERIFY_SUPPLEMENT = """
 
 Verifier pass — multilingual and currency (overrides HK-only defaults above for this request):
 - The slip may be in any language or mixed languages. Do not assume Hong Kong or HKD from context alone.
-- Set "currency" to a 3-letter ISO 4217 code when evidence supports it: printed codes (HKD, USD, JPY, EUR, GBP, CNY, TWD, …),
+- Set "currency" to a 3-letter ISO 4217 code when evidence supports it: printed codes (HKD, USD, JPY, EUR, GBP, CNY, TWD, …). Map JYP to JPY.
   symbols near totals (HK$, US$, NT$, €, £, ¥ with Japanese or regional context), or tax labels
   (e.g. Japanese 消費税 / 内消費税 / 税込 → JPY; EU VAT / TVA / IVA / MWST patterns → local currency such as EUR).
 - Use null for "currency" only when evidence is missing or contradictory — do not use null as a substitute for HKD on clearly foreign slips.
@@ -1491,17 +1647,18 @@ def _normalise_ap_row_with_regex(row: dict[str, str], ocr_text: str) -> dict[str
                 if m3:
                     date = f"{m3.group(1)}-{int(m3.group(2)):02d}-{int(m3.group(3)):02d}"
 
-    # Currency: normalise HK$ → HKD, default HKD
-    currency_raw = _prefer_ai("currency")
-    currency = "HKD"
-    if currency_raw:
-        currency = currency_raw.upper().replace("HK$", "HKD").strip() or "HKD"
+    currency = normalize_currency_code(_prefer_ai("currency"))
+    printed_amt = _prefer_ai("printed_company_amount")
+    printed_ccy = normalize_currency_code(_prefer_ai("printed_company_currency"))
 
     return {
         "voucher_no":       _prefer_ai("voucher_no"),
         "transaction_type": "AP",
         "amount":           amount,
         "currency":         currency,
+        "printed_company_amount": printed_amt,
+        "company_amount": printed_amt,
+        "company_currency": printed_ccy,
         "date":             date,
         "payer":            _prefer_ai("payer"),
         "payee":            _prefer_ai("payee"),
@@ -1579,10 +1736,7 @@ def _normalise_cheque_row_with_regex(
                 m3 = re.match(r"^(20\d{2})[/\-](\d{1,2})[/\-](\d{1,2})$", date_raw)
                 if m3:
                     date = f"{m3.group(1)}-{int(m3.group(2)):02d}-{int(m3.group(3)):02d}"
-    cur_raw = _prefer_ai("currency")
-    currency = "HKD"
-    if cur_raw:
-        currency = cur_raw.upper().replace("HK$", "HKD").strip() or "HKD"
+    currency = normalize_currency_code(_prefer_ai("currency"))
     memo = _prefer_ai("memo")
     if not memo:
         memo = ocr_text[:120].strip()
@@ -1650,7 +1804,7 @@ async def _extract_ap_ai_fields_for_page(
             provider_name=ocr_provider_name,
             model=model,
             prompt_override=structured_prompt,
-            ocr_options={"temperature": 0.0},
+            ocr_options=_ap_receipt_ocr_options(temperature=0.0),
             image_options=image_options,
         )
         raw_text = structured_result.text.strip()
@@ -1678,14 +1832,19 @@ async def _extract_ap_ai_fields_for_page(
             # Map JSON fields to internal TSV row format
             _cur_raw = json_obj.get("currency")
             if cross_verify:
-                _cs = "" if _cur_raw is None else str(_cur_raw).strip()
+                _cs = "" if _cur_raw is None else normalize_currency_code(str(_cur_raw))
             else:
-                _cs = str(_cur_raw or "HKD").strip() or "HKD"
+                _cs = normalize_currency_code(str(_cur_raw) if _cur_raw is not None else "")
+            _printed = json_obj.get("printed_company_amount")
+            _printed_ccy = normalize_currency_code(str(json_obj.get("printed_company_currency") or ""))
             raw_row = {
                 "voucher_no":       str(json_obj.get("receipt_id") or ""),
                 "transaction_type": processing_mode,
                 "amount":           str(json_obj.get("total_amount") or ""),
                 "currency":         _cs,
+                "printed_company_amount": str(_printed) if _printed not in (None, "") else "",
+                "company_amount": str(_printed) if _printed not in (None, "") else "",
+                "company_currency": _printed_ccy,
                 "date":             str(json_obj.get("transaction_date") or ""),
                 "payer":            "",
                 "payee":            str(json_obj.get("merchant_name") or ""),
@@ -2422,54 +2581,80 @@ async def _ap_vlm_layout_try_receipt_regions(
     background_job_id: str | None = None,
     rescan_supplement: str | None = None,
     expected_receipt_count: int | None = None,
+    vlm_only: bool = False,
 ) -> list[dict[str, int]] | None:
     """
-    Optional VLM-first layout: thumbnail + JSON boxes. Returns pixel regions or None to fall back.
+    Settings VLM layout: thumbnail + JSON boxes. Returns pixel regions or None.
+    When vlm_only=True: Detect + one optional self-repair; no OpenCV fallback.
+    Model is Settings VLM (ocr_model_override); empty model → no Detect.
     """
     thumb_path: str | None = None
-    max_attempts = 1 + AP_VLM_LAYOUT_MAX_RETRIES
+    max_attempts = 2 if vlm_only else (1 + AP_VLM_LAYOUT_MAX_RETRIES)
     expected = normalize_expected_receipt_count(expected_receipt_count)
     try:
         thumb_path, _tw, _th, full_w, full_h = _write_ap_layout_thumbnail(
             image_path, AP_VLM_LAYOUT_THUMB_MAX_SIDE,
         )
-        model = ocr_model_override or AP_VLM_MODEL
+        model = (ocr_model_override or "").strip()
+        if not model:
+            logger.warning("[AP layout] Settings VLM unset; skipping Detect.")
+            return None
 
         obj: dict | None = None
+        previous_detect_json = ""
+        best_vlm_regions: list[dict[str, int]] | None = None
         for attempt in range(max_attempts):
             _raise_if_bg_job_cancelled(background_job_id)
             use_repair = attempt > 0
-            prompt = (
-                AP_VLM_LAYOUT_DETECTION_PROMPT_REPAIR
-                if use_repair
-                else AP_VLM_LAYOUT_DETECTION_PROMPT
-            )
+            if vlm_only:
+                prompt = (
+                    build_vlm_detect_repair_prompt(previous_detect_json)
+                    if use_repair
+                    else VLM_RECEIPT_DETECT_PROMPT
+                )
+            elif use_repair:
+                prompt = AP_VLM_LAYOUT_DETECTION_PROMPT_REPAIR
+            else:
+                prompt = AP_VLM_LAYOUT_DETECTION_PROMPT
             layout_hints: list[str] = []
             if expected is not None:
-                layout_hints.append(
-                    f"User-stated physical receipt count for this page: {expected}. "
-                    f'Set "count" to {expected} and return exactly {expected} boxes in '
-                    '"receipts" (one box per distinct slip). Do not invent empty slips.'
-                )
+                if vlm_only:
+                    layout_hints.append(
+                        f"User-stated physical receipt count for this page: {expected}. "
+                        f"Return exactly {expected} objects (one box per distinct slip). "
+                        "Do not invent empty slips."
+                    )
+                else:
+                    layout_hints.append(
+                        f"User-stated physical receipt count for this page: {expected}. "
+                        f'Set "count" to {expected} and return exactly {expected} boxes in '
+                        '"receipts" (one box per distinct slip). Do not invent empty slips.'
+                    )
             sup = (rescan_supplement or "").strip()
             if sup:
                 layout_hints.append(sup)
             if layout_hints:
                 prompt = prompt + "\n\n" + "\n".join(layout_hints)
             logger.info(
-                "[AP layout] attempt=%s/%s prompt=%s max_retries_env=%s expected_count=%s",
+                "[AP layout] attempt=%s/%s prompt=%s max_retries_env=%s expected_count=%s vlm_only=%s",
                 attempt + 1,
                 max_attempts,
-                "repair" if use_repair else "initial",
+                "vlm_detect_repair" if vlm_only and use_repair else (
+                    "vlm_detect" if vlm_only else ("repair" if use_repair else "initial")
+                ),
                 AP_VLM_LAYOUT_MAX_RETRIES,
                 expected,
+                vlm_only,
             )
+            ocr_options: dict[str, Any] = {"temperature": 0.0}
+            if vlm_only:
+                ocr_options["max_tokens"] = AP_VLM_DETECT_MAX_TOKENS
             result = await _ocr_service.recognize(
                 thumb_path,
                 provider_name=ocr_provider_name,
                 model=model,
                 prompt_override=prompt,
-                ocr_options={"temperature": 0.0},
+                ocr_options=ocr_options,
                 image_options={
                     "max_side": 0,
                     "format": "JPEG",
@@ -2477,6 +2662,46 @@ async def _ap_vlm_layout_try_receipt_regions(
                 },
             )
             raw_text = (result.text or "").strip()
+            if vlm_only:
+                regions = parse_vlm_detect_regions(
+                    raw_text,
+                    full_w=full_w,
+                    full_h=full_h,
+                    pad_pct=AP_VLM_LAYOUT_BOX_PAD_PCT,
+                )
+                if regions and (
+                    best_vlm_regions is None or len(regions) > len(best_vlm_regions)
+                ):
+                    best_vlm_regions = regions
+                parsed = safe_parse_json(raw_text)
+                should_repair = (not use_repair) and needs_vlm_detect_repair(
+                    raw_text=raw_text,
+                    regions=regions,
+                    full_w=full_w,
+                    full_h=full_h,
+                    parsed=parsed,
+                )
+                if should_repair:
+                    previous_detect_json = raw_text
+                    logger.info(
+                        "[AP layout] Detect self-repair: boxes=%s declared_count=%s",
+                        len(regions),
+                        parsed.get("count") if isinstance(parsed, dict) else None,
+                    )
+                    continue
+                if not best_vlm_regions:
+                    logger.warning(
+                        "[AP layout] Settings VLM Detect returned no usable boxes (attempt %s/%s).",
+                        attempt + 1,
+                        max_attempts,
+                    )
+                    return None
+                logger.info(
+                    "[AP layout] Using Settings VLM Detect boxes: regions=%s opencv_calls=0",
+                    len(best_vlm_regions),
+                )
+                return best_vlm_regions
+
             obj = _parse_json_object_from_vlm_layout(raw_text)
             if not obj:
                 logger.warning(
@@ -2486,7 +2711,7 @@ async def _ap_vlm_layout_try_receipt_regions(
                 )
                 if attempt < max_attempts - 1:
                     continue
-                logger.warning("[AP layout] Giving up; falling back to OpenCV.")
+                logger.warning("[AP layout] Giving up; no OpenCV fallback.")
                 return None
 
             ok, reason = _validate_layout_json(obj)
@@ -2508,7 +2733,7 @@ async def _ap_vlm_layout_try_receipt_regions(
                     return None
                 if attempt < max_attempts - 1:
                     continue
-                logger.warning("[AP layout] Falling back to OpenCV after validation failures.")
+                logger.warning("[AP layout] No OpenCV fallback after validation failures.")
                 return None
 
             if not _layout_count_matches_receipts(obj):
@@ -2527,7 +2752,7 @@ async def _ap_vlm_layout_try_receipt_regions(
                 )
                 if attempt < max_attempts - 1:
                     continue
-                logger.warning("[AP layout] Falling back to OpenCV after count mismatch.")
+                logger.warning("[AP layout] No OpenCV fallback after count mismatch.")
                 return None
 
             break
@@ -2540,7 +2765,7 @@ async def _ap_vlm_layout_try_receipt_regions(
             receipts, full_w, full_h, AP_VLM_LAYOUT_BOX_PAD_PCT,
         )
         if len(regions) < 2:
-            logger.warning("[AP layout] Fewer than 2 pixel regions after pad; falling back to OpenCV.")
+            logger.warning("[AP layout] Fewer than 2 pixel regions after pad; no OpenCV fallback.")
             return None
 
         logger.info(
@@ -2551,7 +2776,11 @@ async def _ap_vlm_layout_try_receipt_regions(
         )
         return regions
     except Exception as exc:
-        logger.warning("[AP layout] VLM layout failed: %s; falling back to OpenCV.", exc, exc_info=True)
+        logger.warning(
+            "[AP layout] VLM layout failed: %s; no OpenCV fallback.",
+            exc,
+            exc_info=True,
+        )
         return None
     finally:
         if thumb_path and os.path.isfile(thumb_path):
@@ -2579,9 +2808,8 @@ async def _run_ap_multi_with_guess_autoconfirm(
     """
     Run multi-receipt OCR. Returns (result, ask_confirmation).
 
-    Guess mode never asks the user: if the first pass cannot separate regions,
-    automatically retry once with confirmed=True (force-split). Explicit
-    multi_per_page is already confirmed by callers; single_* should not reach here.
+    Settings VLM Detect only. Never retries OpenCV / force-split. ask_confirmation
+    is always False (split-review payload is returned on empty Detect boxes).
     """
     kwargs = dict(multi_receipt_kwargs or {})
     result = await _run_ap_multi_receipt_ocr_from_image(
@@ -2597,28 +2825,95 @@ async def _run_ap_multi_with_guess_autoconfirm(
         background_job_id=background_job_id,
         **kwargs,
     )
-    if result is not None or multi_receipt_confirmed:
-        return result, False
-    if (ap_receipt_signal or "guess").strip().lower() != "guess":
-        return None, True
-    logger.info(
-        "[ROUTER] Guess auto-confirm: classifier suspected multi-receipt but OpenCV "
-        "could not separate regions — retrying with force-split (no user prompt).",
-    )
-    result = await _run_ap_multi_receipt_ocr_from_image(
-        image_path,
-        trace_id=trace_id,
-        filename=filename,
-        ocr_provider_name=ocr_provider_name,
-        ocr_model_override=ocr_model_override,
-        ocr_prompt_override=ocr_prompt_override,
-        processing_mode=processing_mode,
-        confirmed=True,
-        pdf_page_num=pdf_page_num,
-        background_job_id=background_job_id,
-        **kwargs,
-    )
     return result, False
+
+
+def _ap_stub_receipt_candidate_row(
+    *,
+    receipt_bbox: dict[str, int] | None,
+    pdf_page_num: int,
+    receipt_index: int,
+    parent_image_size: tuple[int, int] | None,
+    vlm_mode: bool,
+    extra_flags: list[str] | None = None,
+) -> dict[str, Any]:
+    """One editable Table Review row for a crop even when VLM JSON is empty."""
+    flags = list(extra_flags or [])
+    if "incomplete_extraction" not in flags:
+        flags.append("incomplete_extraction")
+    row: dict[str, Any] = {
+        "needs_review": True,
+        "validation_flags": flags,
+    }
+    _extraction_validation.attach_receipt_region_provenance(
+        row,
+        receipt_bbox=receipt_bbox,
+        pdf_page_num=pdf_page_num,
+        parent_image_size=parent_image_size,
+        segmentation_mode="vlm_detect" if vlm_mode else None,
+        segmentation_source="vlm_layout" if vlm_mode else None,
+        crop_status="verified_vlm_crop" if vlm_mode else None,
+        receipt_instance_id=receipt_instance_id(pdf_page_num, receipt_index),
+    )
+    return row
+
+
+def _public_ap_receipt_page(sub: Mapping[str, Any], default_page: int) -> dict[str, Any]:
+    """Keep crop identity when flattening M-VDU pages for Table Review + live preview."""
+    page = sub.get("page", default_page)
+    try:
+        page_num = int(page) if page is not None else int(default_page)
+    except (TypeError, ValueError):
+        page_num = int(default_page)
+    out: dict[str, Any] = {
+        "page": page_num,
+        "text": sub.get("text", ""),
+        "lines_count": sub.get("lines_count", 0),
+        "extracted_fields": sub.get("extracted_fields", {}),
+        "field_confidence": sub.get("field_confidence", 0),
+        "ai_enhanced": sub.get("ai_enhanced"),
+    }
+    for key in (
+        "receipt_index",
+        "receipt_instance_id",
+        "receipt_bbox",
+        "image_quality",
+        "crop_status",
+        "segmentation_mode",
+        "segmentation_source",
+        "status",
+        "error_code",
+        "error_detail",
+        "needs_split_review",
+    ):
+        if key in sub and sub[key] is not None:
+            out[key] = sub[key]
+    idx = out.get("receipt_index")
+    if out.get("receipt_instance_id") is None and idx is not None:
+        try:
+            out["receipt_instance_id"] = receipt_instance_id(page_num, int(idx))
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
+def _vlm_split_review_page(page_num: int, *, message: str | None = None) -> dict[str, Any]:
+    return {
+        "page": page_num,
+        "status": "error",
+        "error_code": "NEEDS_SPLIT_REVIEW",
+        "error_detail": message
+        or "AI layout did not return usable receipt boxes. Review the source page.",
+        "needs_split_review": True,
+        "crop_status": "needs_split_review",
+        "segmentation_mode": "vlm_detect",
+        "segmentation_source": "vlm_layout",
+        "text": "",
+        "lines_count": 0,
+        "extracted_fields": {},
+        "field_confidence": 0.0,
+        "ai_enhanced": None,
+    }
 
 
 async def _run_ap_multi_receipt_ocr_from_image(
@@ -2637,12 +2932,23 @@ async def _run_ap_multi_receipt_ocr_from_image(
     expected_receipt_count: int | None = None,
     count_assertion_strength: str = "unknown",
     prefer_denser_split: bool = False,
+    skip_crop_preview: bool = False,
+    crop_preview_confirmed: bool = False,
+    confirmed_crop_boxes: list | None = None,
+    workflow_run_id: str | None = None,
 ) -> dict | None:
     """
     pdf_page_num: the actual PDF page this image came from (1-based).
     Used so that file_position in the TSV shows the correct PDF page number
     rather than the receipt-region index within the page.
+
+    M-VDU crop-preview gate (Comet MultiCut pattern):
+    After Detect (or when Detect is empty), pause with needs_crop_preview unless
+    skip_crop_preview (power user) or crop_preview_confirmed with user boxes.
+    Empty Detect never silently invents boxes — same gate with empty overlay.
     """
+    from app.services import mvdu_crop_preview as _mvdu_crop
+
     _raise_if_bg_job_cancelled(background_job_id)
     expected = normalize_expected_receipt_count(expected_receipt_count)
     strength = (count_assertion_strength or "unknown").strip().lower()
@@ -2650,7 +2956,50 @@ async def _run_ap_multi_receipt_ocr_from_image(
         strength = "unknown"
     receipt_regions: list[dict[str, int]] = []
     layout_ok = False
-    if processing_mode == "AP" and AP_VLM_LAYOUT_CROP_ENABLED:
+    vlm_mode = True
+    layout_failure_reason: str | None = None
+
+    try:
+        img_w, img_h = _mvdu_crop.page_image_size(image_path)
+    except Exception:
+        img_w, img_h = 0, 0
+
+    if crop_preview_confirmed and confirmed_crop_boxes is not None:
+        # Multipage confirm sends all pages' boxes; keep only this PDF page.
+        page_confirmed = _mvdu_crop.filter_boxes_for_page(
+            confirmed_crop_boxes,
+            pdf_page=pdf_page_num,
+        )
+        receipt_regions = _mvdu_crop.parse_user_crop_boxes(
+            page_confirmed,
+            width=max(1, img_w),
+            height=max(1, img_h),
+        )
+        if not receipt_regions:
+            preview_boxes = _mvdu_crop.regions_to_preview_boxes(
+                [],
+                width=max(1, img_w),
+                height=max(1, img_h),
+                pdf_page=pdf_page_num,
+            )
+            return _mvdu_crop.build_crop_preview_payload(
+                trace_id=trace_id,
+                filename=filename,
+                processing_mode=processing_mode,
+                pdf_page=pdf_page_num,
+                image_width=img_w or 1,
+                image_height=img_h or 1,
+                boxes=preview_boxes,
+                needs_split_review=True,
+                message="Draw boxes or confirm forced split",
+                layout_failure_reason="empty_confirmed_boxes",
+            )
+        layout_ok = True
+        logger.info(
+            "[ocr_metrics] seg_source=user_crop_preview opencv_calls=0 candidate_regions=%s",
+            len(receipt_regions),
+        )
+    else:
         vlm_regs = await _ap_vlm_layout_try_receipt_regions(
             image_path,
             ocr_provider_name=ocr_provider_name,
@@ -2658,119 +3007,65 @@ async def _run_ap_multi_receipt_ocr_from_image(
             background_job_id=background_job_id,
             rescan_supplement=rescan_supplement,
             expected_receipt_count=expected,
+            vlm_only=True,
         )
-        if vlm_regs is not None:
+        if not vlm_regs:
+            layout_failure_reason = "empty_or_malformed"
+            logger.info(
+                "[ocr_metrics] seg_source=vlm_layout opencv_calls=0 needs_crop_preview=1 empty=1",
+            )
+            receipt_regions = []
+        else:
             receipt_regions = vlm_regs
             layout_ok = True
-
-    if not layout_ok:
-        receipt_regions = _detect_receipt_regions_v2(image_path)
-
-    seg_source = "vlm_layout" if layout_ok else "opencv_or_force_split"
-    if len(receipt_regions) > 1 and not confirmed:
-        try:
-            from PIL import Image
-
-            with Image.open(image_path) as _im:
-                page_w, page_h = _im.size
-            keep_multi, reason, stats = _multi_region_evidence(
-                receipt_regions,
-                page_w=page_w,
-                page_h=page_h,
-            )
             logger.info(
-                "[ocr_metrics] seg_source=%s candidate_regions=%s keep_multi=%s reason=%s stats=%s",
-                seg_source,
+                "[ocr_metrics] seg_source=vlm_layout opencv_calls=0 candidate_regions=%s",
                 len(receipt_regions),
-                keep_multi,
-                reason,
-                stats,
             )
-            if not keep_multi:
-                merged = _merge_regions_to_single(
-                    receipt_regions,
-                    page_w=page_w,
-                    page_h=page_h,
-                )
-                receipt_regions = [merged]
-                logger.info(
-                    "[AP] Collapsed over-split regions to single region (reason=%s).",
-                    reason,
-                )
-        except Exception as exc:
-            logger.warning("[AP] single-receipt guard failed: %s", exc)
 
-    if len(receipt_regions) <= 1:
-        if not confirmed:
-            return None
-        # User explicitly confirmed multiple receipts — force-split the image
-        # even though auto-detection found only one region.
-        logger.warning(
-            "[AP] Auto-detection found ≤1 region but user confirmed multi-receipt; "
-            "attempting forced split of image.",
-        )
-        receipt_regions = _force_split_receipt_regions(
-            image_path,
-            expected_receipt_count=expected,
-        )
-        seg_source = "force_split"
-        if len(receipt_regions) < 2:
-            logger.warning(
-                "[AP] Forced split also failed; falling back to single-receipt processing.",
-            )
-            return None
+    seg_source = "user_crop_preview" if (crop_preview_confirmed and confirmed_crop_boxes is not None) else "vlm_layout"
 
-    # Count-aware / missed-receipt recovery: prefer denser or count-matching geometry
-    # when baseline under-segments (e.g. 3 tall columns for a 3x3 page of slips).
-    if confirmed or prefer_denser_split or expected is not None:
-        forced = _force_split_receipt_regions(
-            image_path,
-            expected_receipt_count=expected,
+    # Crop-preview gate: pause before extract (unless power-user skip with usable boxes).
+    gate_required = (not crop_preview_confirmed) and (
+        not skip_crop_preview or not receipt_regions
+    )
+    if gate_required:
+        preview_boxes = _mvdu_crop.regions_to_preview_boxes(
+            receipt_regions,
+            width=max(1, img_w),
+            height=max(1, img_h),
+            pdf_page=pdf_page_num,
         )
-        if forced and len(forced) >= 2:
-            use_forced = False
-            if expected is not None:
-                cur_gap = abs(len(receipt_regions) - expected)
-                forced_gap = abs(len(forced) - expected)
-                if forced_gap < cur_gap or (
-                    forced_gap == cur_gap and len(forced) > len(receipt_regions)
-                ):
-                    use_forced = True
-            elif prefer_denser_split and len(forced) > len(receipt_regions):
-                use_forced = True
-            elif confirmed and len(forced) > len(receipt_regions):
-                # Multi-receipt confirmed: prefer denser H×V evidence over sparse OpenCV boxes.
-                use_forced = True
-            if use_forced:
-                logger.info(
-                    "[AP] Count-aware recovery: %s regions (%s) → %s regions (force_split)",
-                    len(receipt_regions),
-                    seg_source,
-                    len(forced),
-                )
-                receipt_regions = forced
-                seg_source = "force_split_count_recovery"
-
-    # Drop near-blank margin strips before OCR (N-agnostic noise rejection).
-    if len(receipt_regions) >= 2:
-        filtered = _filter_credible_receipt_regions(image_path, receipt_regions)
-        if filtered and len(filtered) != len(receipt_regions):
-            logger.info(
-                "[AP] Low-ink filter: %s → %s credible regions",
-                len(receipt_regions),
-                len(filtered),
-            )
-            receipt_regions = filtered
-            if seg_source and "ink_filter" not in seg_source:
-                seg_source = f"{seg_source}+ink_filter"
-
-    if len(receipt_regions) < 2:
-        if not confirmed:
-            return None
-        logger.warning(
-            "[AP] Fewer than 2 credible regions after ink filter; cannot multi-split.",
+        logger.info(
+            "[ocr_metrics] seg_source=%s needs_crop_preview=1 boxes=%s",
+            seg_source,
+            len(preview_boxes),
         )
-        return None
+        return _mvdu_crop.build_crop_preview_payload(
+            trace_id=trace_id,
+            filename=filename,
+            processing_mode=processing_mode,
+            pdf_page=pdf_page_num,
+            image_width=img_w or 1,
+            image_height=img_h or 1,
+            boxes=preview_boxes,
+            needs_split_review=not bool(receipt_regions),
+            layout_failure_reason=layout_failure_reason,
+        )
+
+    if vlm_mode and not receipt_regions:
+        # Should be unreachable when gate_required covers empty Detect; keep safe.
+        return _mvdu_crop.build_crop_preview_payload(
+            trace_id=trace_id,
+            filename=filename,
+            processing_mode=processing_mode,
+            pdf_page=pdf_page_num,
+            image_width=img_w or 1,
+            image_height=img_h or 1,
+            boxes=[],
+            needs_split_review=True,
+            layout_failure_reason=layout_failure_reason or "empty_after_hygiene",
+        )
 
     logger.info(
         "[AP] Detected %s receipt regions (source=%s); processing as multi-receipt image "
@@ -2780,6 +3075,22 @@ async def _run_ap_multi_receipt_ocr_from_image(
         AP_CROP_OCR_CONCURRENCY,
         expected,
     )
+    # Strip progress while extracting (workflow live output / gate UI).
+    extract_preview = {
+        "phase": "extracting",
+        "page": int(pdf_page_num),
+        "image_width": img_w or 1,
+        "image_height": img_h or 1,
+        "boxes": _mvdu_crop.regions_to_preview_boxes(
+            receipt_regions,
+            width=max(1, img_w),
+            height=max(1, img_h),
+            pdf_page=pdf_page_num,
+        ),
+        "needs_split_review": False,
+        "active_box_id": None,
+        "message": "Extracting confirmed crops",
+    }
     cropped_paths = _crop_receipt_regions(image_path, receipt_regions)
     n_crops = len(cropped_paths)
     quality_temp_paths: list[str] = []
@@ -2791,13 +3102,7 @@ async def _run_ap_multi_receipt_ocr_from_image(
             logger.warning("[AQ] page quality probe failed: %s", exc)
             page_quality = {"error": str(exc)[:300]}
     sem = asyncio.Semaphore(AP_CROP_OCR_CONCURRENCY)
-    crop_pass_image_options: dict | None = None
-    if AP_CROP_OCR_IMAGE_MAX_SIDE > 0:
-        crop_pass_image_options = {
-            "max_side": AP_CROP_OCR_IMAGE_MAX_SIDE,
-            "format": "JPEG",
-            "quality": AP_CROP_OCR_JPEG_QUALITY,
-        }
+    crop_pass_image_options = _ap_receipt_ocr_image_options()
     skipped_rows: list[dict[str, Any]] = []
 
     def _crop_guard_reason(receipt_bbox: dict[str, int]) -> str | None:
@@ -2840,28 +3145,51 @@ async def _run_ap_multi_receipt_ocr_from_image(
                         "selection": "original",
                         "error": str(exc)[:400],
                     }
-            logger.info(
-                "   [AP %s/%s] OCR pass 1/2 (document parsing) with %s model=%s%s...",
-                page_num,
-                n_crops,
-                ocr_provider_name,
-                AP_MULTI_RECEIPT_OCR_MODEL,
-                (
-                    f" aq={quality_audit.get('selection')}"
-                    if isinstance(quality_audit, dict)
-                    else ""
-                ),
+            aq_note = (
+                f" aq={quality_audit.get('selection')}"
+                if isinstance(quality_audit, dict)
+                else ""
             )
-            page_ocr_result = await _ocr_service.recognize(
-                ocr_image_path,
-                provider_name=ocr_provider_name,
-                model=AP_MULTI_RECEIPT_OCR_MODEL,
-                prompt_override=ocr_prompt_override or AP_MULTI_RECEIPT_DOCUMENT_PARSING_PROMPT,
-                image_options=crop_pass_image_options,
-            )
-            _raise_if_bg_job_cancelled(background_job_id)
-            filtered_result = _filtering_pipeline.filter_and_extract(page_ocr_result)
-            pass1_text = page_ocr_result.text or ""
+            if _ap_ocr_structured_only():
+                logger.info(
+                    "   [AP %s/%s] structured OCR with %s model=%s%s...",
+                    page_num,
+                    n_crops,
+                    ocr_provider_name,
+                    AP_MULTI_RECEIPT_OCR_MODEL,
+                    aq_note,
+                )
+                page_ocr_result = OcrResult(
+                    text="",
+                    lines=[],
+                    metadata={"pass": "structured_only"},
+                )
+                filtered_result = {
+                    "fields": {},
+                    "overall_confidence": 0.0,
+                    "missing_fields": [],
+                }
+                pass1_text = ""
+            else:
+                logger.info(
+                    "   [AP %s/%s] OCR pass 1/2 (document parsing) with %s model=%s%s...",
+                    page_num,
+                    n_crops,
+                    ocr_provider_name,
+                    AP_MULTI_RECEIPT_OCR_MODEL,
+                    aq_note,
+                )
+                page_ocr_result = await _ocr_service.recognize(
+                    ocr_image_path,
+                    provider_name=ocr_provider_name,
+                    model=AP_MULTI_RECEIPT_OCR_MODEL,
+                    prompt_override=ocr_prompt_override or AP_MULTI_RECEIPT_DOCUMENT_PARSING_PROMPT,
+                    ocr_options=_ap_receipt_ocr_options(temperature=0.1),
+                    image_options=crop_pass_image_options,
+                )
+                _raise_if_bg_job_cancelled(background_job_id)
+                filtered_result = _filtering_pipeline.filter_and_extract(page_ocr_result)
+                pass1_text = page_ocr_result.text or ""
 
             from PIL import Image
 
@@ -2907,6 +3235,9 @@ async def _run_ap_multi_receipt_ocr_from_image(
                 cheque_probe=None,
                 rescan_supplement=rescan_supplement,
             )
+            instance_id = receipt_instance_id(pdf_page_num, page_num)
+            # Skip preview = Detect boxes as-is with provenance; never invent unseen boxes.
+            skipped_preview = bool(skip_crop_preview) and not bool(crop_preview_confirmed)
             for row in ai_enhanced_fields.get("tsv_rows") or []:
                 if isinstance(row, dict):
                     _extraction_validation.attach_receipt_region_provenance(
@@ -2914,12 +3245,33 @@ async def _run_ap_multi_receipt_ocr_from_image(
                         receipt_bbox=receipt_bbox,
                         pdf_page_num=pdf_page_num,
                         parent_image_size=parent_wh,
+                        segmentation_mode="vlm_detect" if vlm_mode else None,
+                        segmentation_source=(
+                            "user_crop_preview"
+                            if crop_preview_confirmed
+                            else ("vlm_layout" if vlm_mode else None)
+                        ),
+                        crop_status="verified_vlm_crop" if vlm_mode else None,
+                        receipt_instance_id=instance_id,
+                        skipped_preview=True if skipped_preview else None,
                     )
                     _receipt_image_quality.attach_image_quality_provenance(row, quality_audit)
+            if not (ai_enhanced_fields.get("tsv_rows") or []):
+                stub = _ap_stub_receipt_candidate_row(
+                    receipt_bbox=receipt_bbox,
+                    pdf_page_num=pdf_page_num,
+                    receipt_index=page_num,
+                    parent_image_size=parent_wh,
+                    vlm_mode=vlm_mode,
+                )
+                _receipt_image_quality.attach_image_quality_provenance(stub, quality_audit)
+                ai_enhanced_fields["tsv_rows"] = [stub]
+                ai_enhanced_fields["ai_processed"] = True
 
             return {
                 "page": pdf_page_num,
                 "receipt_index": page_num,
+                "receipt_instance_id": instance_id,
                 "text": page_ocr_result.text,
                 "lines_count": len(page_ocr_result.lines),
                 "extracted_fields": filtered_result["fields"],
@@ -2927,38 +3279,49 @@ async def _run_ap_multi_receipt_ocr_from_image(
                 "ai_enhanced": ai_enhanced_fields,
                 "receipt_bbox": receipt_bbox,
                 "image_quality": quality_audit,
+                "segmentation_mode": "vlm_detect" if vlm_mode else "opencv",
+                "segmentation_source": "vlm_layout" if vlm_mode else (seg_source or "opencv"),
+                "crop_status": "verified_vlm_crop" if vlm_mode else None,
             }
 
     all_pages_results: list[dict] = []
     crop_errors = 0
 
     try:
-        async_tasks = [
-            asyncio.create_task(
-                _process_single_crop(page_num, crop_path, receipt_regions[page_num - 1]),
-            )
-            for page_num, crop_path in enumerate(cropped_paths, 1)
-            if not _crop_guard_reason(receipt_regions[page_num - 1])
-        ]
-        for page_num, receipt_bbox in enumerate(receipt_regions, 1):
+        crop_jobs: list[tuple[int, dict[str, int], asyncio.Task]] = []
+        for page_num, crop_path in enumerate(cropped_paths, 1):
+            receipt_bbox = receipt_regions[page_num - 1]
             reason = _crop_guard_reason(receipt_bbox)
-            if not reason:
+            if reason and not vlm_mode:
+                skipped_rows.append(
+                    build_crop_failure_page(
+                        pdf_page_num=pdf_page_num,
+                        receipt_index=page_num,
+                        receipt_bbox=receipt_bbox,
+                        parent_image_size=None,
+                        vlm_mode=vlm_mode,
+                        error_code=reason,
+                        error_detail=f"Skipped crop preflight: {reason}",
+                        seg_source=seg_source or "opencv",
+                    )
+                )
                 continue
-            skipped_rows.append(
-                {
-                    "page": pdf_page_num,
-                    "receipt_index": page_num,
-                    "status": "error",
-                    "error_code": reason,
-                    "error_detail": f"Skipped crop preflight: {reason}",
-                    "text": "",
-                    "lines_count": 0,
-                    "extracted_fields": {},
-                    "field_confidence": 0.0,
-                    "ai_enhanced": None,
-                    "receipt_bbox": receipt_bbox,
-                }
+            if reason and vlm_mode:
+                logger.info(
+                    "[AP] VLM crop %s failed preflight (%s); still OCR receipt_instance",
+                    page_num,
+                    reason,
+                )
+            crop_jobs.append(
+                (
+                    page_num,
+                    receipt_bbox,
+                    asyncio.create_task(
+                        _process_single_crop(page_num, crop_path, receipt_bbox),
+                    ),
+                )
             )
+        async_tasks = [job[2] for job in crop_jobs]
         if skipped_rows:
             logger.info(
                 "[ocr_metrics] crop_skipped_count=%s total_crops=%s page=%s",
@@ -2966,54 +3329,133 @@ async def _run_ap_multi_receipt_ocr_from_image(
                 len(receipt_regions),
                 pdf_page_num,
             )
+            for skipped in skipped_rows:
+                all_pages_results.append(skipped)
+                await _persist_one_crop_page(
+                    page=skipped,
+                    filename=filename,
+                    trace_id=trace_id,
+                    processing_mode=processing_mode,
+                    background_job_id=background_job_id,
+                    provider=ocr_provider_name,
+                )
+        crop_timeout_s = resolve_ap_crop_ocr_timeout_s()
+        parent_wh_for_stub: tuple[int, int] | None = None
+        try:
+            from PIL import Image
+
+            with Image.open(image_path) as _im:
+                parent_wh_for_stub = _im.size
+        except Exception:
+            parent_wh_for_stub = None
+
+        async def _await_crop(
+            page_num: int,
+            receipt_bbox: dict[str, int],
+            task: asyncio.Task,
+        ) -> tuple[int, dict[str, int], Any]:
+            try:
+                return page_num, receipt_bbox, await asyncio.wait_for(
+                    task, timeout=crop_timeout_s
+                )
+            except asyncio.TimeoutError as exc:
+                if not task.done():
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await task
+                return page_num, receipt_bbox, exc
+            except (OcrBackgroundJobCancelled, asyncio.CancelledError):
+                raise
+            except BaseException as exc:
+                return page_num, receipt_bbox, exc
+
+        wrappers = [
+            asyncio.create_task(_await_crop(pn, bbox, task))
+            for pn, bbox, task in crop_jobs
+        ]
         poll_crops: asyncio.Task[None] | None = None
         if background_job_id and async_tasks:
             poll_crops = asyncio.create_task(
                 _poll_cancel_tasks(async_tasks, job_id=background_job_id),
             )
+        # Mark queued crops running for strip progress (first active = first job).
+        if crop_jobs and extract_preview.get("boxes"):
+            first_idx = int(crop_jobs[0][0])
+            extract_preview = _mvdu_crop.stamp_box_extract_status(
+                extract_preview,
+                box_index=first_idx,
+                status="running",
+                active=True,
+            ) or extract_preview
+            await _persist_crop_preview_progress(
+                filename=filename,
+                trace_id=trace_id,
+                processing_mode=processing_mode,
+                background_job_id=background_job_id,
+                provider=ocr_provider_name,
+                crop_preview=extract_preview,
+            )
         try:
-            raw_results = await asyncio.gather(*async_tasks, return_exceptions=True)
+            for finished in asyncio.as_completed(wrappers):
+                receipt_index, bbox, outcome = await finished
+                if isinstance(outcome, asyncio.CancelledError):
+                    if background_job_id and background_job_cancelled(background_job_id):
+                        raise OcrBackgroundJobCancelled()
+                    raise outcome
+                if isinstance(outcome, OcrBackgroundJobCancelled):
+                    raise outcome
+                page = public_page_for_crop_outcome(
+                    outcome,
+                    pdf_page_num=pdf_page_num,
+                    receipt_index=receipt_index,
+                    receipt_bbox=bbox,
+                    parent_image_size=parent_wh_for_stub,
+                    vlm_mode=vlm_mode,
+                    seg_source=seg_source or "opencv",
+                )
+                done_status = "error"
+                if isinstance(outcome, TimeoutError):
+                    crop_errors += 1
+                    logger.warning(
+                        "   [AP] Multi-receipt crop %s/%s timed out after %.1fs",
+                        receipt_index,
+                        n_crops,
+                        crop_timeout_s,
+                    )
+                elif page.get("status") == "error":
+                    crop_errors += 1
+                    logger.error(
+                        "   [AP] Multi-receipt crop %s/%s failed: %s",
+                        receipt_index,
+                        n_crops,
+                        outcome,
+                    )
+                else:
+                    done_status = "done"
+                extract_preview = _mvdu_crop.stamp_box_extract_status(
+                    extract_preview,
+                    box_index=int(receipt_index),
+                    status=done_status,
+                    active=True,
+                ) or extract_preview
+                all_pages_results.append(page)
+                await _persist_one_crop_page(
+                    page=page,
+                    filename=filename,
+                    trace_id=trace_id,
+                    processing_mode=processing_mode,
+                    background_job_id=background_job_id,
+                    provider=ocr_provider_name,
+                    crop_preview=extract_preview,
+                )
         finally:
+            for wrapper in wrappers:
+                if not wrapper.done():
+                    wrapper.cancel()
             if poll_crops is not None:
                 poll_crops.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await poll_crops
-        for i, r in enumerate(raw_results):
-            receipt_index = i + 1
-            if isinstance(r, asyncio.CancelledError):
-                if background_job_id and background_job_cancelled(background_job_id):
-                    raise OcrBackgroundJobCancelled()
-                raise r
-            if isinstance(r, OcrBackgroundJobCancelled):
-                raise r
-            if isinstance(r, BaseException):
-                crop_errors += 1
-                logger.error(
-                    "   [AP] Multi-receipt crop %s/%s failed: %s",
-                    receipt_index,
-                    n_crops,
-                    r,
-                )
-                _bbox = receipt_regions[receipt_index - 1]
-                all_pages_results.append(
-                    {
-                        "page": pdf_page_num,
-                        "receipt_index": receipt_index,
-                        "status": "error",
-                        "error_detail": str(r)[:4000],
-                        "text": "",
-                        "lines_count": 0,
-                        "extracted_fields": {},
-                        "field_confidence": 0.0,
-                        "ai_enhanced": None,
-                        "receipt_bbox": _bbox,
-                    }
-                )
-            else:
-                if isinstance(r, dict):
-                    r.setdefault("status", "success")
-                all_pages_results.append(r)
-        all_pages_results.extend(skipped_rows)
         crop_errors += len(skipped_rows)
         all_pages_results.sort(key=lambda row: row.get("receipt_index", 0))
         batch_rows: list[Any] = []
@@ -3022,6 +3464,7 @@ async def _run_ap_multi_receipt_ocr_from_image(
                 continue
             ae = p.get("ai_enhanced") or {}
             usable_rows: list[dict[str, Any]] = []
+            review_rows: list[dict[str, Any]] = []
             for row in ae.get("tsv_rows") or []:
                 if not isinstance(row, dict):
                     continue
@@ -3032,13 +3475,32 @@ async def _run_ap_multi_receipt_ocr_from_image(
                         flags.append("incomplete_extraction")
                     row["validation_flags"] = flags
                     row["needs_review"] = True
+                    review_rows.append(row)
                     continue
                 usable_rows.append(row)
-            if not usable_rows and ae.get("tsv_rows"):
+            if not usable_rows:
                 p["status"] = "incomplete_extraction"
                 p["error_code"] = "INCOMPLETE_EXTRACTION"
                 p["error_detail"] = "Region produced no usable amount/identity fields"
                 crop_errors += 1
+                if not review_rows:
+                    try:
+                        ridx = int(p.get("receipt_index") or 1)
+                    except (TypeError, ValueError):
+                        ridx = 1
+                    review_rows = [
+                        _ap_stub_receipt_candidate_row(
+                            receipt_bbox=p.get("receipt_bbox"),
+                            pdf_page_num=pdf_page_num,
+                            receipt_index=ridx,
+                            parent_image_size=parent_wh_for_stub,
+                            vlm_mode=vlm_mode,
+                        )
+                    ]
+                if isinstance(ae, dict):
+                    ae["tsv_rows"] = review_rows
+                    p["ai_enhanced"] = ae
+                batch_rows.extend(review_rows)
             else:
                 batch_rows.extend(usable_rows)
                 if isinstance(ae, dict):
@@ -3089,6 +3551,12 @@ async def _run_ap_multi_receipt_ocr_from_image(
         "status": count_status,
     }
 
+    if isinstance(extract_preview, dict):
+        extract_preview = dict(extract_preview)
+        extract_preview["phase"] = "done"
+        extract_preview["active_box_id"] = None
+        extract_preview["message"] = "Extract complete — review crops and rows"
+
     return {
         "trace_id": trace_id,
         "filename": filename,
@@ -3100,6 +3568,8 @@ async def _run_ap_multi_receipt_ocr_from_image(
         "processing_mode": processing_mode,
         "count_validation": count_validation,
         "page_image_quality": page_quality,
+        "crop_preview": extract_preview,
+        "needs_crop_preview": False,
         "processing_steps": {
             "multi_receipt_split": "completed",
             "ocr_provider": ocr_provider_name,
@@ -3158,11 +3628,19 @@ def _expand_scenario_d_inner_to_public_pages(raw: dict[str, Any]) -> list[dict[s
 
 
 def recompute_ocr_job_outcome_from_pages(pages: list[dict[str, Any]]) -> str:
-    has_success = any(p.get("status") != "error" for p in pages if isinstance(p, dict))
-    has_error = any(p.get("status") == "error" for p in pages if isinstance(p, dict))
-    if has_error and not has_success:
+    from app.services.bank_empty_extract import page_has_pending_empty_extract
+
+    dict_pages = [p for p in pages if isinstance(p, dict)]
+    has_hard_error = any(p.get("status") == "error" for p in dict_pages)
+    # Only *pending* extract misses count — acknowledged "reviewed with no rows" is clear.
+    has_extract_miss = any(page_has_pending_empty_extract(p) for p in dict_pages)
+    has_any_non_failure = any(
+        p.get("status") != "error" and not page_has_pending_empty_extract(p)
+        for p in dict_pages
+    )
+    if has_hard_error and not has_any_non_failure and not has_extract_miss:
         return "failed"
-    if has_error:
+    if has_hard_error or has_extract_miss:
         return "partial"
     return "ok"
 
@@ -3316,6 +3794,103 @@ def _multi_region_evidence(
     return True, "strong_multi_evidence", stats
 
 
+async def _enhance_bank_ocr_with_empty_extract_retry(
+    *,
+    ocr_result: Any,
+    page_num: int,
+    processing_mode: str,
+    company_id: str,
+    db: Session,
+    trace_id: str | None,
+    rule_md: str | None,
+    excl_rules: Any,
+) -> tuple[Any, Any]:
+    """Run bank_statement_page enhance; auto-retry once on dense empty-extract miss.
+
+    Returns (ai_enhanced_fields, EmptyExtractAssessment).
+    Does not invent transactions — only re-invokes the same enhance path.
+    """
+    from app.services.bank_empty_extract import assess_bank_page_extract
+
+    detected_type = _document_type_for_enhancement(
+        processing_mode, ocr_result.text, page_num=page_num
+    )
+    company_context = _load_company_context(db, company_id, detected_type)
+
+    async def _once() -> Any:
+        enhanced = await _ai_processor.enhance_ocr_result(
+            ocr_result,
+            document_type=detected_type,
+            processing_mode=processing_mode,
+            metadata={
+                "company_context": company_context,
+                "page_num": page_num,
+            },
+        )
+        if isinstance(enhanced, dict):
+            if trace_id:
+                _inject_trace_meta(enhanced, trace_id=trace_id)
+            ctx = enhanced.get("context_meta") or {}
+            if not isinstance(ctx, dict):
+                ctx = {}
+            ctx["rule_memory_mode"] = processing_mode
+            enhanced["context_meta"] = ctx
+            if isinstance(enhanced.get("transactions"), list):
+                enhanced["transactions"] = _apply_rules_from_memory(
+                    enhanced["transactions"],
+                    rule_md,
+                    ocr_result.text,
+                )
+                if excl_rules:
+                    enhanced["transactions"] = _apply_exclusions(
+                        enhanced["transactions"],
+                        excl_rules,
+                        ocr_result.text,
+                        processing_mode,
+                        db,
+                    )
+        return enhanced
+
+    ai_enhanced = await _once()
+    assessment = assess_bank_page_extract(
+        ocr_text=ocr_result.text,
+        lines_count=len(ocr_result.lines),
+        ai_enhanced=ai_enhanced,
+    )
+    if not assessment.needs_retry:
+        return ai_enhanced, assessment
+
+    logger.warning(
+        "[BANK][empty_extract] page=%s extract miss on dense OCR "
+        "(lines=%s ocr_chars=%s reply_chars=%s activity_rows=%s) — auto-retrying once",
+        page_num,
+        assessment.ocr_lines,
+        assessment.ocr_chars,
+        assessment.reply_chars,
+        assessment.activity_row_count,
+    )
+    ai_enhanced = await _once()
+    assessment = assess_bank_page_extract(
+        ocr_text=ocr_result.text,
+        lines_count=len(ocr_result.lines),
+        ai_enhanced=ai_enhanced,
+    )
+    if assessment.needs_retry:
+        logger.warning(
+            "[BANK][empty_extract] page=%s still empty after auto-retry "
+            "(reply_chars=%s) — marking needs_retry (extract miss, not blank page)",
+            page_num,
+            assessment.reply_chars,
+        )
+    else:
+        logger.info(
+            "[BANK][empty_extract] page=%s recovered after auto-retry (activity_rows=%s)",
+            page_num,
+            assessment.activity_row_count,
+        )
+    return ai_enhanced, assessment
+
+
 async def retry_scenario_d_pdf_page(
     *,
     pdf_path: str,
@@ -3372,61 +3947,36 @@ async def retry_scenario_d_pdf_page(
         _excl_rules_pre = _load_exclusion_rules_for_ocr(db, company_id)
 
         if processing_mode in ("AR", "AP"):
-            receipt_regions = await asyncio.to_thread(_detect_receipt_regions_v2, img_path)
-            if len(receipt_regions) > 1:
-                multi_result = await _run_ap_multi_receipt_ocr_from_image(
-                    img_path,
-                    trace_id=trace_id,
-                    filename=filename or "",
-                    ocr_provider_name=ocr_provider_name,
-                    ocr_model_override=ocr_model_override,
-                    ocr_prompt_override=ocr_prompt_override,
-                    processing_mode=processing_mode,
-                    confirmed=multi_receipt_confirmed,
-                    pdf_page_num=page_num,
-                    background_job_id=background_job_id,
+            multi_result = await _run_ap_multi_receipt_ocr_from_image(
+                img_path,
+                trace_id=trace_id,
+                filename=filename or "",
+                ocr_provider_name=ocr_provider_name,
+                ocr_model_override=ocr_model_override,
+                ocr_prompt_override=ocr_prompt_override,
+                processing_mode=processing_mode,
+                confirmed=True,
+                pdf_page_num=page_num,
+                background_job_id=background_job_id,
+            )
+            if multi_result is None:
+                raise RuntimeError("multi_receipt_ocr_returned_none")
+            if multi_result.get("needs_crop_preview"):
+                raw_inner = dict(multi_result)
+                raw_inner["page"] = page_num
+                raw_inner["status"] = "needs_crop_preview"
+                raw_inner["_crop_preview_gate"] = True
+            elif multi_result.get("needs_split_review"):
+                raw_inner = _vlm_split_review_page(
+                    page_num,
+                    message=str(multi_result.get("message") or ""),
                 )
-                if multi_result is None:
-                    raise RuntimeError("multi_receipt_ocr_returned_none")
-                sub_list = multi_result.get("pages") or []
-                raw_inner: dict[str, Any] = {"_multi": True, "_pages": list(sub_list)}
             else:
-                ocr_result = await _ocr_service.recognize(
-                    img_path,
-                    provider_name=ocr_provider_name,
-                    model=ocr_model_override or AP_MULTI_RECEIPT_OCR_MODEL,
-                    prompt_override=AP_MULTI_RECEIPT_DOCUMENT_PARSING_PROMPT,
-                )
-                filtered_result = _filtering_pipeline.filter_and_extract(ocr_result)
-                _mode_label = processing_mode
-                ai_enhanced_fields = await _extract_ar_ap_ai_fields_routed(
-                    ocr_text=ocr_result.text,
-                    img_path=img_path,
-                    page_num=page_num,
-                    ocr_provider_name=ocr_provider_name,
-                    ocr_model_override=ocr_model_override or AP_MULTI_RECEIPT_OCR_MODEL,
-                    processing_mode=_mode_label,
-                    ocr_lines=ocr_result.lines,
-                )
-                ai_enhanced_fields = await _ap_apply_cross_vlm_merge_if_configured(
-                    processing_mode=_mode_label,
-                    primary_model=ocr_model_override or AP_MULTI_RECEIPT_OCR_MODEL,
-                    ai_primary=ai_enhanced_fields,
-                    ocr_text=ocr_result.text,
-                    img_path=img_path,
-                    page_num=page_num,
-                    ocr_provider_name=ocr_provider_name,
-                    image_options=None,
-                    ocr_lines=ocr_result.lines,
-                    cheque_probe=None,
-                )
+                sub_list = multi_result.get("pages") or []
                 raw_inner = {
-                    "page": page_num,
-                    "text": ocr_result.text,
-                    "lines_count": len(ocr_result.lines),
-                    "extracted_fields": filtered_result["fields"],
-                    "field_confidence": filtered_result["overall_confidence"],
-                    "ai_enhanced": ai_enhanced_fields,
+                    "_multi": True,
+                    "_pages": list(sub_list),
+                    "crop_preview": multi_result.get("crop_preview"),
                 }
         else:
             ocr_result = await _ocr_service.recognize(
@@ -3437,38 +3987,59 @@ async def retry_scenario_d_pdf_page(
             )
             filtered_result = _filtering_pipeline.filter_and_extract(ocr_result)
             ai_enhanced_fields = None
+            empty_extract_assessment = None
             if _ai_processor.api_key:
                 try:
-                    detected_type = _document_type_for_enhancement(processing_mode, ocr_result.text)
-                    company_context = _load_company_context(db, company_id, detected_type)
-                    ai_enhanced = await _ai_processor.enhance_ocr_result(
-                        ocr_result,
-                        document_type=detected_type,
-                        processing_mode=processing_mode,
-                        metadata={"company_context": company_context},
-                    )
-                    ai_enhanced_fields = ai_enhanced
-                    if isinstance(ai_enhanced_fields, dict):
-                        _inject_trace_meta(ai_enhanced_fields, trace_id=trace_id)
-                        ctx = ai_enhanced_fields.get("context_meta") or {}
-                        if not isinstance(ctx, dict):
-                            ctx = {}
-                        ctx["rule_memory_mode"] = processing_mode
-                        ai_enhanced_fields["context_meta"] = ctx
-                        if isinstance(ai_enhanced_fields.get("transactions"), list):
-                            ai_enhanced_fields["transactions"] = _apply_rules_from_memory(
-                                ai_enhanced_fields["transactions"],
-                                _rule_md_pre,
-                                ocr_result.text,
-                            )
-                            if _excl_rules_pre:
-                                ai_enhanced_fields["transactions"] = _apply_exclusions(
+                    if processing_mode == "BANK":
+                        (
+                            ai_enhanced_fields,
+                            empty_extract_assessment,
+                        ) = await _enhance_bank_ocr_with_empty_extract_retry(
+                            ocr_result=ocr_result,
+                            page_num=page_num,
+                            processing_mode=processing_mode,
+                            company_id=company_id,
+                            db=db,
+                            trace_id=trace_id,
+                            rule_md=_rule_md_pre,
+                            excl_rules=_excl_rules_pre,
+                        )
+                    else:
+                        detected_type = _document_type_for_enhancement(
+                            processing_mode, ocr_result.text, page_num=page_num
+                        )
+                        company_context = _load_company_context(db, company_id, detected_type)
+                        ai_enhanced = await _ai_processor.enhance_ocr_result(
+                            ocr_result,
+                            document_type=detected_type,
+                            processing_mode=processing_mode,
+                            metadata={
+                                "company_context": company_context,
+                                "page_num": page_num,
+                            },
+                        )
+                        ai_enhanced_fields = ai_enhanced
+                        if isinstance(ai_enhanced_fields, dict):
+                            _inject_trace_meta(ai_enhanced_fields, trace_id=trace_id)
+                            ctx = ai_enhanced_fields.get("context_meta") or {}
+                            if not isinstance(ctx, dict):
+                                ctx = {}
+                            ctx["rule_memory_mode"] = processing_mode
+                            ai_enhanced_fields["context_meta"] = ctx
+                            if isinstance(ai_enhanced_fields.get("transactions"), list):
+                                ai_enhanced_fields["transactions"] = _apply_rules_from_memory(
                                     ai_enhanced_fields["transactions"],
-                                    _excl_rules_pre,
+                                    _rule_md_pre,
                                     ocr_result.text,
-                                    processing_mode,
-                                    db,
                                 )
+                                if _excl_rules_pre:
+                                    ai_enhanced_fields["transactions"] = _apply_exclusions(
+                                        ai_enhanced_fields["transactions"],
+                                        _excl_rules_pre,
+                                        ocr_result.text,
+                                        processing_mode,
+                                        db,
+                                    )
                 except Exception as exc:
                     logger.warning(
                         "   [WARN] AI enhancement failed on retry page %s: %s",
@@ -3483,6 +4054,14 @@ async def retry_scenario_d_pdf_page(
                 "field_confidence": filtered_result["overall_confidence"],
                 "ai_enhanced": ai_enhanced_fields,
             }
+            if processing_mode == "BANK" and empty_extract_assessment is not None:
+                from app.services.bank_empty_extract import apply_empty_extract_flags
+
+                apply_empty_extract_flags(
+                    raw_inner,
+                    empty_extract_assessment,
+                    auto_retried=empty_extract_assessment.needs_retry,
+                )
 
         return _expand_scenario_d_inner_to_public_pages(raw_inner)
     finally:
@@ -3505,15 +4084,19 @@ async def merge_ocr_job_retry_page_result(
     db: Session,
 ) -> dict[str, Any]:
     """Replace all rows for pdf page_num and return updated full OCR result dict."""
+    from app.services.bank_empty_extract import page_has_pending_empty_extract
+
     pages = existing.get("pages")
     if not isinstance(pages, list):
         raise ValueError("invalid existing result: pages")
-    has_err = any(
-        isinstance(p, dict) and int(p.get("page", -1)) == page_num and p.get("status") == "error"
+    has_retryable = any(
+        isinstance(p, dict)
+        and int(p.get("page", -1)) == page_num
+        and (p.get("status") == "error" or page_has_pending_empty_extract(p))
         for p in pages
     )
-    if not has_err:
-        raise ValueError("no error row for this page")
+    if not has_retryable:
+        raise ValueError("no error or empty-extract row for this page")
     new_rows = await retry_scenario_d_pdf_page(
         pdf_path=pdf_path,
         page_num=page_num,
@@ -4625,6 +5208,7 @@ def _crop_receipt_regions(image_path: str, regions: list[dict[str, int]]) -> lis
     """
     Crop receipt regions into temporary image files.
     Caller is responsible for cleanup.
+    Optional rotation_deg on a region rotates the crop content after the axis-aligned cut.
     """
     from PIL import Image
 
@@ -4636,6 +5220,13 @@ def _crop_receipt_regions(image_path: str, regions: list[dict[str, int]]) -> lis
         for idx, box in enumerate(regions, start=1):
             x, y, w, h = box["x"], box["y"], box["w"], box["h"]
             crop = img.crop((x, y, x + w, y + h))
+            try:
+                rot = int(box.get("rotation_deg") or 0) % 360
+            except (TypeError, ValueError):
+                rot = 0
+            if rot:
+                # PIL rotates counter-clockwise; UI rotate-90 is clockwise.
+                crop = crop.rotate(-rot, expand=True)
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f".receipt-{idx}.png")
             tmp_path = tmp.name
             tmp.close()
@@ -4672,7 +5263,7 @@ async def _classify_document_layout(
       Single page  → Scenario A (invoice, skip OCR split) vs B (receipts, run split)
       Multi-page   → Scenario C (invoice, stitch+parse) vs D (receipts, per-page split)
 
-    Uses DOCUMENT_LAYOUT_CLASSIFY_MODEL from config (fast, cheap, single-word classification).
+    Uses DOCUMENT_LAYOUT_CLASSIFY_MODEL if set, else Settings VLM_MODEL.
     Falls back to "receipts" on any error so the safer per-page path is taken.
     """
     CLASSIFIER_PROMPT = (
@@ -4691,7 +5282,7 @@ async def _classify_document_layout(
         result = await _ocr_service.recognize(
             first_page_path,
             provider_name=ocr_provider_name,
-            model=settings.document_layout_classify_model,
+            model=resolve_layout_classify_model(),
             prompt_override=CLASSIFIER_PROMPT,
             ocr_options={"temperature": 0.0},
         )
@@ -4888,8 +5479,11 @@ def _load_profile_summary_for_ocr(db: Session, company_id: str) -> str:
         if profile.industry:
             parts.append(f"Industry: {profile.industry}")
         custom = profile.custom_settings if isinstance(profile.custom_settings, dict) else {}
-        currency = custom.get("currency", "HKD")
-        parts.append(f"Currency: {currency}")
+        from app.services.company_fx import reporting_currency_from_settings
+
+        currency = reporting_currency_from_settings(custom)
+        if currency:
+            parts.append(f"Reporting currency: {currency}")
         return " | ".join(parts) if parts else ""
     except Exception:
         return ""
@@ -4972,13 +5566,13 @@ async def ocr_debug(
     content = await file.read()
     try:
         assert_upload_size(content)
-        assert_file_type(file.filename or "image.jpg", content)
+        content = prepare_upload_bytes(file.filename or "image.jpg", content)
+        suffix = safe_upload_temp_suffix(file.filename or "image.jpg")
     except ValueError as exc:
         detail = str(exc)
         code = 413 if "maximum size" in detail.lower() else 400
         raise HTTPException(status_code=code, detail=detail) from exc
 
-    suffix = os.path.splitext(file.filename or "image.jpg")[1]
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, mode="wb") as tmp_file:
         tmp_file.write(content)
         tmp_file.flush()
@@ -4995,10 +5589,11 @@ async def ocr_debug(
             "opencv_read": "success" if img is not None else "failed",
             "image_shape": list(img.shape) if img is not None else None,
         }
-    except Exception as e:
+    except Exception:
+        logger.exception("ocr_debug failed")
         return {
             "status": "error",
-            "error": str(e),
+            "error": "Could not read uploaded image",
             "filename": file.filename,
             "content_type": file.content_type,
             "size_bytes": len(content),
@@ -5065,6 +5660,9 @@ async def ocr_test_core(
     rescan_note: str | None = None,
     rescan_prior_summary: str | None = None,
     expected_receipt_count: int | None = None,
+    skip_crop_preview: bool = False,
+    crop_preview_confirmed: bool = False,
+    confirmed_crop_boxes: list | None = None,
 ) -> dict:
     """Core OCR pipeline (shared by /ocr/test and background OCR jobs).
 
@@ -5078,18 +5676,21 @@ async def ocr_test_core(
     # Validate file
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
-    
-    # Get file extension
-    suffix = os.path.splitext(file.filename)[1].lower()
+
+    try:
+        suffix = safe_upload_temp_suffix(file.filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     supported_images = [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"]
     supported_pdf = [".pdf"]
-    
+
     is_pdf = suffix in supported_pdf
     is_image = suffix in supported_images
-    
+
     if not is_pdf and not is_image:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"Unsupported file format: {suffix}. Supported: jpg, jpeg, png, bmp, tiff, webp, pdf"
         )
     
@@ -5105,7 +5706,7 @@ async def ocr_test_core(
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
     try:
         assert_upload_size(content)
-        assert_file_type(file.filename or "upload.bin", content)
+        content = prepare_upload_bytes(file.filename or "upload.bin", content)
     except ValueError as exc:
         detail = str(exc)
         code = 413 if "maximum size" in detail.lower() else 400
@@ -5212,6 +5813,10 @@ async def ocr_test_core(
             "expected_receipt_count": _expected_count,
             "count_assertion_strength": _count_strength,
             "prefer_denser_split": _prefer_denser_split,
+            "skip_crop_preview": bool(skip_crop_preview),
+            "crop_preview_confirmed": bool(crop_preview_confirmed),
+            "confirmed_crop_boxes": confirmed_crop_boxes,
+            "workflow_run_id": workflow_run_id,
         }
         if _expected_count is not None:
             logger.info(
@@ -5417,75 +6022,11 @@ async def ocr_test_core(
                     # Multi-page PDF: classify layout to distinguish Scenario C vs D.
                     if processing_mode in ("AR", "AP"):
                         _raise_if_bg_job_cancelled(background_job_id)
-                        # single_span_pages: one logical document across pages → invoice + stitch (Scenario C).
-                        # single_per_page: at most one slip per PDF page → parallel per-page (Scenario D), no stitch.
-                        _ap_mp_skip_for_span = processing_mode == "AP" and _ap_rs == "single_span_pages"
-                        _ap_mp_skip_for_per_page = processing_mode == "AP" and _ap_rs == "single_per_page"
-                        if _ap_mp_skip_for_span:
-                            doc_class = "invoice"
-                            logger.info(
-                                "[AP] receipt_signal=%s → skip multi-page PDF classifier; "
-                                "invoice routing (document may span pages)",
-                                _ap_rs,
-                            )
-                        elif _ap_mp_skip_for_per_page:
-                            doc_class = "receipts"
-                            logger.info(
-                                "[AP] receipt_signal=single_per_page → skip multi-page PDF classifier; "
-                                "per-page parallel routing (Scenario D)",
-                            )
-                        else:
-                            cv_shortcut = os.getenv("AP_LAYOUT_CV_SHORTCUT_ENABLED", "").lower() in (
-                                "1",
-                                "true",
-                                "yes",
-                            )
-                            if cv_shortcut:
-                                regions_fp = await asyncio.to_thread(
-                                    _detect_receipt_regions_v2, image_paths[0]
-                                )
-                                if len(regions_fp) == 1:
-                                    doc_class = "invoice"
-                                    logger.info(
-                                        "[%s] CV layout shortcut: page 1 has single OpenCV region → invoice",
-                                        processing_mode,
-                                    )
-                                else:
-                                    doc_class = await _classify_document_layout(
-                                        image_paths[0], ocr_provider_name
-                                    )
-                                    logger.info(
-                                        "[%s] Multi-page document (%d pages) → AI classifier: %s",
-                                        processing_mode,
-                                        len(image_paths),
-                                        doc_class,
-                                    )
-                            else:
-                                doc_class = await _classify_document_layout(
-                                    image_paths[0], ocr_provider_name
-                                )
-                                logger.info(
-                                    "[%s] Multi-page document (%d pages) → AI classifier: %s",
-                                    processing_mode,
-                                    len(image_paths),
-                                    doc_class,
-                                )
-                            if (
-                                doc_class == "invoice"
-                                and len(image_paths) >= AP_LAYOUT_LAST_PAGE_MIN_PAGES
-                            ):
-                                _raise_if_bg_job_cancelled(background_job_id)
-                                doc_last = await _classify_document_layout(
-                                    image_paths[-1],
-                                    ocr_provider_name,
-                                    page_label="Last-page",
-                                )
-                                if doc_last == "receipts":
-                                    doc_class = "receipts"
-                                    logger.info(
-                                        "[Classifier] Last-page layout → receipts; "
-                                        "routing as receipts for multi-page PDF.",
-                                    )
+                        doc_class = "receipts"
+                        logger.info(
+                            "[ROUTER] Settings VLM Detect: multi-page PDF → per-page Detect "
+                            "(invoice classifier skipped)",
+                        )
                     else:
                         doc_class = "receipts"  # non-AR/AP modes: always batch per page
 
@@ -5555,120 +6096,73 @@ async def ocr_test_core(
 
                                 # ── AR / AP: receipt-region detection + structured extraction ──
                                 if processing_mode in ("AR", "AP"):
-                                    receipt_regions = await asyncio.to_thread(
-                                        _detect_receipt_regions_v2, img_path
-                                    )
                                     logger.info(
-                                        "   [%s page %s] %s receipt region(s) detected.",
-                                        processing_mode, page_num, len(receipt_regions),
+                                        "   [%s page %s] Settings VLM Detect → native crop → "
+                                        "receipt_instance OCR",
+                                        processing_mode,
+                                        page_num,
                                     )
-
-                                    if len(receipt_regions) > 1:
-                                        logger.info(
-                                            "   [%s page %s] Running multi-receipt OCR (%s regions)...",
-                                            processing_mode, page_num, len(receipt_regions),
-                                        )
-                                        multi_result = await _run_ap_multi_receipt_ocr_from_image(
-                                            img_path,
-                                            trace_id=trace_id,
-                                            filename=file.filename or "",
-                                            ocr_provider_name=ocr_provider_name,
-                                            ocr_model_override=ocr_model_override,
-                                            ocr_prompt_override=ocr_prompt_override,
-                                            processing_mode=processing_mode,
-                                            confirmed=multi_receipt_confirmed,
-                                            pdf_page_num=page_num,
-                                            background_job_id=background_job_id,
-                                            **_multi_receipt_kwargs,
-                                        )
-                                        if multi_result is not None:
-                                            pending_events.append({
-                                                "company_id": company_id,
-                                                "trace_id": trace_id,
-                                                "filename": file.filename or "",
-                                                "stage": "ocr_complete",
-                                                "source": "ocr_test_pdf_image_page",
-                                                "reason": "multi_receipt_ocr_completed",
-                                                "outcome": "completed",
-                                                "metadata": {
-                                                    "page": page_num,
-                                                    "mode": processing_mode,
-                                                    "regions": len(receipt_regions),
-                                                },
-                                            })
-                                            sub_pages = [
-                                                {
-                                                    "page": sub.get("page", page_num),
-                                                    "receipt_index": sub.get("receipt_index"),
-                                                    "text": sub.get("text", ""),
-                                                    "lines_count": sub.get("lines_count", 0),
-                                                    "extracted_fields": sub.get("extracted_fields", {}),
-                                                    "field_confidence": sub.get("field_confidence", 0),
-                                                    "ai_enhanced": sub.get("ai_enhanced"),
-                                                }
-                                                for sub in multi_result.get("pages", [])
-                                            ]
-                                            return {
-                                                "page": page_num,
-                                                "_multi": True,
-                                                "_pages": sub_pages,
-                                                "_events": pending_events,
-                                            }
-
-                                    # Single receipt on this page: OCR + structured extraction.
-                                    _mode_label = processing_mode  # "AP" or "AR"
-                                    logger.info(
-                                        "   [%s page %s] Single-receipt OCR with %s...",
-                                        _mode_label, page_num, ocr_provider_name,
-                                    )
-                                    ocr_result = await _ocr_service.recognize(
+                                    multi_result = await _run_ap_multi_receipt_ocr_from_image(
                                         img_path,
-                                        provider_name=ocr_provider_name,
-                                        model=ocr_model_override or AP_MULTI_RECEIPT_OCR_MODEL,
-                                        prompt_override=ocr_prompt_override or AP_MULTI_RECEIPT_DOCUMENT_PARSING_PROMPT,
+                                        trace_id=trace_id,
+                                        filename=file.filename or "",
+                                        ocr_provider_name=ocr_provider_name,
+                                        ocr_model_override=ocr_model_override,
+                                        ocr_prompt_override=ocr_prompt_override,
+                                        processing_mode=processing_mode,
+                                        confirmed=True,
+                                        pdf_page_num=page_num,
+                                        background_job_id=background_job_id,
+                                        **_multi_receipt_kwargs,
                                     )
-                                    filtered_result = _filtering_pipeline.filter_and_extract(ocr_result)
                                     pending_events.append({
                                         "company_id": company_id,
                                         "trace_id": trace_id,
                                         "filename": file.filename or "",
                                         "stage": "ocr_complete",
                                         "source": "ocr_test_pdf_image_page",
-                                        "reason": "page_ocr_completed",
+                                        "reason": (
+                                            "needs_crop_preview"
+                                            if multi_result and multi_result.get("needs_crop_preview")
+                                            else (
+                                                "vlm_split_review"
+                                                if multi_result and multi_result.get("needs_split_review")
+                                                else "vlm_receipt_instances_completed"
+                                            )
+                                        ),
                                         "outcome": "completed",
-                                        "metadata": {"page": page_num, "mode": _mode_label},
+                                        "metadata": {
+                                            "page": page_num,
+                                            "mode": processing_mode,
+                                            "instances": len((multi_result or {}).get("pages") or []),
+                                        },
                                     })
-                                    ai_enhanced_fields = await _extract_ar_ap_ai_fields_routed(
-                                        ocr_text=ocr_result.text,
-                                        img_path=img_path,
-                                        page_num=page_num,
-                                        ocr_provider_name=ocr_provider_name,
-                                        ocr_model_override=ocr_model_override or AP_MULTI_RECEIPT_OCR_MODEL,
-                                        processing_mode=_mode_label,
-                                        ocr_lines=ocr_result.lines,
-                                        rescan_supplement=_rescan_supplement,
-                                    )
-                                    ai_enhanced_fields = await _ap_apply_cross_vlm_merge_if_configured(
-                                        processing_mode=_mode_label,
-                                        primary_model=ocr_model_override or AP_MULTI_RECEIPT_OCR_MODEL,
-                                        ai_primary=ai_enhanced_fields,
-                                        ocr_text=ocr_result.text,
-                                        img_path=img_path,
-                                        page_num=page_num,
-                                        ocr_provider_name=ocr_provider_name,
-                                        image_options=None,
-                                        ocr_lines=ocr_result.lines,
-                                        cheque_probe=None,
-                                        rescan_supplement=_rescan_supplement,
-                                    )
+                                    if multi_result and multi_result.get("needs_crop_preview"):
+                                        preview_page = dict(multi_result)
+                                        preview_page["page"] = page_num
+                                        preview_page["status"] = "needs_crop_preview"
+                                        preview_page["_events"] = pending_events
+                                        preview_page["_crop_preview_gate"] = True
+                                        return preview_page
+                                    if multi_result and multi_result.get("needs_split_review"):
+                                        # Legacy path — prefer crop-preview gate when available.
+                                        review_page = _vlm_split_review_page(
+                                            page_num,
+                                            message=str(multi_result.get("message") or ""),
+                                        )
+                                        review_page["_events"] = pending_events
+                                        return review_page
+                                    sub_pages = [
+                                        _public_ap_receipt_page(sub, page_num)
+                                        for sub in (multi_result or {}).get("pages", [])
+                                        if isinstance(sub, dict)
+                                    ]
                                     return {
                                         "page": page_num,
-                                        "text": ocr_result.text,
-                                        "lines_count": len(ocr_result.lines),
-                                        "extracted_fields": filtered_result["fields"],
-                                        "field_confidence": filtered_result["overall_confidence"],
-                                        "ai_enhanced": ai_enhanced_fields,
+                                        "_multi": True,
+                                        "_pages": sub_pages,
                                         "_events": pending_events,
+                                        "crop_preview": (multi_result or {}).get("crop_preview"),
                                     }
 
                                 # ── BANK / other modes: OCR → DeepSeek AI ─────────────────────
@@ -5697,53 +6191,72 @@ async def ocr_test_core(
                                     "metadata": {"page": page_num, "mode": processing_mode},
                                 })
                                 ai_enhanced_fields = None
+                                empty_extract_assessment = None
                                 if _ai_processor.api_key:
                                     try:
-                                        detected_type = _document_type_for_enhancement(
-                                            processing_mode, ocr_result.text, page_num=page_num
-                                        )
-                                        # Use pre-loaded company context key for BANK/other modes
-                                        company_context = _load_company_context(
-                                            db, company_id, detected_type
-                                        )
-                                        ai_enhanced = await _ai_processor.enhance_ocr_result(
-                                            ocr_result,
-                                            document_type=detected_type,
-                                            processing_mode=processing_mode,
-                                            metadata={
-                                                "company_context": company_context,
-                                                "page_num": page_num,
-                                            },
-                                        )
-                                        ai_enhanced_fields = ai_enhanced
-                                        if isinstance(ai_enhanced_fields, dict):
-                                            _inject_trace_meta(
-                                                ai_enhanced_fields, trace_id=trace_id
+                                        if processing_mode == "BANK":
+                                            (
+                                                ai_enhanced_fields,
+                                                empty_extract_assessment,
+                                            ) = await _enhance_bank_ocr_with_empty_extract_retry(
+                                                ocr_result=ocr_result,
+                                                page_num=page_num,
+                                                processing_mode=processing_mode,
+                                                company_id=company_id,
+                                                db=db,
+                                                trace_id=trace_id,
+                                                rule_md=_rule_md_pre,
+                                                excl_rules=_excl_rules_pre,
                                             )
-                                            ctx = ai_enhanced_fields.get("context_meta") or {}
-                                            ctx["rule_memory_mode"] = processing_mode
-                                            ai_enhanced_fields["context_meta"] = ctx
-                                            if isinstance(
-                                                ai_enhanced_fields.get("transactions"), list
-                                            ):
-                                                # Use pre-loaded rule memory (no extra DB call)
-                                                ai_enhanced_fields["transactions"] = (
-                                                    _apply_rules_from_memory(
-                                                        ai_enhanced_fields["transactions"],
-                                                        _rule_md_pre,
-                                                        ocr_result.text,
-                                                    )
+                                        else:
+                                            detected_type = _document_type_for_enhancement(
+                                                processing_mode,
+                                                ocr_result.text,
+                                                page_num=page_num,
+                                            )
+                                            company_context = _load_company_context(
+                                                db, company_id, detected_type
+                                            )
+                                            ai_enhanced = await _ai_processor.enhance_ocr_result(
+                                                ocr_result,
+                                                document_type=detected_type,
+                                                processing_mode=processing_mode,
+                                                metadata={
+                                                    "company_context": company_context,
+                                                    "page_num": page_num,
+                                                },
+                                            )
+                                            ai_enhanced_fields = ai_enhanced
+                                            if isinstance(ai_enhanced_fields, dict):
+                                                _inject_trace_meta(
+                                                    ai_enhanced_fields, trace_id=trace_id
                                                 )
-                                                if _excl_rules_pre:
+                                                ctx = ai_enhanced_fields.get("context_meta") or {}
+                                                ctx["rule_memory_mode"] = processing_mode
+                                                ai_enhanced_fields["context_meta"] = ctx
+                                                if isinstance(
+                                                    ai_enhanced_fields.get("transactions"),
+                                                    list,
+                                                ):
                                                     ai_enhanced_fields["transactions"] = (
-                                                        _apply_exclusions(
+                                                        _apply_rules_from_memory(
                                                             ai_enhanced_fields["transactions"],
-                                                            _excl_rules_pre,
+                                                            _rule_md_pre,
                                                             ocr_result.text,
-                                                            processing_mode,
-                                                            db,
                                                         )
                                                     )
+                                                    if _excl_rules_pre:
+                                                        ai_enhanced_fields["transactions"] = (
+                                                            _apply_exclusions(
+                                                                ai_enhanced_fields[
+                                                                    "transactions"
+                                                                ],
+                                                                _excl_rules_pre,
+                                                                ocr_result.text,
+                                                                processing_mode,
+                                                                db,
+                                                            )
+                                                        )
                                         pending_events.append({
                                             "company_id": company_id,
                                             "trace_id": trace_id,
@@ -5762,7 +6275,7 @@ async def ocr_test_core(
                                             "   [WARN] AI enhancement failed for page %d: %s",
                                             page_num, exc,
                                         )
-                                return {
+                                page_out = {
                                     "page": page_num,
                                     "text": ocr_result.text,
                                     "lines_count": len(ocr_result.lines),
@@ -5771,6 +6284,17 @@ async def ocr_test_core(
                                     "ai_enhanced": ai_enhanced_fields,
                                     "_events": pending_events,
                                 }
+                                if processing_mode == "BANK" and empty_extract_assessment is not None:
+                                    from app.services.bank_empty_extract import (
+                                        apply_empty_extract_flags,
+                                    )
+
+                                    apply_empty_extract_flags(
+                                        page_out,
+                                        empty_extract_assessment,
+                                        auto_retried=empty_extract_assessment.needs_retry,
+                                    )
+                                return page_out
 
                         # ── Scenario D queue workers with early-stop policy ───────────────
                         n_pdf_pages = len(image_paths)
@@ -5813,6 +6337,9 @@ async def ocr_test_core(
                         per_page_result: dict[int, Any] = {}
                         queue_wait_ms_total = 0
                         proc_ms_total = 0
+                        # Collect Detect gates across pages so multipage crop preview
+                        # can navigate thumbs before any extract (not stuck on page 1).
+                        crop_preview_gates: dict[int, dict[str, Any]] = {}
 
                         try:
                             while next_idx < n_pdf_pages and inflight < worker_count:
@@ -5829,6 +6356,39 @@ async def ocr_test_core(
                                 per_page_result[page_num] = page_out
                                 if isinstance(page_out, OcrBackgroundJobCancelled):
                                     raise page_out
+                                # M-VDU crop-preview gate: record page Detect; keep scheduling
+                                # remaining pages so the gate set covers the whole file.
+                                if (
+                                    isinstance(page_out, dict)
+                                    and page_out.get("_crop_preview_gate")
+                                    and page_out.get("needs_crop_preview")
+                                ):
+                                    for _ev in page_out.get("_events") or []:
+                                        _record_processing_event(db, **_ev)
+                                    gate_payload = dict(page_out)
+                                    gate_payload.pop("_events", None)
+                                    gate_payload.pop("_crop_preview_gate", None)
+                                    gate_payload.pop("_multi", None)
+                                    gate_payload.pop("_pages", None)
+                                    crop_preview_gates[int(page_num)] = gate_payload
+                                    logger.info(
+                                        "[M-VDU] Scenario D crop preview gate on page %s "
+                                        "(collected=%s/%s)",
+                                        page_num,
+                                        len(crop_preview_gates),
+                                        n_pdf_pages,
+                                    )
+                                    if terminated_reason is None and next_idx < n_pdf_pages:
+                                        next_idx += 1
+                                        await page_queue.put(
+                                            (
+                                                next_idx,
+                                                image_paths[next_idx - 1],
+                                                time.perf_counter(),
+                                            )
+                                        )
+                                        inflight += 1
+                                    continue
                                 page_failed = isinstance(page_out, BaseException)
                                 if page_failed:
                                     failed_pages += 1
@@ -5871,8 +6431,9 @@ async def ocr_test_core(
                                         partial_pages.append(_partial)
                                 if partial_pages:
                                     partial_outcome = recompute_ocr_job_outcome_from_pages(partial_pages)
-                                    _persist_background_job_partial_result(
+                                    await _persist_ocr_partial_snapshot(
                                         job_id=background_job_id,
+                                        workflow_run_id=workflow_run_id,
                                         result_json={
                                             "trace_id": trace_id,
                                             "filename": file.filename,
@@ -5904,6 +6465,22 @@ async def ocr_test_core(
                             await page_queue.join()
                             await asyncio.gather(*workers, return_exceptions=True)
 
+                        if crop_preview_gates:
+                            from app.services import mvdu_crop_preview as _mvdu_crop_merge
+
+                            merged_gate = _mvdu_crop_merge.merge_multipage_crop_gates(
+                                crop_preview_gates,
+                                trace_id=trace_id,
+                                filename=file.filename or "",
+                                processing_mode=processing_mode,
+                            )
+                            logger.info(
+                                "[M-VDU] Scenario D paused for multipage crop preview "
+                                "(%s page(s) in gate set)",
+                                len(crop_preview_gates),
+                            )
+                            return merged_gate
+
                         merged_pages: list[dict[str, Any]] = []
                         for _page_num in range(1, next_idx + 1):
                             _r = per_page_result.get(_page_num)
@@ -5924,6 +6501,9 @@ async def ocr_test_core(
                                         RuntimeError("PAGE_PROCESSING_FAILED: missing page result"),
                                     )
                                 )
+                                continue
+                            # Skip stray gate payloads if merge path was not taken.
+                            if _r.get("_crop_preview_gate") and _r.get("needs_crop_preview"):
                                 continue
                             for _ev in _r.pop("_events", []):
                                 _record_processing_event(db, **_ev)
@@ -5959,12 +6539,7 @@ async def ocr_test_core(
                         gather_page_errors = sum(
                             1 for _p in merged_pages if isinstance(_p, dict) and _p.get("status") == "error"
                         )
-                        if gather_page_errors == 0:
-                            ocr_job_outcome = "ok"
-                        elif gather_page_errors >= len(merged_pages):
-                            ocr_job_outcome = "failed"
-                        else:
-                            ocr_job_outcome = "partial"
+                        ocr_job_outcome = recompute_ocr_job_outcome_from_pages(merged_pages)
 
                         logger.info(
                             "[ocr_metrics] scenario_d pages_seen=%s failed_pages=%s queue_wait_ms=%s page_process_ms=%s terminated_reason=%s",
@@ -5975,11 +6550,17 @@ async def ocr_test_core(
                             terminated_reason,
                         )
                         if ocr_job_outcome != "ok":
+                            from app.services.bank_empty_extract import (
+                                collect_pending_empty_extract_pages,
+                            )
+
+                            empty_n = len(collect_pending_empty_extract_pages(merged_pages))
                             logger.info(
-                                "[ocr_metrics] partial_job outcome=%s failed_pages=%s/%s",
+                                "[ocr_metrics] partial_job outcome=%s failed_pages=%s/%s empty_extract_pages=%s",
                                 ocr_job_outcome,
                                 gather_page_errors,
                                 len(merged_pages),
+                                empty_n,
                             )
 
                         logger.info("="*60)
@@ -6009,171 +6590,91 @@ async def ocr_test_core(
 
                 else:
                     # ── Scenario A / B: single-page PDF ────────────────────────────────
-                    # Classify the page first so invoices are never passed through OpenCV.
-                    # OpenCV dominant-gap logic treats a large footer gap on an invoice as
-                    # a two-document boundary, producing two incomplete records (the bug).
+                    # AP/AR: Settings VLM Detect only (no invoice classifier, no OpenCV boxes).
                     if processing_mode in ("AR", "AP"):
                         _raise_if_bg_job_cancelled(background_job_id)
-                        # If the user already confirmed multiple receipts, skip the
-                        # classifier entirely — treat the page as "receipts" unconditionally
-                        # so that force-split can run without waiting for an AI round-trip.
-                        if processing_mode == "AP" and _ap_rs in ("single_per_page", "single_span_pages"):
-                            single_page_class = "invoice"
-                            logger.info(
-                                "[ROUTER] %s single-page layout → invoice (AP user receipt signal %s)",
-                                processing_mode,
-                                _ap_rs,
-                            )
-                        elif multi_receipt_confirmed:
-                            single_page_class = "receipts"
-                            logger.info(
-                                "[ROUTER] %s single-page layout → receipts (user-confirmed, classifier skipped)",
-                                processing_mode,
-                            )
-                        else:
-                            single_page_class = await _classify_document_layout(
-                                image_paths[0], ocr_provider_name
-                            )
-                            logger.info(
-                                "[ROUTER] %s single-page layout → %s",
-                                processing_mode, single_page_class,
-                            )
-                        if (
-                            not multi_receipt_confirmed
-                            and single_page_class == "receipts"
-                            and CHEQUE_ROUTER_QUICK_PROBE_ENABLED
-                        ):
-                            cheque_router_probe = await _ar_ap_cheque_router_quick_probe(
-                                image_paths[0], ocr_provider_name, ocr_model_override
-                            )
-                            if cheque_router_probe.get("matched"):
-                                single_page_class = "invoice"
-                                logger.info(
-                                    "[ROUTER] %s single-page: cheque quick-probe → Scenario A, skip OpenCV",
-                                    processing_mode,
-                                )
-                        if single_page_class == "receipts":
-                            # Scenario B: composite receipt scan — run OpenCV segmentation.
-                            logger.info("[ROUTER] Scenario B: running OpenCV segmentation on single page.")
-                            multi_receipt_result, ask_confirm = await _run_ap_multi_with_guess_autoconfirm(
-                                image_paths[0],
-                                trace_id=trace_id,
-                                filename=file.filename or "",
-                                ocr_provider_name=ocr_provider_name,
-                                ocr_model_override=ocr_model_override,
-                                ocr_prompt_override=ocr_prompt_override,
-                                processing_mode=processing_mode,
-                                multi_receipt_confirmed=multi_receipt_confirmed,
-                                ap_receipt_signal=_ap_rs,
-                                pdf_page_num=1,
-                                background_job_id=background_job_id,
-                                multi_receipt_kwargs=_multi_receipt_kwargs,
-                            )
-                            if multi_receipt_result is not None:
-                                return multi_receipt_result
-                            # Non-guess only: ask user to confirm force-split.
-                            if ask_confirm:
-                                return {
-                                    "trace_id": trace_id,
-                                    "filename": file.filename,
-                                    "needs_confirmation": True,
-                                    "message": "Multiple receipts suspected but could not be separated automatically. Please confirm to force-split.",
-                                    "processing_mode": processing_mode,
-                                }
-                        else:
-                            # Scenario A: structured invoice — skip segmentation entirely.
-                            logger.info("[ROUTER] Scenario A: single invoice detected, skipping OpenCV segmentation.")
+                        logger.info(
+                            "[ROUTER] Settings VLM Detect: single-page PDF → Detect "
+                            "(invoice classifier skipped)",
+                        )
+                        logger.info(
+                            "[ROUTER] Scenario B: Settings VLM Detect → crop → receipt_instance "
+                            "on single page.",
+                        )
+                        multi_receipt_result, _ask_confirm = await _run_ap_multi_with_guess_autoconfirm(
+                            image_paths[0],
+                            trace_id=trace_id,
+                            filename=file.filename or "",
+                            ocr_provider_name=ocr_provider_name,
+                            ocr_model_override=ocr_model_override,
+                            ocr_prompt_override=ocr_prompt_override,
+                            processing_mode=processing_mode,
+                            multi_receipt_confirmed=multi_receipt_confirmed,
+                            ap_receipt_signal=_ap_rs,
+                            pdf_page_num=1,
+                            background_job_id=background_job_id,
+                            multi_receipt_kwargs=_multi_receipt_kwargs,
+                        )
+                        if multi_receipt_result is not None:
+                            return multi_receipt_result
                     # Fall through to standard single-image processing (Scenario A path).
                     process_path = image_paths[0]
         else:
             # Regular image file (not PDF)
             process_path = tmp_path
-            # ── Scenario A / B: classify before deciding whether to run OpenCV ───
+            # ── Scenario A / B: AP/AR image → Settings VLM Detect only ───
             if processing_mode in ("AR", "AP"):
                 _raise_if_bg_job_cancelled(background_job_id)
-                # If the user already confirmed multiple receipts, skip the classifier
-                # entirely — treat the image as "receipts" unconditionally so that
-                # force-split can run without an extra AI round-trip.
-                if processing_mode == "AP" and _ap_rs in ("single_per_page", "single_span_pages"):
-                    image_layout_class = "invoice"
-                    logger.info(
-                        "[ROUTER] %s image layout → invoice (AP user receipt signal %s)",
-                        processing_mode,
-                        _ap_rs,
-                    )
-                elif multi_receipt_confirmed:
-                    image_layout_class = "receipts"
-                    logger.info(
-                        "[ROUTER] %s image layout → receipts (user-confirmed, classifier skipped)",
-                        processing_mode,
-                    )
-                else:
-                    image_layout_class = await _classify_document_layout(
-                        tmp_path, ocr_provider_name
-                    )
-                    logger.info(
-                        "[ROUTER] %s image layout → %s",
-                        processing_mode, image_layout_class,
-                    )
-                if (
-                    not multi_receipt_confirmed
-                    and image_layout_class == "receipts"
-                    and CHEQUE_ROUTER_QUICK_PROBE_ENABLED
-                ):
-                    cheque_router_probe = await _ar_ap_cheque_router_quick_probe(
-                        tmp_path, ocr_provider_name, ocr_model_override
-                    )
-                    if cheque_router_probe.get("matched"):
-                        image_layout_class = "invoice"
-                        logger.info(
-                            "[ROUTER] %s image: cheque quick-probe → Scenario A, skip OpenCV",
-                            processing_mode,
-                        )
-                if image_layout_class == "receipts":
-                    # Scenario B: composite receipt scan — run OpenCV segmentation.
-                    logger.info("[ROUTER] Scenario B: running OpenCV segmentation on image.")
-                    multi_receipt_result, ask_confirm = await _run_ap_multi_with_guess_autoconfirm(
-                        tmp_path,
-                        trace_id=trace_id,
-                        filename=file.filename or "",
-                        ocr_provider_name=ocr_provider_name,
-                        ocr_model_override=ocr_model_override,
-                        ocr_prompt_override=ocr_prompt_override,
-                        processing_mode=processing_mode,
-                        multi_receipt_confirmed=multi_receipt_confirmed,
-                        ap_receipt_signal=_ap_rs,
-                        pdf_page_num=1,
-                        background_job_id=background_job_id,
-                        multi_receipt_kwargs=_multi_receipt_kwargs,
-                    )
-                    if multi_receipt_result is not None:
-                        return multi_receipt_result
-                    # Non-guess only: ask user to confirm force-split.
-                    if ask_confirm:
-                        return {
-                            "trace_id": trace_id,
-                            "filename": file.filename,
-                            "needs_confirmation": True,
-                            "message": "Multiple receipts suspected but could not be separated automatically. Please confirm to force-split.",
-                            "processing_mode": processing_mode,
-                        }
-                else:
-                    # Scenario A: single invoice image — skip segmentation entirely.
-                    logger.info("[ROUTER] Scenario A: single invoice image, skipping OpenCV segmentation.")
+                logger.info(
+                    "[ROUTER] Settings VLM Detect: image → Detect (invoice classifier skipped)",
+                )
+                logger.info(
+                    "[ROUTER] Scenario B: Settings VLM Detect → crop → receipt_instance on image.",
+                )
+                multi_receipt_result, _ask_confirm = await _run_ap_multi_with_guess_autoconfirm(
+                    tmp_path,
+                    trace_id=trace_id,
+                    filename=file.filename or "",
+                    ocr_provider_name=ocr_provider_name,
+                    ocr_model_override=ocr_model_override,
+                    ocr_prompt_override=ocr_prompt_override,
+                    processing_mode=processing_mode,
+                    multi_receipt_confirmed=multi_receipt_confirmed,
+                    ap_receipt_signal=_ap_rs,
+                    pdf_page_num=1,
+                    background_job_id=background_job_id,
+                    multi_receipt_kwargs=_multi_receipt_kwargs,
+                )
+                if multi_receipt_result is not None:
+                    return multi_receipt_result
         
         # Step 1: Perform OCR (or use text extraction result)
+        _fallthrough_image_opts = (
+            _ap_receipt_ocr_image_options()
+            if processing_mode in ("AR", "AP")
+            else None
+        )
         if is_pdf and process_path is None:
             logger.info("[STEP 2] Using PDF text extraction result.")
         else:
-            logger.info("[STEP 2] Running OCR with %s...", ocr_provider_name)
             _raise_if_bg_job_cancelled(background_job_id)
-            ocr_result = await _ocr_service.recognize(
-                process_path,
-                provider_name=ocr_provider_name,
-                model=ocr_model_override,
-                prompt_override=ocr_prompt_override,
-            )
-            logger.info(f"[OCR] Complete: Detected {len(ocr_result.lines)} lines, {len(ocr_result.text)} characters")
+            if processing_mode in ("AR", "AP") and _ap_ocr_structured_only():
+                logger.info("[STEP 2] Skipping document-parse OCR (AP_OCR_STRUCTURED_ONLY).")
+                ocr_result = OcrResult(
+                    text="",
+                    lines=[],
+                    metadata={"pass": "structured_only"},
+                )
+            else:
+                logger.info("[STEP 2] Running OCR with %s...", ocr_provider_name)
+                ocr_result = await _ocr_service.recognize(
+                    process_path,
+                    provider_name=ocr_provider_name,
+                    model=ocr_model_override,
+                    prompt_override=ocr_prompt_override,
+                    image_options=_fallthrough_image_opts,
+                )
+                logger.info(f"[OCR] Complete: Detected {len(ocr_result.lines)} lines, {len(ocr_result.text)} characters")
         
         # Step 2: Run field filtering (rule-based extraction)
         logger.info("[STEP 3] Extracting structured fields...")
@@ -6245,6 +6746,7 @@ async def ocr_test_core(
                 ocr_provider_name=ocr_provider_name,
                 ocr_model_override=ocr_model_override or AP_MULTI_RECEIPT_OCR_MODEL,
                 processing_mode=processing_mode,
+                image_options=_fallthrough_image_opts,
                 cheque_probe=cheque_router_probe,
                 ocr_lines=ocr_result.lines,
                 rescan_supplement=_rescan_supplement,
@@ -6257,7 +6759,7 @@ async def ocr_test_core(
                 img_path=process_path,
                 page_num=1,
                 ocr_provider_name=ocr_provider_name,
-                image_options=None,
+                image_options=_fallthrough_image_opts,
                 ocr_lines=ocr_result.lines,
                 cheque_probe=cheque_router_probe,
                 rescan_supplement=_rescan_supplement,
@@ -6407,22 +6909,24 @@ async def ocr_ai_enhanced(
     # Validate file
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
-    
-    # Get file extension
-    suffix = os.path.splitext(file.filename)[1].lower()
+
+    try:
+        suffix = safe_upload_temp_suffix(file.filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if suffix not in [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"]:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"Unsupported file format: {suffix}"
         )
-    
+
     # Read file content
     content = await file.read()
     if len(content) == 0:
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
     try:
         assert_upload_size(content)
-        assert_file_type(file.filename or "upload.bin", content)
+        content = prepare_upload_bytes(file.filename or "upload.bin", content)
     except ValueError as exc:
         detail = str(exc)
         code = 413 if "maximum size" in detail.lower() else 400

@@ -51,6 +51,10 @@ class LedgerImportRow(BaseModel):
     transaction_type: Optional[str] = None
     amount: Optional[str | float] = None
     currency: Optional[str] = None
+    company_currency: Optional[str] = None
+    company_amount: Optional[str | float] = None
+    company_tax_amount: Optional[str | float] = None
+    exchange_rate: Optional[str | float] = None
     date: Optional[str] = None
     payer: Optional[str] = None
     payee: Optional[str] = None
@@ -71,6 +75,9 @@ class BankImportRow(BaseModel):
     date: Optional[str] = None
     amount: Optional[str | float] = None
     currency: Optional[str] = None
+    company_currency: Optional[str] = None
+    company_amount: Optional[str | float] = None
+    exchange_rate: Optional[str | float] = None
     account_id: Optional[str] = None
     description: Optional[str] = None
     reference: Optional[str] = None
@@ -464,6 +471,61 @@ def _parse_amount(value: object) -> float | None:
         return None
 
 
+def _company_fx_kwargs(row: object) -> dict:
+    company_currency = getattr(row, "company_currency", None)
+    return {
+        "company_currency": (str(company_currency).strip().upper() or None) if company_currency else None,
+        "company_amount": _parse_amount(getattr(row, "company_amount", None)),
+        "exchange_rate": _parse_amount(getattr(row, "exchange_rate", None)),
+        **(
+            {"company_tax_amount": _parse_amount(getattr(row, "company_tax_amount", None))}
+            if hasattr(row, "company_tax_amount")
+            else {}
+        ),
+    }
+
+
+def _apply_company_fx_fields(existing, row: object) -> None:
+    """Write Books FX onto an unreconciled Recon txn, including cleared (null) amounts."""
+    for key, val in _company_fx_kwargs(row).items():
+        if not hasattr(existing, key):
+            continue
+        setattr(existing, key, val)
+
+
+def _refresh_module_gl_draft(
+    db: Session,
+    company_id: str,
+    *,
+    bank_txn_id: str | None = None,
+    ledger_txn_id: str | None = None,
+) -> None:
+    from app.services import gl_journal_service as glsvc
+
+    rebuilt = glsvc.rebuild_module_approve_draft_for_txn(
+        db,
+        company_id,
+        bank_txn_id=bank_txn_id,
+        ledger_txn_id=ledger_txn_id,
+    )
+    if rebuilt is None:
+        glsvc.ensure_draft_for_txn(
+            db,
+            company_id,
+            bank_txn_id=bank_txn_id,
+            ledger_txn_id=ledger_txn_id,
+        )
+
+
+def _company_fx_payload(txn) -> dict:
+    return {
+        "company_currency": getattr(txn, "company_currency", None),
+        "company_amount": getattr(txn, "company_amount", None),
+        "company_tax_amount": getattr(txn, "company_tax_amount", None),
+        "exchange_rate": getattr(txn, "exchange_rate", None),
+    }
+
+
 def _normalize_ledger_amount_dr_cr(
     amount: float,
     *,
@@ -546,6 +608,7 @@ async def import_ledger_transactions(
             existing.dr_cr = dr_cr
             existing.doc_type = row.transaction_type or existing.doc_type or "receipt"
             existing.currency = row.currency or existing.currency or "HKD"
+            _apply_company_fx_fields(existing, row)
             existing.counterparty = counterparty
             if row.category is not None:
                 existing.account_category = row.category
@@ -561,6 +624,7 @@ async def import_ledger_transactions(
                     "amount": float(existing.amount),
                     "dr_cr": existing.dr_cr,
                     "currency": existing.currency,
+                    **_company_fx_payload(existing),
                     "date": row.date,
                     "memo": row.memo,
                     "category": existing.account_category,
@@ -579,6 +643,7 @@ async def import_ledger_transactions(
             book_date=book_date,
             amount=amount_mag,
             currency=row.currency or "HKD",
+            **_company_fx_kwargs(row),
             counterparty=counterparty,
             account_category=row.category,
             # Prefer voucher/id for Reference; memo is often OCR noise.
@@ -598,6 +663,7 @@ async def import_ledger_transactions(
                 "amount": amount_mag,
                 "dr_cr": dr_cr,
                 "currency": row.currency or "HKD",
+                **_company_fx_kwargs(row),
                 "date": row.date,
                 "memo": row.memo,
                 "category": row.category,
@@ -613,11 +679,9 @@ async def import_ledger_transactions(
         if not tid:
             continue
         try:
-            from app.services import gl_journal_service as glsvc
-
-            glsvc.ensure_draft_for_txn(db, company_id, ledger_txn_id=tid)
+            _refresh_module_gl_draft(db, company_id, ledger_txn_id=tid)
         except Exception:
-            logger.exception("GL ensure_draft_for_txn failed for ledger %s", tid)
+            logger.exception("GL draft refresh failed for ledger %s", tid)
 
     return {
         "import_batch_id": batch_id,
@@ -636,6 +700,7 @@ async def import_bank_transactions(
     """Import bank transactions from Books bank spreadsheet rows."""
     batch_id = payload.import_batch_id or str(uuid.uuid4())
     stored_count = 0
+    updated_count = 0
     created_rows: List[dict] = []
 
     for row in payload.rows:
@@ -657,6 +722,16 @@ async def import_bank_transactions(
             .first()
         )
         if existing:
+            existing.currency = row.currency or existing.currency or "HKD"
+            _apply_company_fx_fields(existing, row)
+            if row.description:
+                existing.description_raw = str(row.description)
+                existing.description_norm = str(row.description).lower()
+            if row.reference:
+                existing.reference = row.reference
+            if row.account_category is not None:
+                existing.account_category = row.account_category
+            updated_count += 1
             created_rows.append(
                 {
                     "id": existing.id,
@@ -664,8 +739,10 @@ async def import_bank_transactions(
                     "reference": existing.reference,
                     "amount": float(existing.amount),
                     "currency": existing.currency,
+                    **_company_fx_payload(existing),
                     "date": row.date,
                     "import_batch_id": existing.import_batch_id,
+                    "updated": True,
                 }
             )
             continue
@@ -678,6 +755,7 @@ async def import_bank_transactions(
             bank_date=bank_date,
             amount=amount,
             currency=row.currency or "HKD",
+            **{k: v for k, v in _company_fx_kwargs(row).items() if k != "company_tax_amount"},
             description_raw=str(description),
             description_norm=str(description).lower(),
             account_category=row.account_category,
@@ -694,12 +772,13 @@ async def import_bank_transactions(
                 "reference": bank_txn.reference,
                 "amount": amount,
                 "currency": row.currency or "HKD",
+                **{k: v for k, v in _company_fx_kwargs(row).items() if k != "company_tax_amount"},
                 "date": row.date,
                 "import_batch_id": batch_id,
             }
         )
 
-    if stored_count:
+    if stored_count or updated_count:
         db.commit()
 
     for row in created_rows:
@@ -707,13 +786,16 @@ async def import_bank_transactions(
         if not tid:
             continue
         try:
-            from app.services import gl_journal_service as glsvc
-
-            glsvc.ensure_draft_for_txn(db, company_id, bank_txn_id=tid)
+            _refresh_module_gl_draft(db, company_id, bank_txn_id=tid)
         except Exception:
-            logger.exception("GL ensure_draft_for_txn failed for bank %s", tid)
+            logger.exception("GL draft refresh failed for bank %s", tid)
 
-    return {"import_batch_id": batch_id, "stored_count": stored_count, "created_rows": created_rows}
+    return {
+        "import_batch_id": batch_id,
+        "stored_count": stored_count,
+        "updated_count": updated_count,
+        "created_rows": created_rows,
+    }
 
 
 @router.get("/bank-transactions")
@@ -732,6 +814,7 @@ async def get_bank_transactions(
                 "bank_date": t.bank_date.isoformat() if t.bank_date else None,
                 "amount": float(t.amount),
                 "currency": t.currency,
+                **_company_fx_payload(t),
                 "description_raw": t.description_raw,
                 "description_norm": t.description_norm,
                 "account_category": t.account_category,
@@ -765,6 +848,7 @@ async def get_ledger_transactions(
                 "book_date": t.book_date.isoformat() if t.book_date else None,
                 "amount": float(t.amount),
                 "currency": t.currency,
+                **_company_fx_payload(t),
                 "counterparty": t.counterparty,
                 "account_category": t.account_category,
                 "reference": t.reference,

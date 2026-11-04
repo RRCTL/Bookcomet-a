@@ -9,6 +9,7 @@ import {
   KNOWLEDGE_NOTE_MAX,
   countRules,
   detectConflictCount,
+  escapeYamlDoubleQuoted,
   extractBehaviourPreview,
   isAINew,
   skillSkillFilename,
@@ -769,7 +770,7 @@ export function SettingsProvider({
   const skillYamlBlock = (mode: RuleMemoryMode) => {
     const s = memorySummaries[mode]
     const desc = (s?.content && extractBehaviourPreview(s.content, 120)) || '—'
-    return `name: ${SKILL_SLUG[mode]}\ndescription: "${desc.replace(/"/g, '\\"')}"\nmode: ${mode}\nversion: ${s?.version ?? 1}\nrules_count: ${s?.content ? countRules(s.content) : 0}\nupdated: ${s?.updated_at ?? '—'}\n`
+    return `name: ${SKILL_SLUG[mode]}\ndescription: "${escapeYamlDoubleQuoted(desc)}"\nmode: ${mode}\nversion: ${s?.version ?? 1}\nrules_count: ${s?.content ? countRules(s.content) : 0}\nupdated: ${s?.updated_at ?? '—'}\n`
   }
 
   // Load settings from backend when the modal opens or the active workspace changes.

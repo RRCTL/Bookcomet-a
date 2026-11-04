@@ -477,6 +477,38 @@ class GlJournalModuleTests(unittest.TestCase):
         self.assertEqual(allowed, [])
         self.assertEqual({t[1] for t in blocked}, {lt.id, bt.id})
 
+    def test_partition_skips_posted_standalone_module_journal(self):
+        lt = self._ledger(amount=142.0, doc_type="ap", module="AP")
+        j = glsvc.ensure_draft_for_txn(self.db, self.company_id, ledger_txn_id=lt.id)
+        self.assertIsNone(j.reconciliation_group_id)
+        j.status = GlJournalStatus.POSTED
+        j.posted_at = datetime.now(timezone.utc)
+        j.posted_by = self.user_id
+        self.db.commit()
+
+        allowed, blocked = glsvc.partition_account_category_updates_by_posted_gl(
+            self.db,
+            self.company_id,
+            [("ledger", lt.id, "5000")],
+        )
+        self.assertEqual(allowed, [])
+        self.assertEqual([t[1] for t in blocked], [lt.id])
+
+        unlocked = self._ledger(amount=50.0, doc_type="ap", module="AP")
+        unlocked.doc_id = "V-2"
+        self.db.commit()
+        draft = glsvc.ensure_draft_for_txn(
+            self.db, self.company_id, ledger_txn_id=unlocked.id
+        )
+        self.assertEqual(draft.status, GlJournalStatus.DRAFT)
+        allowed2, blocked2 = glsvc.partition_account_category_updates_by_posted_gl(
+            self.db,
+            self.company_id,
+            [("ledger", unlocked.id, "5000")],
+        )
+        self.assertEqual([t[1] for t in allowed2], [unlocked.id])
+        self.assertEqual(blocked2, [])
+
 
 if __name__ == "__main__":
     unittest.main()

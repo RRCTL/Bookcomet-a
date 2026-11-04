@@ -78,7 +78,15 @@ async def run_ocr_background_job(job_id: str) -> None:
         filename = meta.get("original_filename") or "upload"
         company_id = job.company_id
         trace_id = job.trace_id or str(uuid.uuid4())
-        if not storage_path or not os.path.isfile(storage_path):
+        if not storage_path:
+            raise FileNotFoundError("OCR job file missing on disk")
+        from app.services.file_storage import storage as file_storage
+
+        try:
+            storage_path = str(file_storage.load_path(storage_path))
+        except ValueError as exc:
+            raise FileNotFoundError("OCR job file missing on disk") from exc
+        if not os.path.isfile(storage_path):
             raise FileNotFoundError("OCR job file missing on disk")
 
         job.status = "running"

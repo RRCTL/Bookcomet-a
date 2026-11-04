@@ -12,12 +12,15 @@ import { coalesceBankAccountTypeRows } from '../../utils/bankAccountTypeCoalesce
 import {
   bankAmountFromModuleTx,
   bankReconDedupKey,
+  isModuleTxnLocked,
   ledgerAmountFromModuleTx,
   ledgerReconDedupKey,
   ledgerVoucherFromModuleTx,
   normalizeReconDate,
   selectKeepIdsForModuleSync,
+  isReconMatchLockedStatus,
 } from './moduleReconKeys'
+import { accountCategoryUpdatesForExistingRows } from './accountCategoryUpdates'
 
 const INCLUDED_STATUSES = new Set(['coa_running', 'completed', 'done', 'saved'])
 
@@ -81,6 +84,9 @@ async function collectModuleBankRows(companyId: string): Promise<ModuleBankRow[]
             date,
             amount,
             currency: tx.currency ?? 'HKD',
+            company_currency: tx.company_currency,
+            company_amount: tx.company_amount,
+            exchange_rate: tx.exchange_rate,
             account_id: account,
             description: tx.particulars ?? tx.description ?? tx.description_raw ?? '',
             reference: tx.id_number ?? tx.reference ?? '',
@@ -121,6 +127,10 @@ async function collectModuleLedgerRows(companyId: string): Promise<ModuleLedgerR
               amount,
               dr_cr: sides.dr_cr,
               currency: tx.currency ?? 'HKD',
+              company_currency: tx.company_currency,
+              company_amount: tx.company_amount ?? sides.amount,
+              company_tax_amount: tx.company_tax_amount,
+              exchange_rate: tx.exchange_rate,
               date,
               payer: tx.payer,
               payee: tx.payee,
@@ -265,6 +275,57 @@ export type SyncModulesToReconResult = {
   purgedLedger: number
 }
 
+async function persistExistingAccountCategories(
+  bankModule: ModuleBankRow[],
+  ledgerModule: ModuleLedgerRow[],
+  bankDb: BankTransaction[],
+  ledgerDb: LedgerTransaction[],
+): Promise<void> {
+  const bankUpdates = accountCategoryUpdatesForExistingRows({
+    source: 'bank',
+    moduleRows: bankModule.map(r => ({
+      key: r.key,
+      account_code: r.tx.account_code == null ? '' : String(r.tx.account_code),
+      locked: isModuleTxnLocked(r.tx),
+    })),
+    dbRows: bankDb.map(t => ({
+      id: t.id,
+      key: bankDbKey(t),
+      account_category: t.account_category,
+    })),
+  })
+  const ledgerUpdates = accountCategoryUpdatesForExistingRows({
+    source: 'ledger',
+    moduleRows: ledgerModule.map(r => ({
+      key: r.key,
+      account_code: r.tx.account_code == null ? '' : String(r.tx.account_code),
+      locked: isModuleTxnLocked(r.tx),
+    })),
+    dbRows: ledgerDb.map(t => ({
+      id: t.id,
+      key: ledgerDbKey(t),
+      account_category: t.account_category,
+    })),
+  })
+  const updates = [...bankUpdates, ...ledgerUpdates]
+  if (!updates.length) return
+
+  const lockRes = await reconciliationApi.checkPostedGlLocks({
+    items: updates.map(u => ({ source: u.source, txn_id: u.txn_id })),
+  })
+  const posted = new Set([
+    ...(lockRes.locked_bank_ids ?? []),
+    ...(lockRes.locked_ledger_ids ?? []),
+  ])
+  const persistable = updates.filter(u => !posted.has(u.txn_id))
+  if (!persistable.length) return
+
+  await reconciliationApi.bulkTxnAccountCategory({
+    updates: persistable,
+    rebuild_draft_journals: true,
+  })
+}
+
 type PoolWipeResult = { purged_bank: number; purged_ledger: number }
 
 /**
@@ -319,27 +380,23 @@ export async function syncModulesToRecon(companyId: string): Promise<SyncModules
     moduleLedgerKeys,
   )
 
-  const { wipe, skipKeysFromAllDb } = await wipePoolForRebuild(keepBankIds, keepLedgerIds)
+  const { wipe } = await wipePoolForRebuild(keepBankIds, keepLedgerIds)
   const purgedBank = wipe.purged_bank ?? 0
   const purgedLedger = wipe.purged_ledger ?? 0
 
-  // After a successful wipe, skip only kept matched keys. If wipe APIs are unavailable,
-  // skip every existing DB key so we still import missing module rows.
-  const keepBankKeys = new Set(
-    skipKeysFromAllDb
-      ? bankDbBefore.map(bankDbKey)
-      : bankDbBefore.filter(t => keepBankIds.includes(t.id)).map(bankDbKey),
+  // Re-import unreconciled module rows so a later company_amount edit reaches Recon.
+  // Matched/partial rows keep their Recon FX until the user unmatches.
+  const matchedBankKeys = new Set(
+    bankDbBefore.filter(t => isReconMatchLockedStatus(t.status)).map(bankDbKey),
   )
-  const keepLedgerKeys = new Set(
-    skipKeysFromAllDb
-      ? ledgerDbBefore.map(ledgerDbKey)
-      : ledgerDbBefore.filter(t => keepLedgerIds.includes(t.id)).map(ledgerDbKey),
+  const matchedLedgerKeys = new Set(
+    ledgerDbBefore.filter(t => isReconMatchLockedStatus(t.status)).map(ledgerDbKey),
   )
 
   const seenBank = new Set<string>()
   const pendingBank = bankModule
     .filter(r => {
-      if (keepBankKeys.has(r.key) || seenBank.has(r.key)) return false
+      if (matchedBankKeys.has(r.key) || seenBank.has(r.key)) return false
       seenBank.add(r.key)
       return true
     })
@@ -348,13 +405,13 @@ export async function syncModulesToRecon(companyId: string): Promise<SyncModules
   let importedBank = 0
   if (pendingBank.length) {
     const res = await reconciliationApi.importBankTransactions(pendingBank)
-    importedBank = res.stored_count ?? 0
+    importedBank = (res.stored_count ?? 0) + (res.updated_count ?? 0)
   }
 
   const pendingByMode: Record<'AP' | 'AR', Record<string, unknown>[]> = { AP: [], AR: [] }
   const queuedLedger = new Set<string>()
   for (const row of ledgerModule) {
-    if (keepLedgerKeys.has(row.key)) continue
+    if (matchedLedgerKeys.has(row.key)) continue
     const qk = `${row.mode}|${row.key}`
     if (queuedLedger.has(qk)) continue
     queuedLedger.add(qk)
@@ -371,6 +428,8 @@ export async function syncModulesToRecon(companyId: string): Promise<SyncModules
     reconciliationApi.getBankTransactions() as Promise<BankTransaction[]>,
     reconciliationApi.getLedgerTransactions() as Promise<LedgerTransaction[]>,
   ])
+
+  await persistExistingAccountCategories(bankModule, ledgerModule, bankDb, ledgerDb)
 
   try {
     await writeMatchedIdToModules(companyId, bankModule, ledgerModule, bankDb, ledgerDb)

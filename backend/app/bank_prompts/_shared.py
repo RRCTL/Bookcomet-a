@@ -49,6 +49,13 @@ DATES — EVERY ROW MUST HAVE A DATE
 • If the page has no visible date at all, use null — but this means the row likely came from
   a non-transaction section and should not have been included in the first place.
 
+CURRENCY
+• currency must be a 3-letter ISO-style code (HKD, USD, CNY, …) or null.
+• NEVER put a date, amount, reference number, or description text into currency.
+• When a leading Cur/Currency column is blank on a transaction row, leave currency null
+  (or copy the section currency from a Balance B/F / section header) — do NOT shift the
+  Date column into currency.
+
 TRANSACTION SUMMARY BLOCK
 • At the bottom of some pages there may be a footer block showing aggregate totals for the
   ENTIRE statement period, for example:

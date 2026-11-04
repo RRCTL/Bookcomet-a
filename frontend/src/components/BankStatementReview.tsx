@@ -7,6 +7,24 @@ import { formatMatchedIdForDisplay } from '../utils/reconMatchedSpreadsheet'
 import { BANK_ACCOUNT_TYPES_VALID, coalesceBankAccountTypeRows, normalizeBankAccountType } from '../utils/bankAccountTypeCoalesce'
 import { formatBankSourceFile, bankSourceFileStem } from '../utils/bankSourceFile'
 import { coaNameMapFromOptionLabels } from '../utils/coaDisplay'
+import { formatCurrencyAmount, parseFxNumber, receiptAmountFromBankRow } from '../utils/fxCurrency'
+import {
+  BANK_ROW_CHECK_MESSAGE,
+  bankRowNeedsPlacementCheck,
+  countRowsNeedingPlacementCheck,
+  placementCheckBannerText,
+} from '../utils/bankRowFieldCheck'
+import {
+  EMPTY_EXTRACT_BODY,
+  EMPTY_EXTRACT_MARK_ACTION,
+  EMPTY_EXTRACT_MARK_CONFIRM,
+  EMPTY_EXTRACT_RETRY_ACTION,
+  EMPTY_EXTRACT_TITLE,
+  VIEW_PDF_ACTION,
+  emptyExtractBannerText,
+  type EmptyExtractPageFlag,
+} from '../utils/bankEmptyExtract'
+import { ConfirmDialog } from '../features/nodeWorkspace/shell/ConfirmDialog'
 
 const EMPTY_LOCK_KEYS: ReadonlySet<string> = new Set()
 
@@ -67,6 +85,19 @@ interface Props {
   onApprove?: () => void
   canApprove?: boolean
   approveBusy?: boolean
+  /** Re-extract review rows from this run's own uploaded files only. */
+  onRebuildFromRunFiles?: () => void
+  rebuildBusy?: boolean
+  canRebuild?: boolean
+  /** Dense-OCR pages where extract returned no rows (amber — extract miss, not blank page). */
+  emptyExtractPages?: EmptyExtractPageFlag[]
+  onRetryEmptyExtractPage?: (flag: EmptyExtractPageFlag) => void
+  onMarkEmptyExtractReviewed?: (flag: EmptyExtractPageFlag) => void
+  /** Open this run's stored PDF for the flagged page (in-app preview). */
+  onViewEmptyExtractPdf?: (flag: EmptyExtractPageFlag) => void
+  emptyExtractBusy?: boolean
+  hideReceiptCurrency?: boolean
+  onCompanyAmountClick?: (row: BankTransaction) => void
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -224,7 +255,18 @@ export function BankStatementReview({
   onApprove,
   canApprove = false,
   approveBusy = false,
+  onRebuildFromRunFiles,
+  rebuildBusy = false,
+  canRebuild = false,
+  emptyExtractPages = [],
+  onRetryEmptyExtractPage,
+  onMarkEmptyExtractReviewed,
+  onViewEmptyExtractPdf,
+  emptyExtractBusy = false,
+  hideReceiptCurrency = false,
+  onCompanyAmountClick,
 }: Props) {
+  const [markConfirmFlag, setMarkConfirmFlag] = useState<EmptyExtractPageFlag | null>(null)
   const prepareRows = useCallback(
     (source: BankTransaction[]) => {
       const coalesced = coalesceBankAccountTypeRows(
@@ -440,6 +482,25 @@ export function BankStatementReview({
   const totalDeposit = rows.reduce((s, r) => s + (r.deposit ?? 0), 0)
   const totalWithdrawal = rows.reduce((s, r) => s + (r.withdrawal ?? 0), 0)
 
+  const placementFlagCount = useMemo(() => countRowsNeedingPlacementCheck(rows), [rows])
+  const hasPlacementFlags = placementFlagCount > 0
+  const hasEmptyExtractFlags = emptyExtractPages.length > 0
+  const rebuildInFlight = Boolean(rebuildBusy)
+  const extractRetryInFlight = Boolean(emptyExtractBusy)
+  const approveEnabled =
+    Boolean(canApprove) &&
+    !approveBusy &&
+    !rebuildInFlight &&
+    !extractRetryInFlight &&
+    !hasPlacementFlags &&
+    !hasEmptyExtractFlags
+  const rebuildEnabled =
+    Boolean(canRebuild) &&
+    !rebuildInFlight &&
+    !approveBusy &&
+    !extractRetryInFlight &&
+    !hasEmptyExtractFlags
+
   const { isMobile } = useViewport()
   const S = useMemo(() => resolveBankStyles(isMobile), [isMobile])
 
@@ -472,12 +533,32 @@ export function BankStatementReview({
         <button style={S.btnPrimary} onClick={exportCSV}>Export CSV</button>
         {onApprove && (
           <button
-            style={{ ...S.btnPrimary, opacity: !canApprove || approveBusy ? 0.5 : 1 }}
+            style={{ ...S.btnPrimary, opacity: !approveEnabled ? 0.5 : 1 }}
             onClick={onApprove}
-            disabled={!canApprove || approveBusy}
-            title="Approve the table and transfer it to the destination module"
+            disabled={!approveEnabled}
+            title={
+              rebuildInFlight
+                ? 'Rebuild in progress'
+                : extractRetryInFlight
+                  ? 'Page retry in progress'
+                  : hasEmptyExtractFlags
+                    ? emptyExtractBannerText(emptyExtractPages.length)
+                    : hasPlacementFlags
+                      ? placementCheckBannerText(placementFlagCount)
+                      : 'Approve the table and transfer it to the destination module'
+            }
           >
             {approveBusy ? 'Approving...' : 'Approve'}
+          </button>
+        )}
+        {onRebuildFromRunFiles && (
+          <button
+            style={{ ...S.btn, opacity: !rebuildEnabled ? 0.5 : 1 }}
+            onClick={onRebuildFromRunFiles}
+            disabled={!rebuildEnabled}
+            title="Re-extract the review table from this run's own uploaded files only"
+          >
+            {rebuildInFlight ? 'Rebuilding…' : "Rebuild from this run's files"}
           </button>
         )}
         {!readOnly && onDeploy && (
@@ -488,6 +569,133 @@ export function BankStatementReview({
         <div style={{ flex: 1 }} />
         <div style={S.rowCount}>{rows.length} transaction{rows.length === 1 ? '' : 's'}</div>
       </div>
+
+      {hasEmptyExtractFlags && (
+        <div
+          role="status"
+          data-empty-extract="true"
+          style={{
+            margin: '0 12px 8px',
+            padding: '10px 12px',
+            borderRadius: 6,
+            background: '#fffbeb',
+            border: '1px solid #f59e0b',
+            color: '#92400e',
+            fontSize: 13,
+          }}
+        >
+          {emptyExtractPages.map(flag => (
+            <div
+              key={`${flag.taskFileId}:${flag.page}`}
+              style={{ marginBottom: 10 }}
+              data-empty-extract-page={flag.page}
+            >
+              <div style={{ fontWeight: 700 }}>
+                {onViewEmptyExtractPdf ? (
+                  <button
+                    type="button"
+                    className="erp-link bank-empty-extract-pdf-link"
+                    style={{
+                      background: 'none',
+                      border: 0,
+                      padding: 0,
+                      font: 'inherit',
+                      fontWeight: 700,
+                      color: '#1d4ed8',
+                      textDecoration: 'underline',
+                      cursor: 'pointer',
+                    }}
+                    title={`${VIEW_PDF_ACTION}: ${flag.filename} page ${flag.page}`}
+                    onClick={() => onViewEmptyExtractPdf(flag)}
+                  >
+                    {flag.filename}
+                  </button>
+                ) : (
+                  <span>{flag.filename}</span>
+                )}{' '}
+                · page {flag.page}: {flag.title || EMPTY_EXTRACT_TITLE}
+              </div>
+              <div style={{ marginTop: 4, fontWeight: 500 }}>
+                {flag.body || EMPTY_EXTRACT_BODY}
+              </div>
+              <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {onViewEmptyExtractPdf && (
+                  <button
+                    type="button"
+                    className="erp-btn"
+                    style={{ ...S.btn, color: '#1d4ed8', border: '1px solid #93c5fd' }}
+                    onClick={() => onViewEmptyExtractPdf(flag)}
+                  >
+                    {VIEW_PDF_ACTION}
+                  </button>
+                )}
+                {onRetryEmptyExtractPage && (
+                  <button
+                    type="button"
+                    className="erp-btn"
+                    style={{
+                      ...S.btn,
+                      background: '#f59e0b',
+                      color: '#111827',
+                      border: '1px solid #d97706',
+                      fontWeight: 600,
+                      opacity: extractRetryInFlight ? 0.6 : 1,
+                    }}
+                    disabled={extractRetryInFlight || readOnly}
+                    onClick={() => onRetryEmptyExtractPage(flag)}
+                  >
+                    {EMPTY_EXTRACT_RETRY_ACTION}
+                  </button>
+                )}
+                {flag.autoRetried && onMarkEmptyExtractReviewed && (
+                  <button
+                    type="button"
+                    className="erp-btn"
+                    style={{ ...S.btn, opacity: extractRetryInFlight ? 0.6 : 1 }}
+                    disabled={extractRetryInFlight || readOnly}
+                    title={EMPTY_EXTRACT_MARK_CONFIRM}
+                    onClick={() => setMarkConfirmFlag(flag)}
+                  >
+                    {EMPTY_EXTRACT_MARK_ACTION}
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={markConfirmFlag != null}
+        title={EMPTY_EXTRACT_MARK_ACTION}
+        message={EMPTY_EXTRACT_MARK_CONFIRM}
+        confirmLabel="Confirm"
+        cancelLabel="Cancel"
+        onCancel={() => setMarkConfirmFlag(null)}
+        onConfirm={() => {
+          const flag = markConfirmFlag
+          setMarkConfirmFlag(null)
+          if (flag && onMarkEmptyExtractReviewed) onMarkEmptyExtractReviewed(flag)
+        }}
+      />
+
+      {hasPlacementFlags && (
+        <div
+          role="status"
+          style={{
+            margin: '0 12px 8px',
+            padding: '8px 12px',
+            borderRadius: 6,
+            background: '#fffbeb',
+            border: '1px solid #f59e0b',
+            color: '#92400e',
+            fontSize: 13,
+            fontWeight: 600,
+          }}
+        >
+          {placementCheckBannerText(placementFlagCount)}
+        </div>
+      )}
 
       {/* ── Table ── */}
       <div style={S.tableContainer}>
@@ -501,9 +709,11 @@ export function BankStatementReview({
               <th style={S.th}>Date</th>
               <th style={S.th}>Account type</th>
               <th style={S.th}>Account no.</th>
-              <th style={{ ...S.th, textAlign: 'right' }}>Deposit (HKD)</th>
-              <th style={{ ...S.th, textAlign: 'right' }}>Withdrawal (HKD)</th>
-              <th style={{ ...S.th, textAlign: 'right' }}>Balance (HKD)</th>
+              <th style={{ ...S.th, textAlign: 'right' }}>Deposit</th>
+              <th style={{ ...S.th, textAlign: 'right' }}>Withdrawal</th>
+              <th style={{ ...S.th, textAlign: 'right' }}>Balance</th>
+              {!hideReceiptCurrency && <th style={{ ...S.th, width: 90 }}>Receipt</th>}
+              <th style={{ ...S.th, width: 110 }}>Company</th>
               <th style={{ ...S.th, minWidth: 130 }}>GL code</th>
               <th style={{ ...S.th, minWidth: 110 }}>Category</th>
               <th style={{ ...S.th, minWidth: 72, textAlign: 'center' }}>AR review</th>
@@ -524,11 +734,28 @@ export function BankStatementReview({
                 (row as Record<string, unknown>).needs_manual_review === true
                 || (row as Record<string, unknown>).needs_review === true
                 || extractionFlags.length > 0
+              const placementFlag = bankRowNeedsPlacementCheck(row)
               const exclusionReasons: string[] = Array.isArray((row as Record<string, unknown>).exclusion_reasons)
                 ? (row as Record<string, unknown>).exclusion_reasons as string[]
                 : []
-              const reviewBankTitle = [...exclusionReasons, ...extractionFlags].filter(Boolean).join(' | ')
-              const rowBg = isSelected ? '#e8f0fe' : needsReview ? '#fff5f5' : dup ? '#fafafa' : glPosted ? '#fffbeb' : locked ? '#f0fdf4' : undefined
+              const reviewBankTitle = [
+                ...(placementFlag ? [BANK_ROW_CHECK_MESSAGE] : []),
+                ...exclusionReasons,
+                ...extractionFlags,
+              ].filter(Boolean).join(' | ')
+              const rowBg = isSelected
+                ? '#e8f0fe'
+                : placementFlag
+                  ? '#fffbeb'
+                  : needsReview
+                    ? '#fff5f5'
+                    : dup
+                      ? '#fafafa'
+                      : glPosted
+                        ? '#fffbeb'
+                        : locked
+                          ? '#f0fdf4'
+                          : undefined
               const dupRowStyle = dup ? { opacity: 0.35, textDecoration: 'line-through' as const, pointerEvents: 'none' as const } : {}
               const prev = i > 0 ? rows[i - 1] : null
               const showFileSeparator = i === 0 || rowSourceStem(row) !== rowSourceStem(prev!)
@@ -558,12 +785,31 @@ export function BankStatementReview({
                     </tr>
                   )}
                 <tr
-                  style={{ ...S.tbodyRow, background: rowBg, ...dupRowStyle, ...(needsReview ? { borderLeft: '3px solid #ef4444' } : {}) }}
+                  style={{
+                    ...S.tbodyRow,
+                    background: rowBg,
+                    ...dupRowStyle,
+                    ...(placementFlag
+                      ? { borderLeft: '3px solid #f59e0b' }
+                      : needsReview
+                        ? { borderLeft: '3px solid #ef4444' }
+                        : {}),
+                  }}
                   onClick={e => !dup && toggleSelect(row._id, e.ctrlKey || e.metaKey)}
+                  data-placement-flag={placementFlag ? 'true' : undefined}
                 >
-                  {/* # — shows GL posted / lock / dup / review */}
-                  <td style={{ ...S.rowNum, ...(glPosted ? { background: '#fde68a' } : {}), ...(locked && !glPosted ? { background: '#dcfce7' } : {}), ...(dup ? { background: '#fef2f2' } : {}), ...(needsReview ? { background: '#fff5f5' } : {}) }}>
-                    {needsReview && !dup
+                  {/* # — shows GL posted / lock / dup / review / placement check */}
+                  <td style={{
+                    ...S.rowNum,
+                    ...(glPosted ? { background: '#fde68a' } : {}),
+                    ...(locked && !glPosted ? { background: '#dcfce7' } : {}),
+                    ...(dup ? { background: '#fef2f2' } : {}),
+                    ...(placementFlag ? { background: '#fef3c7' } : {}),
+                    ...(needsReview && !placementFlag ? { background: '#fff5f5' } : {}),
+                  }}>
+                    {placementFlag && !dup
+                      ? <span title={reviewBankTitle || BANK_ROW_CHECK_MESSAGE} style={{ fontSize: 9, display: 'block', textAlign: 'center', lineHeight: 1, color: '#b45309', fontWeight: 700 }}>CHECK</span>
+                      : needsReview && !dup
                       ? <span title={reviewBankTitle || 'Needs manual review'} style={{ fontSize: 9, display: 'block', textAlign: 'center', lineHeight: 1, color: '#ef4444', fontWeight: 700 }}>REVIEW</span>
                       : dup
                       ? <span title={`Duplicate (L${dupLevel})`} style={{ fontSize: 10, display: 'block', textAlign: 'center', lineHeight: 1, color: '#dc2626', fontWeight: 700 }}>DUP</span>
@@ -694,6 +940,30 @@ export function BankStatementReview({
                         )}
                       </>
                     )}
+                  </td>
+                  {!hideReceiptCurrency && (
+                    <td style={S.td}>
+                      {formatCurrencyAmount(String(row.currency ?? ''), receiptAmountFromBankRow(row as Record<string, unknown>))}
+                    </td>
+                  )}
+                  <td
+                    style={{
+                      ...S.td,
+                      background: parseFxNumber(row.company_amount) == null ? '#f3f4f6' : undefined,
+                      cursor: onCompanyAmountClick && !glPosted && !readOnly ? 'pointer' : undefined,
+                    }}
+                    onClick={e => {
+                      e.stopPropagation()
+                      if (!glPosted && !readOnly) onCompanyAmountClick?.(row)
+                    }}
+                  >
+                    {parseFxNumber(row.company_amount) != null
+                      ? `${formatCurrencyAmount(String(row.company_currency ?? ''), parseFxNumber(row.company_amount))}${
+                          hideReceiptCurrency && row.currency && row.currency !== row.company_currency
+                            ? ` · ${row.currency}`
+                            : ''
+                        }`
+                      : '—'}
                   </td>
 
                   {/* GL code — full company CoA */}
@@ -839,6 +1109,19 @@ export function BankStatementReview({
                       onChange={e => updateField(row._id, 'particulars', e.target.value)}
                       onClick={e => e.stopPropagation()}
                     />
+                    {placementFlag && (
+                      <div
+                        style={{
+                          marginTop: 4,
+                          fontSize: 11,
+                          fontWeight: 600,
+                          color: '#b45309',
+                          lineHeight: 1.3,
+                        }}
+                      >
+                        {BANK_ROW_CHECK_MESSAGE}
+                      </div>
+                    )}
                   </td>
                 </tr>
                 </React.Fragment>

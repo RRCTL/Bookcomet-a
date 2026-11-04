@@ -1,6 +1,5 @@
 import uuid
 from typing import Optional
-import re
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -17,6 +16,27 @@ from app.database import get_db
 from app.models.identity import Company, Membership, User
 
 router = APIRouter()
+
+# Linear check — avoid a quantified regex on attacker-controlled email (CodeQL py/polynomial-redos).
+_EMAIL_LOCAL_EXTRA = set("._+-")
+_EMAIL_DOMAIN_EXTRA = set(".-")
+
+
+def is_valid_email(value: str) -> bool:
+    if not value or len(value) > 254 or value.count("@") != 1:
+        return False
+    local, domain = value.split("@", 1)
+    if not local or not domain or len(local) > 64:
+        return False
+    if domain.startswith(".") or domain.endswith(".") or "." not in domain:
+        return False
+    if ".." in local or ".." in domain:
+        return False
+    if not all(ch.isalnum() or ch in _EMAIL_LOCAL_EXTRA for ch in local):
+        return False
+    if not all(ch.isalnum() or ch in _EMAIL_DOMAIN_EXTRA for ch in domain):
+        return False
+    return True
 
 
 class CreateUserRequest(BaseModel):
@@ -89,7 +109,7 @@ async def create_user(
     db: Session = Depends(get_db),
 ):
     email = payload.email.strip().lower()
-    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+    if not is_valid_email(email):
         raise HTTPException(status_code=400, detail="Invalid email format")
 
     existing = db.query(User).filter(User.email == email).first()

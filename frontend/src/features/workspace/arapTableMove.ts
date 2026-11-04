@@ -89,6 +89,10 @@ export function arapTransactionToSpreadsheetRow(t: ARAPTransaction): Spreadsheet
         ? String(Number(t.amount))
         : '',
     currency: t.currency ?? 'HKD',
+    company_currency: t.company_currency,
+    company_amount: t.company_amount != null ? String(t.company_amount) : '',
+    company_tax_amount: t.company_tax_amount != null ? String(t.company_tax_amount) : '',
+    exchange_rate: t.exchange_rate != null ? String(t.exchange_rate) : '',
     date: t.date ?? '',
     payer: t.payer ?? '',
     payee: t.payee ?? '',

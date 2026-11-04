@@ -17,9 +17,17 @@ import {
   imageQualityChipStyle,
   readImageQuality,
 } from '../utils/imageQualityUi'
-import { buildReceiptCropRequest, rowCanShowReceiptCropPreview, type CropPreviewFile } from '../utils/imageQualityCrop'
+import {
+  buildReceiptCropRequest,
+  rowCanShowReceiptCropPreview,
+  rowHasReceiptCropRegion,
+  type CropPreviewFile,
+} from '../utils/imageQualityCrop'
 import { taskApi } from '../services/api'
 import { formatBankSourceFile } from '../utils/bankSourceFile'
+import { formatCurrencyAmount, parseFxNumber } from '../utils/fxCurrency'
+import { MvduReviewPagePane } from '../features/mvduCropPreview/MvduReviewPagePane'
+import '../features/mvduCropPreview/mvduCropPreview.css'
 
 const EMPTY_LOCK_KEYS: ReadonlySet<string> = new Set()
 
@@ -94,7 +102,12 @@ interface Props {
     taskId: string
     companyId?: string | null
     files: CropPreviewFile[]
+    /** Detect boxes from the latest multi-receipt result (full-page overlay). */
+    previewBoxes?: unknown
+    page?: number
   } | null
+  hideReceiptCurrency?: boolean
+  onCompanyAmountClick?: (row: ARAPTransaction) => void
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -224,8 +237,8 @@ export function ARAPReview({
   reconState,
   onUnlock,
   isProcessing = false,
-  completedFiles = 0,
-  totalFiles = 0,
+  completedFiles: _completedFiles = 0,
+  totalFiles: _totalFiles = 0,
   glPostedLedgerLockKeys,
   glVoucherNoByGroupId = {},
   onRetryOcrPage,
@@ -238,6 +251,8 @@ export function ARAPReview({
   canApprove = false,
   approveBusy = false,
   cropPreview = null,
+  hideReceiptCurrency = false,
+  onCompanyAmountClick,
 }: Props) {
   const [rows, setRows] = useState<Row[]>(() =>
     transactions.map((t, i) => ({ ...normalizeARAPRow(t, filename), _id: i }))
@@ -671,18 +686,6 @@ export function ARAPReview({
         <div style={S.rowCount}>{rows.length} transactions</div>
       </div>
 
-      {/* ── Processing banner ── */}
-      {isProcessing && (
-        <div style={S.processingBanner}>
-          <span style={S.processingDot} />
-          <span>
-            OCR is still processing
-            {totalFiles > 0 && ` (${completedFiles} / ${totalFiles} files done)`}
-            ; the table will keep updating...
-          </span>
-        </div>
-      )}
-
       {/* ── Table ── */}
       <div style={S.tableContainer}>
         <table style={S.table}>
@@ -702,7 +705,8 @@ export function ARAPReview({
                   <th style={{ ...S.th, textAlign: 'right', minWidth: 100 }}>Debit</th>
                   <th style={{ ...S.th, textAlign: 'right', minWidth: 100 }}>Credit</th>
                   <th style={{ ...S.th, textAlign: 'right', minWidth: 90 }}>Tax</th>
-                  <th style={{ ...S.th, width: 55 }}>Cur</th>
+                  {!hideReceiptCurrency && <th style={{ ...S.th, width: 90 }}>Receipt</th>}
+                  <th style={{ ...S.th, width: 110 }}>Company</th>
                   <th style={{ ...S.th, minWidth: 130 }}>Account Code</th>
                   <th style={{ ...S.th, minWidth: 90 }}>Category</th>
                   <th style={{ ...S.th, minWidth: 200 }}>Description</th>
@@ -717,7 +721,8 @@ export function ARAPReview({
                   <th style={{ ...S.th, width: 70 }}>Type</th>
                   <th style={{ ...S.th, textAlign: 'right', minWidth: 100 }}>Debit</th>
                   <th style={{ ...S.th, textAlign: 'right', minWidth: 100 }}>Credit</th>
-                  <th style={{ ...S.th, width: 55 }}>Cur</th>
+                  {!hideReceiptCurrency && <th style={{ ...S.th, width: 90 }}>Receipt</th>}
+                  <th style={{ ...S.th, width: 110 }}>Company</th>
                   <th style={{ ...S.th, minWidth: 110 }}>Payer</th>
                   <th style={{ ...S.th, minWidth: 110 }}>Payee</th>
                   <th style={{ ...S.th, minWidth: 90 }}>Bank</th>
@@ -936,14 +941,29 @@ export function ARAPReview({
                           <span style={{ fontSize: 10, color: '#64748b' }}>{fmtAmt(row.tax_amount)}</span>
                         )}
                       </td>
-                      <td style={S.td}>
-                        <input
-                          style={{ ...S.input, width: 46 }}
-                          value={row.currency ?? 'HKD'}
-                          disabled={glPosted || readOnly}
-                          onChange={e => updateField(row._id, 'currency', e.target.value)}
-                          onClick={e => e.stopPropagation()}
-                        />
+                      {!hideReceiptCurrency && (
+                        <td style={S.td}>
+                          {formatCurrencyAmount(String(row.currency ?? ''), parseFxNumber(row.amount))}
+                        </td>
+                      )}
+                      <td
+                        style={{
+                          ...S.td,
+                          background: parseFxNumber(row.company_amount) == null ? '#f3f4f6' : undefined,
+                          cursor: onCompanyAmountClick && !glPosted && !readOnly ? 'pointer' : undefined,
+                        }}
+                        onClick={e => {
+                          e.stopPropagation()
+                          if (!glPosted && !readOnly) onCompanyAmountClick?.(row)
+                        }}
+                      >
+                        {parseFxNumber(row.company_amount) != null
+                          ? `${formatCurrencyAmount(String(row.company_currency ?? ''), parseFxNumber(row.company_amount))}${
+                              hideReceiptCurrency && row.currency && row.currency !== row.company_currency
+                                ? ` · ${row.currency}`
+                                : ''
+                            }`
+                          : '—'}
                       </td>
                     </>
                   ) : (
@@ -1022,14 +1042,29 @@ export function ARAPReview({
                         )}
                       </td>
 
-                      <td style={S.td}>
-                        <input
-                          style={{ ...S.input, width: 46 }}
-                          value={row.currency ?? 'HKD'}
-                          disabled={glPosted || readOnly}
-                          onChange={e => updateField(row._id, 'currency', e.target.value)}
-                          onClick={e => e.stopPropagation()}
-                        />
+                      {!hideReceiptCurrency && (
+                        <td style={S.td}>
+                          {formatCurrencyAmount(String(row.currency ?? ''), parseFxNumber(row.amount))}
+                        </td>
+                      )}
+                      <td
+                        style={{
+                          ...S.td,
+                          background: parseFxNumber(row.company_amount) == null ? '#f3f4f6' : undefined,
+                          cursor: onCompanyAmountClick && !glPosted && !readOnly ? 'pointer' : undefined,
+                        }}
+                        onClick={e => {
+                          e.stopPropagation()
+                          if (!glPosted && !readOnly) onCompanyAmountClick?.(row)
+                        }}
+                      >
+                        {parseFxNumber(row.company_amount) != null
+                          ? `${formatCurrencyAmount(String(row.company_currency ?? ''), parseFxNumber(row.company_amount))}${
+                              hideReceiptCurrency && row.currency && row.currency !== row.company_currency
+                                ? ` · ${row.currency}`
+                                : ''
+                            }`
+                          : '—'}
                       </td>
 
                       <td style={S.td}>
@@ -1270,6 +1305,20 @@ export function ARAPReview({
         </table>
       </div>
 
+      {/* ── M-VDU full page / this receipt (bidirectional with row selection) ── */}
+      {cropPreview?.taskId && cropEligibleCount > 0 && (
+        <MvduReviewPagePane
+          taskId={cropPreview.taskId}
+          companyId={cropPreview.companyId}
+          files={cropPreview.files ?? []}
+          rows={rows as Array<Record<string, unknown> & { _id: number }>}
+          selectedRowIds={selected}
+          onSelectRowIds={next => setSelected(new Set(Array.from(next).map(Number)))}
+          previewBoxes={cropPreview.previewBoxes}
+          page={cropPreview.page ?? 1}
+        />
+      )}
+
       {/* ── Receipt preview / image quality panel ── */}
       {selectedDetailRow && (
         <div
@@ -1295,7 +1344,11 @@ export function ARAPReview({
             <div style={{ fontSize: 13, fontWeight: 600 }}>
               {selectedDetailRow.iq.present ? 'Receipt image quality' : 'Receipt preview'}
               <span style={{ marginLeft: 8, fontWeight: 400, color: '#6b7280' }}>
-                {selectedDetailRow.iq.present ? selectedDetailRow.iq.uiLabel : 'Target crop'}
+                {selectedDetailRow.iq.present
+                  ? selectedDetailRow.iq.uiLabel
+                  : rowHasReceiptCropRegion(selectedDetailRow.row as Record<string, unknown>)
+                    ? 'Target crop'
+                    : 'Source page · crop unresolved'}
                 {selectedDetailRow.row.source_file
                   ? ` · ${String(selectedDetailRow.row.source_file)}`
                   : ''}

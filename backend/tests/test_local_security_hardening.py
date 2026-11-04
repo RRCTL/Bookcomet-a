@@ -39,6 +39,20 @@ class UploadSizeTest(unittest.TestCase):
             assert_upload_size(b"x" * (2 * 1024 * 1024), max_upload_size_mb=1)
 
 
+_MIN_PDF = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n"
+
+
+def _rmtree(root: Path) -> None:
+    if not root.exists():
+        return
+    for p in sorted(root.rglob("*"), reverse=True):
+        if p.is_file():
+            p.unlink(missing_ok=True)
+        elif p.is_dir():
+            p.rmdir()
+    root.rmdir()
+
+
 class StoragePathTest(unittest.TestCase):
     def test_save_rejects_traversal_company_id(self) -> None:
         root = Path(os.environ.get("TEMP") or ".") / f"bc-upload-test-{uuid.uuid4().hex}"
@@ -47,13 +61,39 @@ class StoragePathTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 store.save("../evil", "task1", "file1", b"hi", ".bin")
         finally:
-            if root.exists():
-                for p in sorted(root.rglob("*"), reverse=True):
-                    if p.is_file():
-                        p.unlink(missing_ok=True)
-                    elif p.is_dir():
-                        p.rmdir()
-                root.rmdir()
+            _rmtree(root)
+
+    def test_load_path_accepts_saved_file_and_rejects_escape(self) -> None:
+        root = Path(os.environ.get("TEMP") or ".") / f"bc-upload-test-{uuid.uuid4().hex}"
+        try:
+            store = LocalDiskStorage(str(root))
+            saved = store.save("co1", "task1", "fid1", _MIN_PDF, ".pdf")
+            loaded = store.load_path(saved)
+            self.assertTrue(loaded.is_file())
+            self.assertTrue(loaded.resolve().is_relative_to(root.resolve()))
+
+            outside = root.parent / f"bc-escape-{uuid.uuid4().hex}.txt"
+            outside.write_text("nope")
+            try:
+                with self.assertRaises(ValueError):
+                    store.load_path(str(outside))
+                store.delete(str(outside))
+                self.assertTrue(outside.exists())
+            finally:
+                outside.unlink(missing_ok=True)
+        finally:
+            _rmtree(root)
+
+    def test_save_job_input_stays_under_root(self) -> None:
+        root = Path(os.environ.get("TEMP") or ".") / f"bc-upload-test-{uuid.uuid4().hex}"
+        try:
+            store = LocalDiskStorage(str(root))
+            path = store.save_job_input("job1", _MIN_PDF, ".pdf")
+            resolved = Path(path).resolve()
+            self.assertTrue(resolved.is_relative_to(root.resolve()))
+            self.assertTrue(resolved.is_file())
+        finally:
+            _rmtree(root)
 
 
 class AuthGateTest(unittest.TestCase):

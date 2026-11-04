@@ -794,6 +794,41 @@ export const api = {
     return res.json();
   },
 
+  async getCompanyProfile(): Promise<{
+    company_id: string
+    industry: string | null
+    accounting_basis: string | null
+    fiscal_year_end: string | null
+    company_name: string | null
+    company_name_keywords: string[]
+    custom_settings: Record<string, unknown>
+    exists: boolean
+  }> {
+    const res = await apiFetch('/company/profile')
+    if (!res.ok) throw new Error(`Failed to load company profile: ${res.statusText}`)
+    return res.json()
+  },
+
+  async upsertCompanyProfile(payload: {
+    industry?: string | null
+    accounting_basis?: string | null
+    fiscal_year_end?: string | null
+    company_name?: string | null
+    company_name_keywords?: string[]
+    custom_settings?: Record<string, unknown>
+  }): Promise<{ status: string; company_id: string }> {
+    const res = await apiFetch('/company/profile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }))
+      throw new Error(err.detail?.message || err.detail || res.statusText)
+    }
+    return res.json()
+  },
+
   // ── Company Manual API ────────────────────────────────────────────────────
 
   async getCompanyManual(): Promise<{

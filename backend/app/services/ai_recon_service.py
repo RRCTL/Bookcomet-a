@@ -28,7 +28,7 @@ You are a Hong Kong accounting reconciliation AI for bank reconciliation (BANK s
 
 ## Accounting policy (must follow)
 1. Match only the same economic event: bank statement line ↔ ledger (AR/AP) line that already exists.
-2. Absolute amounts MUST be equal. If amounts differ, leave unmatched (timing difference or need a proper adjusting entry later — never invent a bank/ledger row).
+2. Compare company_amount in company_currency when present (receipt JPY vs bank HKD can match if company amounts agree). Absolute company amounts MUST be equal. If amounts differ, leave unmatched.
 3. Never create, invent, or request virtual / remainder / partial / balancing transactions or amounts.
 4. Prefer Reference / voucher evidence; then date proximity; then counterparty/memo similarity.
 5. Unmatched is correct when the counterpart is not yet on the other side.
@@ -80,6 +80,7 @@ def _fmt_bank(t: dict) -> str:
         f"  ID={t.get('id', '')} | "
         f"Date={t.get('bank_date') or t.get('date', '')} | "
         f"Amount={t.get('amount', '')} {t.get('currency', 'HKD')} | "
+        f"Company={t.get('company_amount', t.get('amount', ''))} {t.get('company_currency', t.get('currency', 'HKD'))} | "
         f"Ref={t.get('reference') or t.get('doc_id', '')} | "
         f"Memo={t.get('description_raw') or t.get('memo', '')}"
     )
@@ -90,6 +91,7 @@ def _fmt_ledger(t: dict) -> str:
         f"  ID={t.get('id', '')} | "
         f"Date={t.get('book_date') or t.get('date', '')} | "
         f"Amount={t.get('amount', '')} {t.get('currency', 'HKD')} | "
+        f"Company={t.get('company_amount', t.get('amount', ''))} {t.get('company_currency', t.get('currency', 'HKD'))} | "
         f"Ref={t.get('reference') or t.get('doc_id', '')} | "
         f"Counterparty={t.get('counterparty', '')}"
     )
@@ -150,8 +152,15 @@ def filter_valid_matches(
         if bid in used_bank or lid in used_ledger:
             dropped += 1
             continue
-        b_amt = _amount_abs(bank_by_id[bid].get("amount"))
-        l_amt = _amount_abs(ledger_by_id[lid].get("amount"))
+        bank = bank_by_id[bid]
+        ledger = ledger_by_id[lid]
+        b_ccy = str(bank.get("company_currency") or bank.get("currency") or "").upper()
+        l_ccy = str(ledger.get("company_currency") or ledger.get("currency") or "").upper()
+        if b_ccy and l_ccy and b_ccy != l_ccy:
+            dropped += 1
+            continue
+        b_amt = _amount_abs(bank.get("company_amount") if bank.get("company_amount") is not None else bank.get("amount"))
+        l_amt = _amount_abs(ledger.get("company_amount") if ledger.get("company_amount") is not None else ledger.get("amount"))
         if not _amounts_equal(b_amt, l_amt):
             dropped += 1
             continue

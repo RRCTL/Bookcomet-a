@@ -38,14 +38,26 @@ class _Registry:
 
 
 @pytest.mark.asyncio
-async def test_primary_retries_on_empty_content(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_primary_does_not_retry_empty_content(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OCR_PRIMARY_RETRYABLE_MAX_RETRIES", "1")
     svc = OcrService()
     flaky = _FlakyProvider()
-    svc._registry = _Registry({"qwen-vl-ocr-latest": flaky})  # type: ignore[attr-defined]
-    out = await svc.recognize("fake.png", provider_name="qwen-vl-ocr-latest")
-    assert out.text == "ok"
-    assert flaky.calls == 2
+    alt = _AlwaysFailProvider(
+        base_url="https://other/v1",
+        model="other-model",
+        msg="OCR_REQUEST_ERROR: alt fail",
+    )
+    svc._registry = _Registry(  # type: ignore[attr-defined]
+        {
+            "qwen-vl-ocr-latest": flaky,
+            "DeepSeek-OCR": alt,
+            "qwen3-vl-plus": alt,
+        }
+    )
+    with pytest.raises(RuntimeError) as exc:
+        await svc.recognize("fake.png", provider_name="qwen-vl-ocr-latest")
+    assert "OCR_EMPTY_CONTENT" in str(exc.value) or "Fallbacks failed" in str(exc.value)
+    assert flaky.calls == 1
 
 
 @pytest.mark.asyncio

@@ -14,13 +14,49 @@ from urllib.parse import urlparse
 
 from app.core.config import (
     _DEFAULT_AI_ENHANCE_REASONER_MODEL,
-    _DEFAULT_BANK_VLM_MODEL,
     _DEFAULT_DEPLOY_MODEL,
     _DEFAULT_VLM_MODEL,
+    resolve_layout_classify_model,
+    resolve_ocr_provider,
+    resolve_settings_vlm_model,
     settings,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_openai_base_url(url: str) -> str:
+    """Normalize an OpenAI-compatible API base (no vendor default).
+
+    Empty stays empty. Non-empty bases are stripped and ensured to end with ``/v1``
+    so callers can append ``/chat/completions`` or ``/models`` safely.
+    """
+    bu = (url or "").strip().rstrip("/")
+    if not bu:
+        return ""
+    if not bu.endswith("/v1"):
+        bu = f"{bu}/v1"
+    return bu
+
+
+def openai_chat_completions_url(base: str) -> str:
+    """Build ``…/v1/chat/completions`` whether ``base`` already ends with ``/v1`` or not."""
+    bu = (base or "").strip().rstrip("/")
+    if not bu:
+        raise ValueError("Gateway API URL is empty. Configure it in Settings → API.")
+    if bu.endswith("/v1"):
+        return f"{bu}/chat/completions"
+    return f"{bu}/v1/chat/completions"
+
+
+def openai_models_url(base: str) -> str:
+    """Build ``…/v1/models`` whether ``base`` already ends with ``/v1`` or not."""
+    bu = (base or "").strip().rstrip("/")
+    if not bu:
+        raise ValueError("Gateway API URL is empty. Configure it in Settings → API.")
+    if bu.endswith("/v1"):
+        return f"{bu}/models"
+    return f"{bu}/v1/models"
 
 
 def validate_gateway_url(url: str, *, purpose: str = "gateway") -> str:
@@ -159,9 +195,7 @@ def _sync_settings_from_env() -> None:
     settings.vlm_api_base = (
         os.getenv("VLM_BASE_URL") or os.getenv("LLM_BASE_URL") or ""
     )
-    settings.vlm_model = (
-        (os.getenv("VLM_MODEL") or "").strip() or _DEFAULT_VLM_MODEL
-    )
+    settings.vlm_model = resolve_settings_vlm_model()
     settings.deploy_model = (
         (os.getenv("LLM_MODEL") or os.getenv("DEPLOY_MODEL") or "").strip()
         or _DEFAULT_DEPLOY_MODEL
@@ -176,7 +210,7 @@ def _sync_settings_from_env() -> None:
         os.getenv("AI_ENHANCE_BASE_URL")
         or os.getenv("LLM_BASE_URL")
         or os.getenv("VLM_BASE_URL")
-        or "https://www.dmxapi.cn"
+        or ""
     )
     settings.ai_enhance_model = (
         (os.getenv("AI_ENHANCE_MODEL") or os.getenv("LLM_MODEL") or "").strip()
@@ -190,9 +224,9 @@ def _sync_settings_from_env() -> None:
         os.getenv("AI_ENHANCE_USE_REASONER") or "false"
     ).lower() in ("true", "1", "yes")
     settings.ap_cross_vlm_model = os.getenv("AP_CROSS_VLM_MODEL", "").strip()
-    settings.bank_vlm_model = (
-        (os.getenv("BANK_VLM_MODEL") or "").strip() or _DEFAULT_BANK_VLM_MODEL
-    )
+    settings.bank_vlm_model = resolve_settings_vlm_model(os.getenv("BANK_VLM_MODEL"))
+    settings.ocr_provider = resolve_ocr_provider()
+    settings.document_layout_classify_model = resolve_layout_classify_model()
 
 
 def _apply_bank_cross_verify_flag(model: str) -> None:
@@ -281,13 +315,8 @@ def probe_gateway(
 
     url = validate_gateway_url(url, purpose="probe")
 
-    base = url.rstrip("/")
-    if base.endswith("/v1"):
-        models_url = f"{base}/models"
-        chat_url = f"{base}/chat/completions"
-    else:
-        models_url = f"{base}/v1/models"
-        chat_url = f"{base}/v1/chat/completions"
+    models_url = openai_models_url(url)
+    chat_url = openai_chat_completions_url(url)
 
     headers = {"Authorization": f"Bearer {key}"}
     try:

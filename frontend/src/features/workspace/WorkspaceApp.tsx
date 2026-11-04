@@ -1201,7 +1201,7 @@ export default function WorkspaceApp() {
       try {
         const res = await reconciliationApi.bulkTxnAccountCategory({
           updates,
-          rebuild_draft_journals: false,
+          rebuild_draft_journals: true,
         })
         ocrLastPersistedAccountCodesRef.current[snapKey] = { ...prunedNext }
         const b: Record<string, string> = {}
@@ -1211,8 +1211,8 @@ export default function WorkspaceApp() {
           else l[u.txn_id] = u.account_category
         }
         applyAccountCategorySyncFromDb(b, l)
-        if (res.rebuilt_group_ids?.length) {
-          setGlJournalRefetchSignal({ nonce: Date.now(), groupIds: res.rebuilt_group_ids })
+        if (res.rebuilt_group_ids?.length || res.rebuilt_module_journal_ids?.length) {
+          setGlJournalRefetchSignal({ nonce: Date.now(), groupIds: res.rebuilt_group_ids ?? [] })
         }
       } catch (e) {
         console.warn('[OCR account_code] persist failed', e)
@@ -1250,11 +1250,11 @@ export default function WorkspaceApp() {
       try {
         const res = await reconciliationApi.bulkLedgerDocType({
           updates,
-          rebuild_draft_journals: false,
+          rebuild_draft_journals: true,
         })
         ocrLastPersistedLedgerDocTypesRef.current[snapKey] = { ...prunedNext }
-        if (res.rebuilt_group_ids?.length) {
-          setGlJournalRefetchSignal({ nonce: Date.now(), groupIds: res.rebuilt_group_ids })
+        if (res.rebuilt_group_ids?.length || res.rebuilt_module_journal_ids?.length) {
+          setGlJournalRefetchSignal({ nonce: Date.now(), groupIds: res.rebuilt_group_ids ?? [] })
         }
         refreshReconUnmatchedFnRef.current?.()
       } catch (e) {

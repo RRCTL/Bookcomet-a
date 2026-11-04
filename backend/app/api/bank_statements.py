@@ -21,14 +21,18 @@ from app.models.company_context import CompanyProfile
 from app.models.transaction import BankTransaction, TransactionStatus
 from app.services.bank_opening_row import is_balance_forward_opening_row
 from app.services.bank_statement_parser import BankStatementParser
-from app.services.file_storage import assert_file_type, assert_upload_size
+from app.services.file_storage import (
+    assert_upload_size,
+    prepare_upload_bytes,
+    safe_upload_temp_suffix,
+)
 
 
-def _assert_upload_payload(filename: str | None, content: bytes) -> None:
-    """Size + type gate; map ValueError to HTTPException."""
+def _assert_upload_payload(filename: str | None, content: bytes) -> bytes:
+    """Size + type gate; return normalized bytes. Map ValueError to HTTPException."""
     try:
         assert_upload_size(content)
-        assert_file_type(filename or "upload.bin", content)
+        return prepare_upload_bytes(filename or "upload.bin", content)
     except ValueError as exc:
         detail = str(exc)
         code = 413 if "maximum size" in detail.lower() else 400
@@ -266,6 +270,9 @@ def _persist_bank_transactions(
         generated_voucher_no = f"BR-{date_key}-{voucher_seq_by_date[date_key]:03d}"
         reference = generated_voucher_no
         currency = txn.get("幣別") or txn.get("currency") or "HKD"
+        company_currency = txn.get("company_currency")
+        company_amount = _parse_amount(txn.get("company_amount")) if txn.get("company_amount") not in (None, "") else None
+        exchange_rate = _parse_amount(txn.get("exchange_rate")) if txn.get("exchange_rate") not in (None, "") else None
         account_category = txn.get("categorise") or txn.get("分類") or txn.get("category") or txn.get("account_category")
 
         bank_txn = BankTransaction(
@@ -275,6 +282,9 @@ def _persist_bank_transactions(
             bank_date=bank_date,
             amount=amount,
             currency=currency,
+            company_currency=str(company_currency).strip().upper() if company_currency else None,
+            company_amount=company_amount,
+            exchange_rate=exchange_rate,
             description_raw=str(description),
             description_norm=str(description).lower(),
             account_category=str(account_category).strip() if account_category else None,
@@ -445,15 +455,18 @@ async def get_bank_statement_page_count(
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
 
-    suffix = os.path.splitext(file.filename)[1].lower()
+    try:
+        suffix = safe_upload_temp_suffix(file.filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if suffix != ".pdf":
         content = await file.read()
         _assert_upload_payload(file.filename, content)
         return {"page_count": 1}
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, mode='wb') as tmp:
-        content = await file.read()
-        _assert_upload_payload(file.filename, content)
+    content = await file.read()
+    content = _assert_upload_payload(file.filename, content)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, mode="wb") as tmp:
         tmp.write(content)
         tmp_path = tmp.name
 
@@ -503,10 +516,13 @@ async def upload_bank_statement(
     
     logger.info("Received bank statement upload: %s", file.filename)
 
-    suffix = os.path.splitext(file.filename)[1].lower()
+    try:
+        suffix = safe_upload_temp_suffix(file.filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    content = await file.read()
+    content = _assert_upload_payload(file.filename, content)
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, mode="wb") as tmp:
-        content = await file.read()
-        _assert_upload_payload(file.filename, content)
         tmp.write(content)
         tmp_path = tmp.name
 
@@ -564,10 +580,13 @@ async def start_upload_bank_statement_job(
         raise HTTPException(status_code=404, detail="Task not found")
 
     _cleanup_old_jobs()
-    suffix = os.path.splitext(file.filename)[1].lower()
+    try:
+        suffix = safe_upload_temp_suffix(file.filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    content = await file.read()
+    content = _assert_upload_payload(file.filename, content)
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, mode="wb") as tmp:
-        content = await file.read()
-        _assert_upload_payload(file.filename, content)
         tmp.write(content)
         tmp_path = tmp.name
 

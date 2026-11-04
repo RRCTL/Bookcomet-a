@@ -607,7 +607,7 @@ You are processing a cheque for Hong Kong bookkeeping. Extract data accurately f
     "payer": "drawer/付款人 full name",
     "amount_numeric": "exact numeric amount (e.g., 10000.00)",
     "amount_words": "amount in words/大寫 (in Chinese if available)",
-    "currency": "HKD (default if not specified)",
+    "currency": "ISO 4217 code or null if unknown",
     "bank_name": "full bank name in English",
     "bank_code": "3-digit bank code if visible (e.g., 004 for HSBC)",
     "account_number": "account number if visible",
@@ -691,7 +691,7 @@ Return ONLY valid JSON with:
     "date": "YYYY-MM-DD",
     "vendor": "company name",
     "customer": "company name",
-    "currency": "HKD (default if not specified)",
+    "currency": "ISO 4217 code or null if unknown",
     "total_amount": "numeric",
     "items": [
         {{"description": "string", "amount": "numeric"}}
@@ -1170,7 +1170,7 @@ Rules:
 - One row per transaction/receipt/invoice/cheque.
 - transaction_type must be AR or AP.
 - date normalize to YYYY-MM-DD.
-- currency default HKD when missing.
+- currency is a 3-letter ISO code; use null when unknown. Map JYP to JPY.
 - amount must be numeric without thousands separators.
 - confidence as 0-1 decimal.
 - If field missing, leave empty (do not invent values).
@@ -1275,7 +1275,7 @@ You are processing a cheque for Hong Kong bookkeeping. Extract data accurately f
     "payer": "drawer/付款人 full name",
     "amount_numeric": "exact numeric amount (e.g., 10000.00)",
     "amount_words": "amount in words/大寫 (in Chinese if available)",
-    "currency": "HKD (default if not specified)",
+    "currency": "ISO 4217 code or null if unknown",
     "bank_name": "full bank name in English",
     "bank_code": "3-digit bank code if visible (e.g., 004 for HSBC)",
     "account_number": "account number if visible",
@@ -1361,7 +1361,7 @@ Return ONLY valid JSON with:
     "date": "YYYY-MM-DD",
     "vendor": "company name",
     "customer": "company name",
-    "currency": "HKD (default if not specified)",
+    "currency": "ISO 4217 code or null if unknown",
     "total_amount": "numeric",
     "account_category": "string|null",
     "items": [
@@ -1423,7 +1423,7 @@ Return ONLY valid JSON with:
 {{
     "vendor": "company name",
     "date": "YYYY-MM-DD",
-    "currency": "HKD (default if not specified)",
+    "currency": "ISO 4217 code or null if unknown",
     "total_amount": "numeric",
     "account_category": "string|null",
     "memo": "string"

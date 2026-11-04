@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FocusEvent } from 'react'
 import { isModuleTxnLocked } from '../recon/moduleReconKeys'
 import { useAuth } from '../../contexts/AuthContext'
 import { FilePreviewModal } from '../../components/filePreview'
@@ -28,6 +28,15 @@ import {
   validCoaCode,
 } from '../../utils/coaDisplay'
 import { csvSampleForMode } from '../workspace/parseArapCsv'
+import {
+  FX_CURRENCY_OPTIONS,
+  formatCurrencyAmount,
+  isMoneyDraft,
+  normalizeCurrencyCode,
+  parseFxNumber,
+  parseMoney2dp,
+  receiptAmountFromBankRow,
+} from '../../utils/fxCurrency'
 import { parseModuleCsvTransactions, type ModuleCsvMode } from './parseModuleCsv'
 
 type Props = { module: ModuleDef }
@@ -57,7 +66,8 @@ const COLS_BY_MODE: Record<string, FieldCol[]> = {
     { key: 'debit', header: 'Debit', field: 'debit', type: 'num', numeric: true },
     { key: 'credit', header: 'Credit', field: 'credit', type: 'num', numeric: true },
     { key: 'tax_amount', header: 'Tax', field: 'tax_amount', type: 'num', numeric: true },
-    { key: 'currency', header: 'Cur', field: 'currency', type: 'text' },
+    { key: 'currency', header: 'Receipt', field: 'currency', type: 'text' },
+    { key: 'company_currency', header: 'Company', field: 'company_currency', type: 'text' },
     { key: 'account_code', header: 'Account', field: 'account_code', type: 'text' },
     { key: 'category', header: 'Category', field: 'category', type: 'text', readOnly: true },
     { key: 'payment_status', header: 'Payment', field: 'payment_status', type: 'text' },
@@ -67,7 +77,8 @@ const COLS_BY_MODE: Record<string, FieldCol[]> = {
     { key: 'date', header: 'Date', field: 'date', type: 'date' },
     { key: 'debit', header: 'Debit', field: 'debit', type: 'num', numeric: true },
     { key: 'credit', header: 'Credit', field: 'credit', type: 'num', numeric: true },
-    { key: 'currency', header: 'Cur', field: 'currency', type: 'text' },
+    { key: 'currency', header: 'Receipt', field: 'currency', type: 'text' },
+    { key: 'company_currency', header: 'Company', field: 'company_currency', type: 'text' },
     { key: 'payer', header: 'Payer', field: 'payer', type: 'text' },
     { key: 'payee', header: 'Payee', field: 'payee', type: 'text' },
     { key: 'bank', header: 'Bank', field: 'bank', type: 'text' },
@@ -83,7 +94,8 @@ const COLS_BY_MODE: Record<string, FieldCol[]> = {
     { key: 'withdrawal', header: 'Withdrawal', field: 'withdrawal', type: 'num', numeric: true },
     { key: 'deposit', header: 'Deposit', field: 'deposit', type: 'num', numeric: true },
     { key: 'balance', header: 'Balance', field: 'balance', type: 'num', numeric: true },
-    { key: 'currency', header: 'Cur', field: 'currency', type: 'text' },
+    { key: 'currency', header: 'Receipt', field: 'currency', type: 'text' },
+    { key: 'company_currency', header: 'Company', field: 'company_currency', type: 'text' },
     { key: 'account_code', header: 'GL code', field: 'account_code', type: 'text' },
     { key: 'category', header: 'Category', field: 'category', type: 'text', readOnly: true },
   ],
@@ -116,6 +128,76 @@ function parseNum(s: string): number | null {
   return Number.isNaN(n) ? null : n
 }
 
+function moneyDraftFromAmount(amount: number | null): string {
+  return amount == null ? '' : String(amount)
+}
+
+function currencySelectOptions(current: string): string[] {
+  const code = normalizeCurrencyCode(current)
+  return code && !(FX_CURRENCY_OPTIONS as readonly string[]).includes(code)
+    ? [code, ...FX_CURRENCY_OPTIONS]
+    : [...FX_CURRENCY_OPTIONS]
+}
+
+function FxPairCell({
+  code,
+  amount,
+  onCodeChange,
+  onAmountCommit,
+}: {
+  code: string
+  amount: number | null
+  onCodeChange: (code: string) => void
+  onAmountCommit: (amount: number | null) => void
+}) {
+  const [draft, setDraft] = useState(() => moneyDraftFromAmount(amount))
+  const [focused, setFocused] = useState(false)
+  const iso = normalizeCurrencyCode(code)
+
+  useEffect(() => {
+    if (!focused) setDraft(moneyDraftFromAmount(amount))
+  }, [amount, focused])
+
+  return (
+    <div className="erp-fx-cell">
+      <select
+        className="erp-cell-select"
+        value={iso}
+        onChange={e => onCodeChange(e.target.value)}
+      >
+        <option value="">—</option>
+        {currencySelectOptions(iso).map(opt => (
+          <option key={opt} value={opt}>
+            {opt}
+          </option>
+        ))}
+      </select>
+      <input
+        className="erp-cell-input num"
+        type="text"
+        inputMode="decimal"
+        value={focused ? draft : moneyDraftFromAmount(amount)}
+        onFocus={() => {
+          setDraft(moneyDraftFromAmount(amount))
+          setFocused(true)
+        }}
+        onChange={e => {
+          const next = e.target.value
+          if (!isMoneyDraft(next)) return
+          setDraft(next)
+          if (next.trim() === '') onAmountCommit(null)
+        }}
+        onBlur={(e: FocusEvent<HTMLInputElement>) => {
+          setFocused(false)
+          const parsed = parseMoney2dp(e.target.value)
+          setDraft(moneyDraftFromAmount(parsed))
+          onAmountCommit(parsed)
+        }}
+      />
+    </div>
+  )
+}
+
 const BANK_ACCOUNT_TYPE_KEYS = ['account_type', '賬戶類型', '帳戶類型', '账户类型'] as const
 
 function cellValue(
@@ -137,6 +219,16 @@ function cellValue(
   if (col.field === 'category' && coaCodes && nameByCode) {
     const code = validCoaCode(row.tx.account_code, coaCodes)
     return code ? nameByCode.get(code) || '' : ''
+  }
+  if (col.field === 'currency') {
+    const amt = parseFxNumber(row.tx.amount) ?? receiptAmountFromBankRow(row.tx)
+    return formatCurrencyAmount(String(row.tx.currency ?? ''), amt)
+  }
+  if (col.field === 'company_currency') {
+    const amt = parseFxNumber(row.tx.company_amount)
+    return amt != null
+      ? formatCurrencyAmount(String(row.tx.company_currency ?? ''), amt)
+      : String(row.tx.company_currency ?? '')
   }
   const v = row.tx[col.field] ?? (col.fallbackField ? row.tx[col.fallbackField] : undefined)
   return v == null ? '' : String(v)
@@ -353,6 +445,35 @@ export function ModuleTransactionGrid({ module }: Props) {
             </select>
           )
         }
+        if (col.field === 'currency' || col.field === 'company_currency') {
+          const isCompany = col.field === 'company_currency'
+          const code = String(isCompany ? row.tx.company_currency ?? '' : row.tx.currency ?? '')
+          const amount = isCompany
+            ? parseFxNumber(row.tx.company_amount)
+            : parseFxNumber(row.tx.amount) ?? receiptAmountFromBankRow(row.tx)
+          if (col.readOnly || locked) {
+            return (
+              <span
+                className="erp-cell-text"
+                title={locked ? 'Reconciled — unlock by cancelling the match in Reconciliation' : text || undefined}
+              >
+                {formatCurrencyAmount(code, amount) || '-'}
+              </span>
+            )
+          }
+          return (
+            <FxPairCell
+              code={code}
+              amount={amount}
+              onCodeChange={next =>
+                tx.updateRowFx(row.key, isCompany ? { company_currency: next } : { currency: next })
+              }
+              onAmountCommit={amt =>
+                tx.updateRowFx(row.key, isCompany ? { company_amount: amt } : { amount: amt })
+              }
+            />
+          )
+        }
         if (col.readOnly || locked) {
           return (
             <span
@@ -490,6 +611,7 @@ export function ModuleTransactionGrid({ module }: Props) {
     coaSelectOptions,
     tx,
     preview,
+    tx.updateRowFx,
   ])
 
   const toggleSelect = (id: string) =>

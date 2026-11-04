@@ -57,12 +57,16 @@ describe('rowCanShowReceiptCropPreview', () => {
     expect(rowCanShowReceiptCropPreview(row, files)).toBe(true)
   })
 
-  it('is false for normal VLM rows without region (file alone is not enough)', () => {
+  it('preview_requires_bbox: no Target crop without a stored region', () => {
     const row = {
       source_file: 'synthetic.pdf',
       extraction_provenance: { source_pdf_page: 1 },
     }
     expect(rowHasReceiptCropRegion(row)).toBe(false)
     expect(rowCanShowReceiptCropPreview(row, files)).toBe(false)
+  })
+
+  it('is false when the run has no uploaded files', () => {
+    expect(rowCanShowReceiptCropPreview({ source_file: 'synthetic.pdf' }, [])).toBe(false)
   })
 })

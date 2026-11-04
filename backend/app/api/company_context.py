@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_company_id
+from app.core.gateway_settings import openai_chat_completions_url
 from app.core.config import settings
 from app.core.text_limits import (
     MAX_COMPANY_KEYWORD_ITEM_CHARS,
@@ -18,12 +19,13 @@ from app.core.text_limits import (
 )
 from app.database import get_db
 from app.models.company_context import CompanyProfile
+from app.services.company_fx import merge_fx_settings, reporting_currency_from_settings
 
 router = APIRouter()
 
 _DEPLOY_API_KEY  = os.getenv("LLM_API_KEY") or os.getenv("DEPLOY_API_KEY", "")
 _DEPLOY_BASE_URL = (
-    os.getenv("LLM_BASE_URL") or os.getenv("DEPLOY_BASE_URL") or "https://www.dmxapi.cn"
+    os.getenv("LLM_BASE_URL") or os.getenv("DEPLOY_BASE_URL") or os.getenv("VLM_BASE_URL") or ""
 ).rstrip("/")
 
 
@@ -143,12 +145,9 @@ async def upsert_company_profile(
     profile.company_name_keywords = sanitized_keywords
     existing_settings = profile.custom_settings if isinstance(profile.custom_settings, dict) else {}
     incoming_settings = payload.custom_settings if isinstance(payload.custom_settings, dict) else {}
-    merged_settings = {
-        **existing_settings,
-        **incoming_settings,
-        "company_name": profile.company_name,
-        "company_name_keywords": sanitized_keywords,
-    }
+    merged_settings = merge_fx_settings(existing_settings, incoming_settings)
+    merged_settings["company_name"] = profile.company_name
+    merged_settings["company_name_keywords"] = sanitized_keywords
     profile.custom_settings = merged_settings
 
     db.commit()
@@ -164,7 +163,7 @@ def _build_profile_md(profile: CompanyProfile, company_id: str) -> str:
     basis = profile.accounting_basis or "Not specified"
     fy = profile.fiscal_year_end or "Not specified"
     custom = profile.custom_settings if isinstance(profile.custom_settings, dict) else {}
-    currency = custom.get("currency", "HKD")
+    currency = reporting_currency_from_settings(custom) or "Not set"
     business_desc = custom.get("business_description", "")
     bank_names = custom.get("bank_names", "")
 
@@ -265,7 +264,7 @@ async def generate_profile_md(
     # Ask AI to enrich the template based on what it knows
     try:
         resp = requests.post(
-            f"{_DEPLOY_BASE_URL}/v1/chat/completions",
+            openai_chat_completions_url(_DEPLOY_BASE_URL),
             headers={
                 "Authorization": f"Bearer {_DEPLOY_API_KEY}",
                 "Content-Type": "application/json",

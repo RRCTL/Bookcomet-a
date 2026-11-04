@@ -1,12 +1,14 @@
 # Dependency exceptions
 
-CI runs `pip-audit` on `backend/requirements.txt` and ignores two findings until an upstream fix is available. This is the formal accept record for Step 7.
+CI runs `pip-audit` on `backend/requirements.txt` and `backend/requirements-ocr.txt` with **no** `--ignore-vuln` flags.
 
-| ID | Package | Why it is ignored | Compensating control | Revisit |
-|---|---|---|---|---|
-| PYSEC-2026-1325 | `ecdsa` (via `python-jose`) | No fixed release at the time of this MVP | Bookcomet JWT uses **HS256 only**. Do not enable ECDSA/ES* algorithms. | When `python-jose` drops `ecdsa` or ships a fix |
-| PYSEC-2026-3552 | `cryptography` PKCS7 decrypt | Needs `cryptography>=50`; `fastapi-mail` still requires `<50` | Local MVP does not use PKCS7 decrypt. Keep the pin in `requirements.txt`. | When `fastapi-mail` allows `cryptography>=50` |
+| ID | Package | Status |
+|---|---|---|
+| CVE-2026-85394 | `python-jose` | Resolved: replaced with `PyJWT` (HS256 unchanged). |
+| PYSEC-2026-1325 | `ecdsa` (via `python-jose`) | Resolved: no longer a transitive dependency. |
+| PYSEC-2026-3552 | `cryptography` | Resolved: `cryptography>=50,<51` via `fastapi-mail>=1.6.8`. |
+| PYSEC-2026-356 | `imgaug` | Resolved: removed from `requirements-ocr.txt` (unused). |
 
-Do not remove the `--ignore-vuln` flags in `.github/workflows/ci.yml` without updating this table.
+If a new finding must be temporarily accepted, document it in this table and add a matching `--ignore-vuln` in `.github/workflows/ci.yml` with a revisit condition.
 
-npm `audit` findings on the frontend lockfile are tracked separately; they do not block the local MVP.
+npm `audit` findings on the frontend lockfile are tracked separately.

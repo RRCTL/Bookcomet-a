@@ -9,12 +9,12 @@ function normalizeSide(value: unknown): 'Dr' | 'Cr' | undefined {
 }
 
 export function bankTxnToGridRow(t: BankTransaction): ReconGridRow {
-  const amount = Number(t.amount ?? 0)
+  const amount = Number(t.company_amount ?? t.amount ?? 0)
   return {
     id: t.id,
     date: t.bank_date ?? '',
     amount,
-    currency: t.currency ?? '',
+    currency: t.company_currency || t.currency || '',
     description: t.description_raw ?? t.description_norm ?? '',
     reference: t.reference ?? '',
     status: t.status ?? 'unreconciled',
@@ -27,14 +27,14 @@ export function bankTxnToGridRow(t: BankTransaction): ReconGridRow {
 
 export function ledgerTxnToGridRow(t: LedgerTransaction): ReconGridRow {
   const module = (t.module ?? '').toUpperCase()
-  const amount = Number(t.amount ?? 0)
+  const amount = Number(t.company_amount ?? t.amount ?? 0)
   const stored = normalizeSide(t.dr_cr)
   const fallback: 'Dr' | 'Cr' = module === 'AP' ? 'Dr' : 'Cr'
   return {
     id: t.id,
     date: t.book_date ?? '',
     amount,
-    currency: t.currency ?? '',
+    currency: t.company_currency || t.currency || '',
     description: t.counterparty ?? '',
     reference: t.reference ?? t.doc_id ?? '',
     status: t.status ?? 'unreconciled',

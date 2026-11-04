@@ -2,6 +2,22 @@ import { render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { CompanyProfilePanel } from './CompanyProfilePanel'
 
+vi.mock('../../services/api', () => ({
+  api: {
+    getCompanyProfile: vi.fn().mockResolvedValue({
+      company_id: 'ws-1',
+      industry: null,
+      accounting_basis: null,
+      fiscal_year_end: null,
+      company_name: null,
+      company_name_keywords: [],
+      custom_settings: {},
+      exists: false,
+    }),
+    upsertCompanyProfile: vi.fn().mockResolvedValue({ status: 'ok', company_id: 'ws-1' }),
+  },
+}))
+
 const settings = {
   companies: [{ id: 'ws-1', name: 'Alpha', role: 'owner', roleLabel: 'Admin' }],
   activeCompany: { id: 'ws-1', name: 'Alpha', role: 'owner', roleLabel: 'Admin' },

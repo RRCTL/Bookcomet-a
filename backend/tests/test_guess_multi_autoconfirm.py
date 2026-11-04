@@ -1,4 +1,4 @@
-"""Guess mode auto-confirms multi-receipt force-split (no needs_confirmation prompt)."""
+"""Guess mode: one Detect call, never OpenCV force-split, no confirmation prompt."""
 
 from __future__ import annotations
 
@@ -8,15 +8,12 @@ from app.api import ocr
 
 
 @pytest.mark.asyncio
-async def test_guess_autoconfirm_retries_with_confirmed(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_guess_does_not_retry_opencv_force_split(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[bool] = []
 
     async def fake_multi(_path, **kwargs):  # type: ignore[no-untyped-def]
-        confirmed = bool(kwargs.get("confirmed"))
-        calls.append(confirmed)
-        if not confirmed:
-            return None
-        return {"pages": [{"receipt_index": 1}], "ocr_job_outcome": "ok"}
+        calls.append(bool(kwargs.get("confirmed")))
+        return None
 
     monkeypatch.setattr(ocr, "_run_ap_multi_receipt_ocr_from_image", fake_multi)
 
@@ -32,12 +29,12 @@ async def test_guess_autoconfirm_retries_with_confirmed(monkeypatch: pytest.Monk
         ap_receipt_signal="guess",
     )
     assert ask is False
-    assert result is not None
-    assert calls == [False, True]
+    assert result is None
+    assert calls == [False]
 
 
 @pytest.mark.asyncio
-async def test_non_guess_still_asks_confirmation(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_non_guess_does_not_ask_opencv_confirm(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[bool] = []
 
     async def fake_multi(_path, **kwargs):  # type: ignore[no-untyped-def]
@@ -46,7 +43,6 @@ async def test_non_guess_still_asks_confirmation(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(ocr, "_run_ap_multi_receipt_ocr_from_image", fake_multi)
 
-    # Signal other than guess (should not occur often); still should ask.
     result, ask = await ocr._run_ap_multi_with_guess_autoconfirm(
         "dummy.png",
         trace_id="t",
@@ -59,7 +55,7 @@ async def test_non_guess_still_asks_confirmation(monkeypatch: pytest.MonkeyPatch
         ap_receipt_signal="single_per_page",
     )
     assert result is None
-    assert ask is True
+    assert ask is False
     assert calls == [False]
 
 

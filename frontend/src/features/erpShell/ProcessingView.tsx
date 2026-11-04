@@ -15,6 +15,15 @@ import {
   type WorkflowNodeCatalogEntry,
 } from '../nodeWorkspace/workflowApi'
 import {
+  ANOTHER_RUN_PROCESSING_HINT,
+  anotherRunIsProcessing,
+  canExecuteOnActiveRun,
+  canReVlmOnActiveRun,
+  canStopActiveRun,
+  canUploadOnActiveRun,
+  RUNNING_RUN_STATUSES as GATE_RUNNING_RUN_STATUSES,
+} from './processingActionGates'
+import {
   NODE_IO,
   graphWithDoubleCheckEnabled,
   graphWithDoubleCheckDisabled,
@@ -43,8 +52,29 @@ function resolveBatchPayloads(
   return mergeBatchTablePayloads(run, reconciled, built)
 }
 import { ARAPReview, type ARAPTransaction } from '../../components/ARAPReview'
+import { MvduCropPreviewGate } from '../mvduCropPreview/MvduCropPreviewGate'
+import { parseCropPreviewFromSummary } from '../mvduCropPreview/boxOps'
+import { applyCropConfirmOptimisticRun } from '../mvduCropPreview/cropGateConfirm'
+import type { CropPreviewPayload } from '../mvduCropPreview/types'
 import { BankStatementReview, type BankTransaction } from '../../components/BankStatementReview'
 import { OtherTable } from '../../components/OtherTable'
+import { CompanyFxToolbar } from '../../components/CompanyFxToolbar'
+import { ExchangeRateDialog } from '../../components/ExchangeRateDialog'
+import {
+  applySavedRateToRow,
+  foreignReceiptCurrencies,
+  fxPairKey,
+  fxRatesFromSettings,
+  hydrateRowsForCompany,
+  normalizeCurrencyCode,
+  parseFxNumber,
+  rateDialogForPair,
+  receiptAmountFromBankRow,
+  receiptAmountFromFxRow,
+  reportingCurrencyFromSettings,
+  rowReadyForBooks,
+  sameCurrency,
+} from '../../utils/fxCurrency'
 import type { OtherRow } from '../../types/other'
 import { api } from '../../services/api'
 import { assetSourceLabel, filesByIdFromRun } from '../../utils/rowSourceLabel'
@@ -81,6 +111,27 @@ import {
 import { FilePreviewModal } from '../../components/filePreview/FilePreviewModal'
 import { useTaskFilePreview } from '../../components/filePreview/useTaskFilePreview'
 import { processingModeLabel } from '../../components/ModeSelector'
+import {
+  RUN_ROW_FOREIGN_HIDDEN_NOTICE,
+  RUN_ROW_MISMATCH_MESSAGE,
+  filterPayloadRowsToRunFiles,
+  partitionRowsByRunOwnership,
+} from './runReviewRowOwnership'
+import {
+  clearReviewTableForRebuild,
+  clearReviewTableOnRunSwitch,
+  editedRowsSafeForApprove,
+  resolveDisplayRowsForRun,
+  reviewTableShowingLoader,
+} from './reviewTableSession'
+import {
+  REVIEWED_NO_ROWS_GATE,
+  REVIEWED_NO_ROWS_LABEL,
+  VIEW_PDF_ACTION,
+  collectEmptyExtractPagesFromRunFiles,
+  formatLiveOutputPageStatuses,
+  type EmptyExtractPageFlag,
+} from '../../utils/bankEmptyExtract'
 
 // Modes offered when creating a run (matches enabled Phase 1 grid modules).
 const PROC_MODES = ['AP', 'AR', 'BANK', 'OTHER'] as const
@@ -112,7 +163,7 @@ type NodeState = {
 }
 type StatusKind = 'done' | 'run' | 'pend' | 'fail'
 
-const RUNNING_RUN_STATUSES = new Set(['executing', 'coa_running', 'running', 'queued'])
+const RUNNING_RUN_STATUSES = GATE_RUNNING_RUN_STATUSES
 
 const PROC_RAIL_WIDTH_KEY = 'erp.proc.railWidth'
 const PROC_RIGHT_WIDTH_KEY = 'erp.proc.rightWidth'
@@ -225,7 +276,8 @@ function nodeIconStatus(status?: string): string {
   return 'pending'
 }
 
-function fileStatusLabel(status: string): string {
+function fileStatusLabel(status: string, gate?: string | null): string {
+  if (gate === REVIEWED_NO_ROWS_GATE) return REVIEWED_NO_ROWS_LABEL
   switch (status) {
     case 'ok':
       return 'Passed'
@@ -238,6 +290,10 @@ function fileStatusLabel(status: string): string {
     case 'pending':
     case 'queued':
       return 'Queued'
+    case 'stopped':
+      return 'Stopped'
+    case 'cancelled':
+      return 'Cancelled'
     default:
       return status || '-'
   }
@@ -343,16 +399,30 @@ export function ProcessingView() {
   const [error, setError] = useState<string | null>(null)
   const [showModePicker, setShowModePicker] = useState(false)
   const [creating, setCreating] = useState(false)
-  const [busy, setBusy] = useState(false)
+  /** Per-run in-flight HTTP (upload / execute / re-vlm / stop) — never blocks sibling runs. */
+  const [busyRunId, setBusyRunId] = useState<string | null>(null)
+  const [stopConfirmOpen, setStopConfirmOpen] = useState(false)
   const [approving, setApproving] = useState(false)
+  const [rebuilding, setRebuilding] = useState(false)
+  const [emptyExtractBusy, setEmptyExtractBusy] = useState(false)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [railWidth, setRailWidth] = useState(() => readStoredWidth(PROC_RAIL_WIDTH_KEY, 220))
   const [rightWidth, setRightWidth] = useState(() => readStoredWidth(PROC_RIGHT_WIDTH_KEY, 312))
   const [resizingRail, setResizingRail] = useState(false)
   const [resizingRight, setResizingRight] = useState(false)
   const [payloads, setPayloads] = useState<Record<string, Record<string, unknown>>>({})
+  /** Run id that `payloads` / `editedRows` currently belong to (prevents cross-run bleed). */
+  const [tableBoundRunId, setTableBoundRunId] = useState<string | null>(null)
+  /** True after a run switch until that run's table payloads finish loading. */
+  const [tableLoading, setTableLoading] = useState(false)
   const [assetRecords, setAssetRecords] = useState<OtherRow[]>([])
   const [editedRows, setEditedRows] = useState<ARAPTransaction[] | BankTransaction[] | null>(null)
+  const [reportingCurrency, setReportingCurrency] = useState('')
+  const [fxRates, setFxRates] = useState<Record<string, number>>({})
+  const [tableCompanyCurrency, setTableCompanyCurrency] = useState('')
+  const [hideReceiptCurrency, setHideReceiptCurrency] = useState(false)
+  const [rateDialog, setRateDialog] = useState<{ from: string; to: string; amount: number | null; printed: number | null } | null>(null)
+  const [rateQueue, setRateQueue] = useState<string[]>([])
   const [applyingTemplate, setApplyingTemplate] = useState(false)
   const [templateChoice, setTemplateChoice] = useState('')
   const [menuRunId, setMenuRunId] = useState<string | null>(null)
@@ -360,6 +430,8 @@ export function ProcessingView() {
   const [renameDraft, setRenameDraft] = useState('')
   const [showReVlm, setShowReVlm] = useState(false)
   const [reVlmInitialFileIds, setReVlmInitialFileIds] = useState<string[]>([])
+  const [cropGateBusy, setCropGateBusy] = useState(false)
+  const [cropGateError, setCropGateError] = useState<string | null>(null)
   const [headerChangeConfirm, setHeaderChangeConfirm] = useState<{
     onConfirm: () => void
     onCancel: () => void
@@ -488,10 +560,17 @@ export function ProcessingView() {
           resolveBatchPayloads(run, loaded),
         )
         if (runId !== activeRunIdRef.current) return run
+        // Replace table for this run only; drop any overlay from a prior run.
         setPayloads(p)
+        setTableBoundRunId(runId)
+        setEditedRows(null)
+        setTableLoading(false)
       } catch {
         if (runId !== activeRunIdRef.current) return run
         setPayloads({})
+        setTableBoundRunId(runId)
+        setEditedRows(null)
+        setTableLoading(false)
       }
       void refreshAssetRecords(run)
       return run
@@ -502,21 +581,38 @@ export function ProcessingView() {
   useEffect(() => {
     if (!activeRunId) {
       setActiveRun(null)
-      setPayloads({})
+      const cleared = clearReviewTableOnRunSwitch(null)
+      setPayloads(cleared.payloads)
+      setTableBoundRunId(cleared.boundRunId)
+      setEditedRows(cleared.editedRows as null)
+      setTableLoading(cleared.loading)
       setAssetRecords([])
       return
     }
+    // Synchronously drop previous run's table so FX / display cannot re-seed sticky rows.
+    const cleared = clearReviewTableOnRunSwitch(activeRunId)
+    setPayloads(cleared.payloads)
+    setTableBoundRunId(cleared.boundRunId)
+    setEditedRows(cleared.editedRows as null)
+    setTableLoading(cleared.loading)
+    setAssetRecords([])
     let cancelled = false
     loadActiveRun(activeRunId).catch(err => {
       if (cancelled) return
       setActiveRun(null)
       setPayloads({})
+      setTableBoundRunId(null)
+      setEditedRows(null)
+      setTableLoading(false)
       setError(err instanceof Error ? err.message : 'Could not load run.')
     })
     return () => {
       cancelled = true
     }
-  }, [activeRunId, loadActiveRun])
+    // Intentionally only re-run on activeRunId: loadActiveRun identity changes must not
+    // re-clear a freshly loaded table.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRunId])
 
   const applyRunFromServer = useCallback(
     (run: WorkflowRun, refreshPayloads = false) => {
@@ -544,6 +640,8 @@ export function ProcessingView() {
           .then(loaded => {
             if (runId !== activeRunIdRef.current) return
             setPayloads(resolveBatchPayloads(run, loaded))
+            setTableBoundRunId(runId)
+            setTableLoading(false)
           })
           .catch(() => {})
         void refreshAssetRecords(run)
@@ -577,6 +675,21 @@ export function ProcessingView() {
       window.clearInterval(poll)
     }
   }, [activeRunId, runStatus, companyId, reloadRuns, applyRunFromServer])
+
+  const siblingRunProcessing = anotherRunIsProcessing(runs, activeRunId, busyRunId)
+  // When a sibling run is Processing, refresh the rail so Run/Re-VLM unlock without a full page reload.
+  useEffect(() => {
+    if (!siblingRunProcessing) return
+    let cancelled = false
+    const poll = window.setInterval(() => {
+      if (cancelled) return
+      void reloadRuns().catch(() => {})
+    }, 2500)
+    return () => {
+      cancelled = true
+      window.clearInterval(poll)
+    }
+  }, [siblingRunProcessing, reloadRuns])
 
   useWorkflowRunEvents({
     runId: activeRunId,
@@ -649,7 +762,7 @@ export function ProcessingView() {
       const label = r.title || 'Untitled'
       const msg = `Remove "${label}" permanently? This deletes the run, uploaded files, and unreconciled module rows derived from it. Reconciled rows are kept.`
       if (!window.confirm(msg)) return
-      setBusy(true)
+      setBusyRunId(r.id)
       setError(null)
       try {
         await workflowApi.deleteRun(companyId, r.id)
@@ -658,7 +771,7 @@ export function ProcessingView() {
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Could not remove the run.')
       } finally {
-        setBusy(false)
+        setBusyRunId(prev => (prev === r.id ? null : prev))
       }
     },
     [companyId, reloadRuns, activeRunId, assignActiveRunId],
@@ -743,9 +856,9 @@ export function ProcessingView() {
   const runAction = useCallback(
     async (action: 'execute' | 'cancel') => {
       if (!activeRun) return
-      setBusy(true)
-      setError(null)
       const runId = activeRun.id
+      setBusyRunId(runId)
+      setError(null)
       if (action === 'execute') markRunExecuting(runId)
       try {
         const updated = await workflowApi[action](companyId, runId)
@@ -760,20 +873,20 @@ export function ProcessingView() {
             .catch(() => {})
         }
       } finally {
-        setBusy(false)
+        setBusyRunId(prev => (prev === runId ? null : prev))
       }
     },
     [activeRun, companyId, reloadRuns, markRunExecuting, applyRunFromServer],
   )
 
-  const stopRun = useCallback(async () => {
+  const performStop = useCallback(async () => {
     if (!activeRun) return
-    const label = activeRun.title?.trim() || 'Untitled'
-    const msg = `Stop all processing on "${label}"? In-progress files will be reset. Partial results may remain for review.`
-    if (!window.confirm(msg)) return
-    setBusy(true)
+    setStopConfirmOpen(false)
     setError(null)
     const runId = activeRun.id
+    // Clear this run's busy so Run/Re-VLM unlock after stop even if a prior
+    // execute/re-vlm HTTP is still draining.
+    setBusyRunId(prev => (prev === runId ? null : prev))
     stopGuardRunIdRef.current = runId
     applyRunFromServer(applyRunStoppedLocally(activeRun), true)
     try {
@@ -791,10 +904,13 @@ export function ProcessingView() {
           if (!runLooksProcessing(run)) stopGuardRunIdRef.current = null
         })
         .catch(() => {})
-    } finally {
-      setBusy(false)
     }
   }, [activeRun, companyId, reloadRuns, applyRunFromServer])
+
+  const stopRun = useCallback(() => {
+    if (!activeRun) return
+    setStopConfirmOpen(true)
+  }, [activeRun])
 
   const handleUpload = useCallback(
     async (files: FileList | null) => {
@@ -804,20 +920,21 @@ export function ProcessingView() {
         setError('Files already uploaded for this task. Use Re-VLM to retry failed files.')
         return
       }
-      setBusy(true)
+      const runId = activeRun.id
+      setBusyRunId(runId)
       setError(null)
       try {
         const uploadBatchId = safeRandomUUID()
         const uploadedAt = new Date().toISOString()
         for (const file of Array.from(files)) {
-          await workflowApi.uploadFile(companyId, activeRun.id, file, { uploadBatchId, uploadedAt })
+          await workflowApi.uploadFile(companyId, runId, file, { uploadBatchId, uploadedAt })
         }
-        await loadActiveRun(activeRun.id)
+        await loadActiveRun(runId)
         void reloadRuns()
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Could not upload files.')
       } finally {
-        setBusy(false)
+        setBusyRunId(prev => (prev === runId ? null : prev))
       }
     },
     [activeRun, companyId, loadActiveRun, reloadRuns],
@@ -829,6 +946,49 @@ export function ProcessingView() {
     setShowReVlm(true)
   }, [activeRun])
 
+  const rebuildFromRunFiles = useCallback(async () => {
+    if (!activeRun || rebuilding || busyRunId === activeRun.id || approving) return
+    if (runHasLockedApprovedTable(activeRun)) {
+      setError(
+        'Approved and loaded into modules — rebuild is disabled to avoid conflicting updates.',
+      )
+      return
+    }
+    if ((activeRun.files ?? []).length === 0) {
+      setError('This run has no uploaded files')
+      return
+    }
+    setError(null)
+    setRebuilding(true)
+    // Drop stale/wrong rows immediately — same empty-loader spirit as #133 run switch.
+    const cleared = clearReviewTableForRebuild(activeRun.id)
+    setPayloads(cleared.payloads)
+    setTableBoundRunId(cleared.boundRunId)
+    setEditedRows(cleared.editedRows as null)
+    setTableLoading(cleared.loading)
+    try {
+      const updated = await workflowApi.rebuildReview(companyId, activeRun.id)
+      applyRunFromServer(updated, true)
+      void reloadRuns()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not rebuild review from run files.')
+      void workflowApi
+        .getRun(companyId, activeRun.id)
+        .then(run => applyRunFromServer(run, true))
+        .catch(() => {})
+    } finally {
+      setRebuilding(false)
+    }
+  }, [
+    activeRun,
+    approving,
+    applyRunFromServer,
+    busyRunId,
+    companyId,
+    rebuilding,
+    reloadRuns,
+  ])
+
   const handleReVlmConfirm = useCallback(
     async ({
       taskFileIds,
@@ -837,7 +997,7 @@ export function ProcessingView() {
       expectedReceiptCount,
       workflow,
     }: ReVlmConfirmPayload) => {
-      if (!activeRun || taskFileIds.length === 0 || busy) return
+      if (!activeRun || taskFileIds.length === 0 || busyRunId === activeRun.id) return
       if (runHasLockedApprovedTable(activeRun)) {
         setError(
           'Approved and loaded into modules — Re-VLM is disabled to avoid conflicting updates.',
@@ -848,7 +1008,8 @@ export function ProcessingView() {
       }
       setShowReVlm(false)
       setReVlmInitialFileIds([])
-      setBusy(true)
+      const runId = activeRun.id
+      setBusyRunId(runId)
       setError(null)
       const revlmLocalOpts = {
         rescanReasons,
@@ -869,7 +1030,7 @@ export function ProcessingView() {
           )
         ) {
           const nextGraph = applyWorkflowSettingsToGraph(activeRun.graph_json, templates, workflow)
-          runForReVlm = await workflowApi.patchRun(companyId, activeRun.id, nextGraph)
+          runForReVlm = await workflowApi.patchRun(companyId, runId, nextGraph)
           // Re-apply Re-VLM running state so patchRun does not flash Finished again.
           applyRunFromServer(applyRunReVlmLocally(runForReVlm, taskFileIds, revlmLocalOpts), true)
         }
@@ -883,14 +1044,14 @@ export function ProcessingView() {
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Could not re-run VLM.')
         void workflowApi
-          .getRun(companyId, activeRun.id)
+          .getRun(companyId, runId)
           .then(run => applyRunFromServer(run, true))
           .catch(() => {})
       } finally {
-        setBusy(false)
+        setBusyRunId(prev => (prev === runId ? null : prev))
       }
     },
-    [activeRun, busy, companyId, reloadRuns, applyRunFromServer, templates],
+    [activeRun, busyRunId, companyId, reloadRuns, applyRunFromServer, templates],
   )
 
   const previewTaskFiles = useMemo(
@@ -916,15 +1077,230 @@ export function ProcessingView() {
   )
   const isAsset = (activeRun?.processing_mode ?? '').toUpperCase() === 'OTHER'
   const isBank = (activeRun?.processing_mode ?? '').toUpperCase() === 'BANK'
+  const emptyExtractPages = useMemo(
+    () => (isBank ? collectEmptyExtractPagesFromRunFiles(activeRun?.files) : []),
+    [activeRun?.files, isBank],
+  )
+  const hasEmptyExtractFlags = emptyExtractPages.length > 0
+
+  const retryEmptyExtractPage = useCallback(
+    async (flag: EmptyExtractPageFlag) => {
+      if (!activeRun || emptyExtractBusy || rebuilding || busyRunId === activeRun.id || approving)
+        return
+      if (runHasLockedApprovedTable(activeRun)) {
+        setError(
+          'Approved and loaded into modules — page retry is disabled to avoid conflicting updates.',
+        )
+        return
+      }
+      setError(null)
+      setEmptyExtractBusy(true)
+      try {
+        const updated = await workflowApi.retryEmptyExtractPage(
+          companyId,
+          activeRun.id,
+          flag.taskFileId,
+          flag.page,
+        )
+        applyRunFromServer(updated, true)
+        void reloadRuns()
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Could not retry this page.')
+      } finally {
+        setEmptyExtractBusy(false)
+      }
+    },
+    [
+      activeRun,
+      applyRunFromServer,
+      approving,
+      busyRunId,
+      companyId,
+      emptyExtractBusy,
+      rebuilding,
+      reloadRuns,
+    ],
+  )
+
+  const markEmptyExtractReviewed = useCallback(
+    async (flag: EmptyExtractPageFlag) => {
+      if (!activeRun || emptyExtractBusy || rebuilding || busyRunId === activeRun.id || approving)
+        return
+      if (runHasLockedApprovedTable(activeRun)) {
+        setError(
+          'Approved and loaded into modules — mark-reviewed is disabled to avoid conflicting updates.',
+        )
+        return
+      }
+      setError(null)
+      setEmptyExtractBusy(true)
+      try {
+        const updated = await workflowApi.markPageReviewedNoRows(
+          companyId,
+          activeRun.id,
+          flag.taskFileId,
+          flag.page,
+        )
+        applyRunFromServer(updated, true)
+        void reloadRuns()
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : 'Could not mark page as reviewed with no rows.',
+        )
+      } finally {
+        setEmptyExtractBusy(false)
+      }
+    },
+    [
+      activeRun,
+      applyRunFromServer,
+      approving,
+      busyRunId,
+      companyId,
+      emptyExtractBusy,
+      rebuilding,
+      reloadRuns,
+    ],
+  )
+
+  const tableAwaitingLoad =
+    rebuilding ||
+    reviewTableShowingLoader(activeRunId, {
+      boundRunId: tableBoundRunId,
+      loading: tableLoading,
+    })
   const arapRows = (combined.arapTransactions as ARAPTransaction[] | undefined) ?? []
   const bankRows = (combined.bankTransactions as BankTransaction[] | undefined) ?? []
-  const displayArapRows = (editedRows as ARAPTransaction[] | null) ?? arapRows
-  const displayBankRows = (editedRows as BankTransaction[] | null) ?? bankRows
-  const outputRowCount = isAsset ? assetRecords.length : Math.max(displayArapRows.length, displayBankRows.length)
+  // Never surface an edited overlay / prior-run rows while loading or unbound.
+  const displayArapRows = resolveDisplayRowsForRun(
+    activeRunId,
+    tableBoundRunId,
+    arapRows,
+    editedRows as ARAPTransaction[] | null,
+    tableAwaitingLoad,
+  )
+  const displayBankRows = resolveDisplayRowsForRun(
+    activeRunId,
+    tableBoundRunId,
+    bankRows,
+    editedRows as BankTransaction[] | null,
+    tableAwaitingLoad,
+  )
+  const runFilesForOwnership = useMemo(
+    () =>
+      (activeRun?.files ?? []).map(f => ({
+        task_file_id: f.task_file_id,
+        original_filename: f.original_filename,
+      })),
+    [activeRun?.files],
+  )
+  const reviewOwnership = useMemo(() => {
+    if (!activeRun || isAsset || tableAwaitingLoad) {
+      return { ok: true, foreignCount: 0, ownedRows: [], foreignRows: [] }
+    }
+    const rows = (isBank ? displayBankRows : displayArapRows) as Record<string, unknown>[]
+    if (rows.length === 0) return { ok: true, foreignCount: 0, ownedRows: [], foreignRows: [] }
+    return partitionRowsByRunOwnership(rows, runFilesForOwnership)
+  }, [
+    activeRun,
+    isAsset,
+    isBank,
+    displayBankRows,
+    displayArapRows,
+    runFilesForOwnership,
+    tableAwaitingLoad,
+  ])
+  // Grid + Export CSV only ever see owned rows (foreign filtered out).
+  const safeDisplayArapRows = (
+    reviewOwnership.ok ? displayArapRows : reviewOwnership.ownedRows
+  ) as ARAPTransaction[]
+  const safeDisplayBankRows = (
+    reviewOwnership.ok ? displayBankRows : reviewOwnership.ownedRows
+  ) as BankTransaction[]
+  const outputRowCount = isAsset
+    ? assetRecords.length
+    : Math.max(safeDisplayArapRows.length, safeDisplayBankRows.length)
+  const showForeignHiddenNotice = !tableAwaitingLoad && reviewOwnership.foreignCount > 0
 
   useEffect(() => {
-    setEditedRows(null)
+    setRateDialog(null)
+    setRateQueue([])
   }, [activeRunId])
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const profile = await api.getCompanyProfile()
+        if (cancelled) return
+        const reporting = reportingCurrencyFromSettings(profile.custom_settings)
+        setReportingCurrency(reporting)
+        setFxRates(fxRatesFromSettings(profile.custom_settings))
+        if (reporting) setTableCompanyCurrency(reporting)
+      } catch {
+        /* profile optional */
+      }
+    })()
+    return () => { cancelled = true }
+  }, [companyId, activeRunId])
+
+  const effectiveCompanyCurrency = reportingCurrency || tableCompanyCurrency
+
+  // Hydrate from canonical run rows only — never from sticky editedRows of another run.
+  const fxCanonicalRows = isBank ? bankRows : arapRows
+  const fxSourceRows =
+    !tableAwaitingLoad &&
+    tableBoundRunId === activeRunId &&
+    editedRowsSafeForApprove(activeRunId, tableBoundRunId, editedRows, tableAwaitingLoad)
+      ? isBank
+        ? safeDisplayBankRows
+        : safeDisplayArapRows
+      : tableAwaitingLoad
+        ? []
+        : fxCanonicalRows
+  const fxReady = useMemo(
+    () =>
+      fxSourceRows.length === 0 ||
+      fxSourceRows.every(row =>
+        rowReadyForBooks(
+          isBank
+            ? { ...row, amount: receiptAmountFromBankRow(row as Record<string, unknown>) }
+            : row,
+          effectiveCompanyCurrency,
+        ),
+      ),
+    [fxSourceRows, isBank, effectiveCompanyCurrency],
+  )
+
+  useEffect(() => {
+    if (!activeRunId || tableBoundRunId !== activeRunId || tableAwaitingLoad) return
+    if (!effectiveCompanyCurrency || fxCanonicalRows.length === 0) return
+    const hydrated = hydrateRowsForCompany(
+      fxCanonicalRows.map(row =>
+        isBank ? { ...row, amount: receiptAmountFromBankRow(row as Record<string, unknown>) } : row,
+      ),
+      effectiveCompanyCurrency,
+      fxRates,
+    )
+    const changed = hydrated.some((row, i) => {
+      const prev = fxCanonicalRows[i] as Record<string, unknown>
+      return (
+        row.company_amount !== prev.company_amount ||
+        row.company_currency !== prev.company_currency ||
+        row.exchange_rate !== prev.exchange_rate
+      )
+    })
+    if (changed) setEditedRows(hydrated as ARAPTransaction[] | BankTransaction[])
+  }, [
+    effectiveCompanyCurrency,
+    fxRates,
+    arapRows,
+    bankRows,
+    isBank,
+    activeRunId,
+    tableBoundRunId,
+    tableAwaitingLoad,
+  ])
 
   const modeTemplates = useMemo(
     () => sortPaletteTemplates(templates.filter(t => t.processing_mode === activeRun?.processing_mode)),
@@ -953,29 +1329,71 @@ export function ProcessingView() {
 
   const approve = useCallback(async () => {
     if (!activeRun) return
+    if (tableAwaitingLoad) return
+    if (!editedRowsSafeForApprove(activeRunId, tableBoundRunId, editedRows, tableAwaitingLoad)) {
+      setError(RUN_ROW_MISMATCH_MESSAGE)
+      return
+    }
     setApproving(true)
-    setBusy(true)
+    const runId = activeRun.id
+    setBusyRunId(runId)
     setError(null)
     try {
       const payload: Record<string, unknown> = { ...combined }
       if (isBank) {
-        const raw = ((editedRows as BankTransaction[] | null) ?? bankRows).map(t => ({ ...t }))
+        const raw = (safeDisplayBankRows as BankTransaction[]).map(t => ({ ...t }))
         payload.bankTransactions = coalesceBankAccountTypeRows(raw) as BankTransaction[]
       } else {
-        payload.arapTransactions = (editedRows as ARAPTransaction[] | null) ?? arapRows
+        payload.arapTransactions = safeDisplayArapRows as ARAPTransaction[]
       }
-      const updated = await workflowApi.resume(companyId, activeRun.id, payload, false)
+      // Defense in depth: scrub any foreign-source rows before they leave the client.
+      const { payload: scoped, foreignCount } = filterPayloadRowsToRunFiles(
+        payload,
+        runFilesForOwnership,
+        activeRun.processing_mode ?? '',
+      )
+      if (foreignCount > 0) {
+        setError(RUN_ROW_FOREIGN_HIDDEN_NOTICE)
+        setApproving(false)
+        setBusyRunId(prev => (prev === runId ? null : prev))
+        return
+      }
+      if (
+        (isBank && !Array.isArray(scoped.bankTransactions)) ||
+        (!isBank && !isAsset && !Array.isArray(scoped.arapTransactions))
+      ) {
+        setError(RUN_ROW_MISMATCH_MESSAGE)
+        setApproving(false)
+        setBusyRunId(prev => (prev === runId ? null : prev))
+        return
+      }
+      const updated = await workflowApi.resume(companyId, runId, scoped, false)
       setActiveRun(updated)
-      setPayloads(mapCombinedPayloadToBatches(updated, payload))
+      setPayloads(mapCombinedPayloadToBatches(updated, scoped))
+      setTableBoundRunId(updated.id)
       setEditedRows(null)
       void reloadRuns()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not approve and resume.')
+      setError(err instanceof Error ? err.message : 'Could not approve.')
     } finally {
-      setBusy(false)
       setApproving(false)
+      setBusyRunId(prev => (prev === runId ? null : prev))
     }
-  }, [activeRun, combined, isBank, editedRows, bankRows, arapRows, companyId, reloadRuns])
+  }, [
+    activeRun,
+    activeRunId,
+    tableBoundRunId,
+    tableAwaitingLoad,
+    combined,
+    isBank,
+    isAsset,
+    editedRows,
+    safeDisplayBankRows,
+    safeDisplayArapRows,
+    runFilesForOwnership,
+    companyId,
+    reloadRuns,
+  ])
 
   const selectedNode = activeRun?.graph_json.nodes.find(n => n.id === selectedNodeId) ?? null
   const receiptStyleNode = activeRun?.graph_json.nodes.find(n => n.type === 'ReceiptStyle') ?? null
@@ -992,6 +1410,8 @@ export function ProcessingView() {
       ? AP_TABLE_OPTIONS_ORDER.filter(opt => opt === 'default')
       : AP_TABLE_OPTIONS_ORDER
   const isRunning = RUNNING_RUN_STATUSES.has(runStatus)
+  // Busy only for the open run — sibling runs can still upload / edit.
+  const busy = Boolean(activeRunId && busyRunId === activeRunId)
   // A node still showing a running state means the workflow is mid-process even if the
   // run-level status lags (or is wedged); Stop must stay enabled to unstick it.
   const anyNodeRunning = useMemo(
@@ -1007,21 +1427,322 @@ export function ProcessingView() {
   const anyFileRunning = Boolean(activeRun?.files.some(f => f.file_status === 'running'))
   // Live output banner + right-panel spinners stay on while Re-VLM / VLM is in flight.
   const tableProcessing = extracting || anyNodeRunning || anyFileRunning
+  const otherRunProcessing = anotherRunIsProcessing(runs, activeRunId, busyRunId)
+  const canStop = canStopActiveRun({
+    hasActiveRun: Boolean(activeRun),
+    runStatus,
+    files: activeRun?.files ?? [],
+    nodeStates: activeRun?.node_states_json,
+  })
+  const canUpload = canUploadOnActiveRun({
+    hasActiveRun: Boolean(activeRun),
+    fileCount: activeRun?.files.length ?? 0,
+    busyOnActiveRun: busy,
+  })
   // Once approved (CoA posting / completed) the output table is view-only.
   const outputReadOnly = runStatus === 'coa_running' || runStatus === 'completed'
   const reVlmLocked = Boolean(activeRun && runHasLockedApprovedTable(activeRun))
   const reVlmLockedTitle =
     'Approved and loaded into modules — Re-VLM is disabled to avoid conflicting updates.'
+  const canReVlm = canReVlmOnActiveRun({
+    hasActiveRun: Boolean(activeRun),
+    hasProcessedFiles,
+    activeRunProcessing: isRunning,
+    busyOnActiveRun: busy,
+    anotherRunProcessing: otherRunProcessing,
+    reVlmLocked,
+  })
+  const canExecute = canExecuteOnActiveRun({
+    hasActiveRun: Boolean(activeRun),
+    fileCount: activeRun?.files.length ?? 0,
+    activeRunProcessing: isRunning,
+    busyOnActiveRun: busy,
+    anotherRunProcessing: otherRunProcessing,
+  })
+  const fxTableRows = (): Record<string, unknown>[] => {
+    if (isAsset) return assetRecords as Record<string, unknown>[]
+    if (isBank) return safeDisplayBankRows as Record<string, unknown>[]
+    return safeDisplayArapRows as Record<string, unknown>[]
+  }
+
+  const openQueuedDialog = (queue: string[], company: string, rows: Record<string, unknown>[]) => {
+    const nextFrom = queue[0]
+    if (!nextFrom) {
+      setRateQueue([])
+      setRateDialog(null)
+      return
+    }
+    setRateQueue(queue)
+    setRateDialog(rateDialogForPair(rows, nextFrom, company, { bank: isBank }))
+  }
+
+  const persistReportingCurrency = async (next: string) => {
+    const code = normalizeCurrencyCode(next)
+    try {
+      const profile = await api.getCompanyProfile()
+      await api.upsertCompanyProfile({
+        industry: profile.industry,
+        accounting_basis: profile.accounting_basis,
+        fiscal_year_end: profile.fiscal_year_end,
+        company_name: profile.company_name,
+        company_name_keywords: profile.company_name_keywords,
+        custom_settings: { ...profile.custom_settings, reporting_currency: code || null },
+      })
+    } catch {
+      /* keep local selection even if profile save fails */
+    }
+    setReportingCurrency(code)
+    setTableCompanyCurrency(code)
+  }
+
+  const onCompanyCurrencyChange = async (next: string) => {
+    const code = normalizeCurrencyCode(next)
+    await persistReportingCurrency(code)
+    if (!code) {
+      setRateQueue([])
+      setRateDialog(null)
+      return
+    }
+    const rows = fxTableRows()
+    const queue = foreignReceiptCurrencies(rows, code)
+    openQueuedDialog(queue, code, rows)
+  }
+
+  const applyPairRate = async (rate: number, printedAmount?: number) => {
+    if (!rateDialog || !effectiveCompanyCurrency) return
+    const pair = fxPairKey(rateDialog.from, rateDialog.to)
+    const nextRates = { ...fxRates, [pair]: rate }
+    try {
+      const profile = await api.getCompanyProfile()
+      await api.upsertCompanyProfile({
+        industry: profile.industry,
+        accounting_basis: profile.accounting_basis,
+        fiscal_year_end: profile.fiscal_year_end,
+        company_name: profile.company_name,
+        company_name_keywords: profile.company_name_keywords,
+        custom_settings: {
+          ...profile.custom_settings,
+          reporting_currency: effectiveCompanyCurrency || profile.custom_settings?.reporting_currency || null,
+          fx_rates: nextRates,
+        },
+      })
+    } catch {
+      /* keep local rate even if profile save fails */
+    }
+    setFxRates(nextRates)
+    const applyRow = <T extends Record<string, unknown>>(row: T): T => {
+      const receipt = normalizeCurrencyCode(String(row.currency ?? ''))
+      if (receipt !== rateDialog.from) return row
+      const working = isBank
+        ? { ...row, amount: receiptAmountFromBankRow(row) }
+        : { ...row, amount: receiptAmountFromFxRow(row) ?? row.amount }
+      if (printedAmount != null && parseFxNumber(working.amount) != null) {
+        return applySavedRateToRow(
+          { ...working, printed_company_amount: printedAmount },
+          effectiveCompanyCurrency,
+          rate,
+          { keepPrinted: true },
+        ) as T
+      }
+      return applySavedRateToRow(working, effectiveCompanyCurrency, rate, { keepPrinted: false }) as T
+    }
+    if (isAsset) setAssetRecords(assetRecords.map(row => applyRow(row as Record<string, unknown>) as OtherRow))
+    else if (isBank) setEditedRows(safeDisplayBankRows.map(applyRow))
+    else setEditedRows(safeDisplayArapRows.map(applyRow))
+    const rest = rateQueue.filter(code => code !== rateDialog.from)
+    openQueuedDialog(rest, effectiveCompanyCurrency, fxTableRows().map(row => applyRow(row)))
+  }
+
+  const openRateDialog = (row: Record<string, unknown>) => {
+    const from = normalizeCurrencyCode(String(row.currency ?? ''))
+    const to = normalizeCurrencyCode(effectiveCompanyCurrency)
+    if (!from || !to || sameCurrency(from, to)) return
+    setRateQueue([])
+    setRateDialog({
+      from,
+      to,
+      amount: receiptAmountFromFxRow(row, isBank),
+      printed: parseFxNumber(row.printed_company_amount),
+    })
+  }
+
   const canApproveTable =
     Boolean(activeRun) &&
     !outputReadOnly &&
     !isRunning &&
     !anyNodeRunning &&
+    !rebuilding &&
+    !emptyExtractBusy &&
+    !hasEmptyExtractFlags &&
+    !tableAwaitingLoad &&
+    fxReady &&
+    reviewOwnership.ok &&
+    editedRowsSafeForApprove(activeRunId, tableBoundRunId, editedRows, tableAwaitingLoad) &&
     (awaitingReview || (outputRowCount > 0 && hasOcrDataOnRun(activeRun)))
+  const canRebuildFromRunFiles =
+    Boolean(activeRun) &&
+    isBank &&
+    !outputReadOnly &&
+    !isRunning &&
+    !anyNodeRunning &&
+    !rebuilding &&
+    !emptyExtractBusy &&
+    !busy &&
+    !approving &&
+    !reVlmLocked &&
+    (activeRun?.files.length ?? 0) > 0
   const completedFileCount = (activeRun?.files ?? []).filter(f =>
     ['ok', 'warning'].includes(f.file_status ?? ''),
   ).length
   const totalFileCount = activeRun?.files.length ?? 0
+
+  const cropGateTarget = useMemo(() => {
+    if (!activeRun?.task_id) return null
+    const mode = (activeRun.processing_mode ?? '').toUpperCase()
+    if (mode !== 'AP' && mode !== 'AR') return null
+    for (const f of activeRun.files ?? []) {
+      const summary = (f.result_summary_json ?? null) as Record<string, unknown> | null
+      const parsed = parseCropPreviewFromSummary(summary)
+      if (!parsed.preview) continue
+      const phase = parsed.preview.phase
+      // Keep the docked gate visible through extract progress (phase=extracting),
+      // not only while needs_crop_preview is still true on the summary.
+      const waitingConfirm =
+        phase === 'preview' &&
+        (f.error_text === 'needs_crop_preview' || parsed.needsGate)
+      const extracting = phase === 'extracting'
+      if (waitingConfirm || extracting) {
+        return {
+          taskFileId: f.task_file_id,
+          filename: f.original_filename,
+          preview: parsed.preview as CropPreviewPayload,
+        }
+      }
+    }
+    return null
+  }, [activeRun])
+
+  const reviewCropBoxes = useMemo(() => {
+    for (const f of activeRun?.files ?? []) {
+      const summary = f.result_summary_json as Record<string, unknown> | null | undefined
+      const cp = summary?.crop_preview
+      if (cp && typeof cp === 'object') {
+        const boxes = (cp as Record<string, unknown>).boxes
+        if (Array.isArray(boxes) && boxes.length > 0) return boxes
+      }
+    }
+    return undefined
+  }, [activeRun])
+
+  const handleCropGateConfirm = useCallback(
+    async (boxes: Array<Record<string, unknown>>) => {
+      if (!activeRun || !cropGateTarget || cropGateBusy) {
+        throw new Error('Crop preview is not ready to confirm.')
+      }
+      const runId = activeRun.id
+      const taskFileId = cropGateTarget.taskFileId
+      setCropGateBusy(true)
+      setBusyRunId(runId)
+      setError(null)
+      setCropGateError(null)
+      // Optimistic executing so WS/polling start while confirm-crops HTTP awaits extract.
+      applyRunFromServer(
+        applyCropConfirmOptimisticRun(activeRun, taskFileId, {
+          boxes,
+          phase: 'extracting',
+        }),
+        true,
+      )
+      try {
+        const updated = await workflowApi.confirmCrops(companyId, runId, taskFileId, {
+          action: 'confirm',
+          boxes,
+        })
+        applyRunFromServer(updated, true)
+        void reloadRuns()
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Could not confirm crops.'
+        setError(message)
+        setCropGateError(message)
+        void workflowApi
+          .getRun(companyId, runId)
+          .then(run => applyRunFromServer(run, true))
+          .catch(() => {})
+        throw err instanceof Error ? err : new Error(message)
+      } finally {
+        setCropGateBusy(false)
+        setBusyRunId(prev => (prev === runId ? null : prev))
+      }
+    },
+    [
+      activeRun,
+      cropGateTarget,
+      cropGateBusy,
+      companyId,
+      applyRunFromServer,
+      reloadRuns,
+    ],
+  )
+
+  const handleCropGateSkip = useCallback(async () => {
+    if (!activeRun || !cropGateTarget || cropGateBusy) {
+      throw new Error('Crop preview is not ready to skip.')
+    }
+    const runId = activeRun.id
+    const taskFileId = cropGateTarget.taskFileId
+    setCropGateBusy(true)
+    setBusyRunId(runId)
+    setError(null)
+    setCropGateError(null)
+    applyRunFromServer(
+      applyCropConfirmOptimisticRun(activeRun, taskFileId, { phase: 'extracting' }),
+      true,
+    )
+    try {
+      const updated = await workflowApi.confirmCrops(companyId, runId, taskFileId, {
+        action: 'skip',
+      })
+      applyRunFromServer(updated, true)
+      void reloadRuns()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not skip crop preview.'
+      setError(message)
+      setCropGateError(message)
+      void workflowApi
+        .getRun(companyId, runId)
+        .then(run => applyRunFromServer(run, true))
+        .catch(() => {})
+      throw err instanceof Error ? err : new Error(message)
+    } finally {
+      setCropGateBusy(false)
+      setBusyRunId(prev => (prev === runId ? null : prev))
+    }
+  }, [activeRun, cropGateTarget, cropGateBusy, companyId, applyRunFromServer, reloadRuns])
+
+  const handleCropGateCancel = useCallback(async () => {
+    if (!activeRun || !cropGateTarget || cropGateBusy) {
+      throw new Error('Crop preview is not ready to cancel.')
+    }
+    const runId = activeRun.id
+    const taskFileId = cropGateTarget.taskFileId
+    setCropGateBusy(true)
+    setError(null)
+    setCropGateError(null)
+    try {
+      const updated = await workflowApi.confirmCrops(companyId, runId, taskFileId, {
+        action: 'cancel',
+      })
+      applyRunFromServer(updated, true)
+      void reloadRuns()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not cancel crop preview.'
+      setError(message)
+      setCropGateError(message)
+      throw err instanceof Error ? err : new Error(message)
+    } finally {
+      setCropGateBusy(false)
+    }
+  }, [activeRun, cropGateTarget, cropGateBusy, companyId, applyRunFromServer, reloadRuns])
 
   const renderNodeCard = (node: GraphNode) => {
     const state = nodeStateOf(activeRun, node.id)
@@ -1172,8 +1893,14 @@ export function ProcessingView() {
         ) : null}
         <button
           className="erp-btn"
-          disabled={!activeRun || busy || (activeRun?.files.length ?? 0) > 0}
-          title={(activeRun?.files.length ?? 0) > 0 ? 'Files already uploaded for this task' : 'Upload files (one batch per task)'}
+          disabled={!canUpload}
+          title={
+            (activeRun?.files.length ?? 0) > 0
+              ? 'Files already uploaded for this task'
+              : otherRunProcessing
+                ? 'Upload files on this run while another run processes'
+                : 'Upload files (one batch per task)'
+          }
           onClick={() => fileInputRef.current?.click()}
         >
           Upload Files
@@ -1191,36 +1918,55 @@ export function ProcessingView() {
         <p className="erp-proc-cloud-ai-notice" role="note">
           {CLOUD_AI_DATA_NOTICE}
         </p>
-        <div className="erp-proc-toolbar-actions">
-          <button
-            className="erp-btn"
-            disabled={!activeRun || isRunning || busy || !hasProcessedFiles || reVlmLocked}
-            onClick={() => openReVlmModal()}
-            title={
-              reVlmLocked
-                ? reVlmLockedTitle
-                : 'Re-run VLM on selected files (choose files and correction hints)'
-            }
-          >
-            Re-VLM
-          </button>
-          <button className="erp-btn" disabled={!activeRun || (!isRunning && !anyNodeRunning) || busy} onClick={() => void stopRun()}>
-            Stop
-          </button>
-          <button
-            className="erp-btn primary"
-            disabled={!activeRun || isRunning || busy || (activeRun?.files.length ?? 0) === 0}
-            onClick={() => void runAction('execute')}
-          >
-            Run
-          </button>
+        <div className="erp-proc-toolbar-actions-wrap">
+          <div className="erp-proc-toolbar-actions">
+            <button
+              className="erp-btn"
+              disabled={!canReVlm}
+              onClick={() => openReVlmModal()}
+              title={
+                reVlmLocked
+                  ? reVlmLockedTitle
+                  : otherRunProcessing
+                    ? ANOTHER_RUN_PROCESSING_HINT
+                    : 'Re-run VLM on selected files (choose files and correction hints)'
+              }
+            >
+              Re-VLM
+            </button>
+            <button
+              className="erp-btn"
+              disabled={!canStop}
+              onClick={() => stopRun()}
+              title={canStop ? 'Stop this run' : 'Nothing to stop on this run'}
+            >
+              Stop
+            </button>
+            <button
+              className="erp-btn primary"
+              disabled={!canExecute}
+              onClick={() => void runAction('execute')}
+              title={otherRunProcessing ? ANOTHER_RUN_PROCESSING_HINT : 'Run this workflow'}
+            >
+              Run
+            </button>
+          </div>
+          {otherRunProcessing && !isRunning ? (
+            <p className="erp-proc-other-run-hint" role="note">
+              {ANOTHER_RUN_PROCESSING_HINT}
+            </p>
+          ) : null}
         </div>
       </div>
 
       <div
         ref={bodyRef}
         className="erp-proc-body"
-        style={{ gridTemplateColumns: `${railWidth}px 5px minmax(280px, 1fr) 5px ${rightWidth}px` }}
+        style={{
+          gridTemplateColumns: `${railWidth}px 5px minmax(280px, 1fr) 5px ${
+            cropGateTarget ? Math.max(rightWidth, 420) : rightWidth
+          }px`,
+        }}
       >
         <aside className="erp-proc-rail">
           <div className="erp-proc-railhead">
@@ -1340,9 +2086,21 @@ export function ProcessingView() {
                 {activeRun.files.length > 0 && (
                   <ul className="erp-fstatus">
                     {activeRun.files.map(f => {
-                      const reason = [f.gate_result ? `gate: ${f.gate_result}` : '', f.error_text ?? '']
-                        .filter(Boolean)
-                        .join(' \u00B7 ')
+                      const livePages = formatLiveOutputPageStatuses(f)
+                      const reason =
+                        livePages ||
+                        [
+                          f.error_text === 'needs_crop_preview'
+                            ? 'Crop preview — confirm boxes before extract'
+                            : f.gate_result
+                              ? `gate: ${f.gate_result}`
+                              : '',
+                          f.error_text && f.error_text !== 'needs_crop_preview'
+                            ? f.error_text
+                            : '',
+                        ]
+                          .filter(Boolean)
+                          .join(' \u00B7 ')
                       const canRetry = f.file_status === 'failed' || f.file_status === 'warning'
                       const pageLabel = formatFilePageCount(f.page_count)
                       return (
@@ -1351,15 +2109,25 @@ export function ProcessingView() {
                           <button
                             type="button"
                             className="fn erp-link"
-                            title={`Preview ${f.original_filename ?? f.task_file_id}`}
+                            title={`${VIEW_PDF_ACTION}: ${f.original_filename ?? f.task_file_id}`}
                             onClick={() => void filePreview.openPreview(f.task_file_id)}
                           >
                             {f.original_filename ?? f.task_file_id}
                             {pageLabel ? ` (${pageLabel})` : ''}
                           </button>
-                          <span className={`fst ${f.file_status}`}>{fileStatusLabel(f.file_status)}</span>
+                          <button
+                            type="button"
+                            className="erp-btn erp-view-pdf"
+                            title={`${VIEW_PDF_ACTION}: ${f.original_filename ?? f.task_file_id}`}
+                            onClick={() => void filePreview.openPreview(f.task_file_id)}
+                          >
+                            {VIEW_PDF_ACTION}
+                          </button>
+                          <span className={`fst ${f.file_status}`}>
+                            {fileStatusLabel(f.file_status, f.gate_result)}
+                          </span>
                           {reason && (
-                            <span className="fre" title={reason}>
+                            <span className="fre" title={reason} data-live-page-statuses="true">
                               {reason}
                             </span>
                           )}
@@ -1384,46 +2152,116 @@ export function ProcessingView() {
           </div>
           {activeRun ? (
             <div className="erp-proc-output-scroll">
-              {outputRowCount === 0 ? (
-                <div className="erp-empty">
-                  {extracting ? 'Processing files... rows appear as each file finishes.' : 'No extracted rows yet.'}
+              {tableAwaitingLoad ? (
+                <div className="erp-empty erp-empty--compact">
+                  {rebuilding ? "Rebuilding from this run's files…" : 'Loading…'}
                 </div>
-              ) : isAsset ? (
-                <OtherTable records={assetRecords} readOnly={outputReadOnly} />
-              ) : isBank ? (
-                <BankStatementReview
-                  transactions={displayBankRows}
-                  readOnly={outputReadOnly}
-                  onDataChange={outputReadOnly ? undefined : rows => setEditedRows(rows)}
-                  onApprove={() => void approve()}
-                  canApprove={canApproveTable}
-                  approveBusy={approving}
-                />
               ) : (
-                <ARAPReview
-                  transactions={displayArapRows}
-                  readOnly={outputReadOnly}
-                  useApTableSchema={(activeRun.processing_mode ?? '').toUpperCase() === 'AP'}
-                  onDataChange={outputReadOnly ? undefined : rows => setEditedRows(rows)}
-                  onApprove={() => void approve()}
-                  canApprove={canApproveTable}
-                  approveBusy={approving}
-                  isProcessing={tableProcessing}
-                  completedFiles={completedFileCount}
-                  totalFiles={totalFileCount}
-                  cropPreview={
-                    activeRun.task_id
-                      ? {
-                          taskId: activeRun.task_id,
-                          companyId,
-                          files: (activeRun.files ?? []).map(f => ({
-                            taskFileId: f.task_file_id,
-                            originalFilename: f.original_filename,
-                          })),
+                <>
+                  {showForeignHiddenNotice && (
+                    <div className="erp-proc-row-mismatch" role="alert">
+                      {RUN_ROW_FOREIGN_HIDDEN_NOTICE}
+                    </div>
+                  )}
+                  {outputRowCount === 0 ? (
+                    <div className={extracting ? 'erp-empty erp-empty--compact' : 'erp-empty'}>
+                      {extracting ? 'Processing…' : 'No extracted rows yet.'}
+                    </div>
+                  ) : isAsset ? (
+                    <>
+                      <CompanyFxToolbar
+                        tableCurrency={effectiveCompanyCurrency}
+                        onTableCurrencyChange={code => void onCompanyCurrencyChange(code)}
+                        hideReceiptCurrency={hideReceiptCurrency}
+                        onToggleReceiptCurrency={() => setHideReceiptCurrency(v => !v)}
+                        fxBlocked={!fxReady}
+                      />
+                      <OtherTable records={assetRecords} readOnly={outputReadOnly} hideReceiptCurrency={hideReceiptCurrency} />
+                    </>
+                  ) : isBank ? (
+                    <>
+                      <CompanyFxToolbar
+                        tableCurrency={effectiveCompanyCurrency}
+                        onTableCurrencyChange={code => void onCompanyCurrencyChange(code)}
+                        hideReceiptCurrency={hideReceiptCurrency}
+                        onToggleReceiptCurrency={() => setHideReceiptCurrency(v => !v)}
+                        fxBlocked={!fxReady}
+                      />
+                      <BankStatementReview
+                        key={activeRunId ?? 'bank-review'}
+                        transactions={safeDisplayBankRows}
+                        readOnly={outputReadOnly}
+                        onDataChange={outputReadOnly ? undefined : rows => setEditedRows(rows)}
+                        onApprove={() => void approve()}
+                        canApprove={canApproveTable}
+                        approveBusy={approving || rebuilding || emptyExtractBusy}
+                        onRebuildFromRunFiles={() => void rebuildFromRunFiles()}
+                        rebuildBusy={rebuilding}
+                        canRebuild={canRebuildFromRunFiles}
+                        emptyExtractPages={emptyExtractPages}
+                        onRetryEmptyExtractPage={flag => void retryEmptyExtractPage(flag)}
+                        onMarkEmptyExtractReviewed={flag => void markEmptyExtractReviewed(flag)}
+                        onViewEmptyExtractPdf={flag =>
+                          void filePreview.openPreview(flag.taskFileId, { page: flag.page })
                         }
-                      : null
-                  }
-                />
+                        emptyExtractBusy={emptyExtractBusy}
+                        hideReceiptCurrency={hideReceiptCurrency}
+                        onCompanyAmountClick={row => openRateDialog(row as Record<string, unknown>)}
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <CompanyFxToolbar
+                        tableCurrency={effectiveCompanyCurrency}
+                        onTableCurrencyChange={code => void onCompanyCurrencyChange(code)}
+                        hideReceiptCurrency={hideReceiptCurrency}
+                        onToggleReceiptCurrency={() => setHideReceiptCurrency(v => !v)}
+                        fxBlocked={!fxReady}
+                      />
+                      <ARAPReview
+                        key={activeRunId ?? 'arap-review'}
+                        transactions={safeDisplayArapRows}
+                        readOnly={outputReadOnly}
+                        useApTableSchema={(activeRun.processing_mode ?? '').toUpperCase() === 'AP'}
+                        onDataChange={outputReadOnly ? undefined : rows => setEditedRows(rows)}
+                        onApprove={() => void approve()}
+                        canApprove={canApproveTable}
+                        approveBusy={approving}
+                        hideReceiptCurrency={hideReceiptCurrency}
+                        onCompanyAmountClick={row => openRateDialog(row as Record<string, unknown>)}
+                        isProcessing={tableProcessing}
+                        completedFiles={completedFileCount}
+                        totalFiles={totalFileCount}
+                        cropPreview={
+                          activeRun.task_id
+                            ? {
+                                taskId: activeRun.task_id,
+                                companyId,
+                                files: (activeRun.files ?? []).map(f => ({
+                                  taskFileId: f.task_file_id,
+                                  originalFilename: f.original_filename,
+                                })),
+                                previewBoxes: reviewCropBoxes,
+                              }
+                            : null
+                        }
+                      />
+                    </>
+                  )}
+                  {rateDialog && (
+                    <ExchangeRateDialog
+                      from={rateDialog.from}
+                      to={rateDialog.to}
+                      sampleReceiptAmount={rateDialog.amount}
+                      printedCompanyAmount={rateDialog.printed}
+                      onApply={(rate, printed) => void applyPairRate(rate, printed)}
+                      onClose={() => {
+                        setRateDialog(null)
+                        setRateQueue([])
+                      }}
+                    />
+                  )}
+                </>
               )}
             </div>
           ) : null}
@@ -1441,64 +2279,82 @@ export function ProcessingView() {
         />
 
         <aside className="erp-proc-right">
-          <div className="erp-proc-canvas erp-proc-canvas--side">
-            {!activeRun ? (
-              <div className="erp-empty">Select or create a run.</div>
-            ) : orderedNodes.length === 0 ? (
-              <div className="erp-empty">This run has no workflow nodes.</div>
-            ) : (
-              nodeRows.map((row, i) => (
-                <div key={row.key}>
-                  {i > 0 && <div className="erp-connector" />}
-                  {row.nodes.length > 1 ? (
-                    <div className="erp-node-row">{row.nodes.map(renderNodeCard)}</div>
-                  ) : (
-                    renderNodeCard(row.nodes[0]!)
-                  )}
-                </div>
-              ))
-            )}
-            {activeRun && orderedNodes.length > 0 && (
-              <div className="erp-branch-note">
-                Advanced: add Proposer / Judge / Vote / Manager Review branch nodes in the legacy workspace.
-              </div>
-            )}
-          </div>
-          <div className="erp-proc-side-settings">
-            <NodeSettings
-              node={selectedNode}
-              nodeState={selectedNode ? nodeStateOf(activeRun, selectedNode.id) : undefined}
-              processingMode={activeRun?.processing_mode ?? ''}
-              providerOptions={workflowProviderOptions}
-              onPatch={patchNodeData}
-              onToggleCross={toggleCrossVlm}
-              crossOn={Boolean(activeRun?.graph_json.nodes.some(n => n.type === 'VLMDoubleCheck'))}
-              busy={busy}
+          {cropGateTarget && activeRun?.task_id ? (
+            <MvduCropPreviewGate
+              open
+              taskId={activeRun.task_id}
+              taskFileId={cropGateTarget.taskFileId}
+              companyId={companyId}
+              filename={cropGateTarget.filename}
+              preview={cropGateTarget.preview}
+              busy={cropGateBusy}
+              actionError={cropGateError}
+              onConfirm={boxes => handleCropGateConfirm(boxes)}
+              onSkip={() => handleCropGateSkip()}
+              onCancel={() => handleCropGateCancel()}
             />
-            {activeRun && (
-              <ul className="erp-tl">
-                <div className="lab">Run timeline</div>
-                {orderedNodes.map(node => {
-                  const state = nodeStateOf(activeRun, node.id)
-                  const kind = statusKind(state?.status)
-                  const cls = kind === 'done' ? 'ok' : kind === 'run' ? 'now' : kind === 'fail' ? 'fail' : 'wait'
-                  const v = state?.duration_ms != null ? fmtDuration(state.duration_ms) : kind === 'run' ? '\u2026' : '\u2014'
-                  const label = String((node.data as Record<string, unknown>)?.label ?? node.type)
-                  const fb = nodeDetailLines(state)[0]
-                  return (
-                    <li key={node.id} className={cls}>
-                      <span className="c" />
-                      <span className="g">
-                        {label}
-                        {fb ? <span className="erp-tl-fb">{fb.v}</span> : null}
-                      </span>
-                      <span className="v">{v}</span>
-                    </li>
-                  )
-                })}
-              </ul>
-            )}
-          </div>
+          ) : (
+            <>
+              <div className="erp-proc-canvas erp-proc-canvas--side">
+                {!activeRun ? (
+                  <div className="erp-empty">Select or create a run.</div>
+                ) : orderedNodes.length === 0 ? (
+                  <div className="erp-empty">This run has no workflow nodes.</div>
+                ) : (
+                  nodeRows.map((row, i) => (
+                    <div key={row.key}>
+                      {i > 0 && <div className="erp-connector" />}
+                      {row.nodes.length > 1 ? (
+                        <div className="erp-node-row">{row.nodes.map(renderNodeCard)}</div>
+                      ) : (
+                        renderNodeCard(row.nodes[0]!)
+                      )}
+                    </div>
+                  ))
+                )}
+                {activeRun && orderedNodes.length > 0 && (
+                  <div className="erp-branch-note">
+                    Advanced: add Proposer / Judge / Vote / Manager Review branch nodes in the legacy workspace.
+                  </div>
+                )}
+              </div>
+              <div className="erp-proc-side-settings">
+                <NodeSettings
+                  node={selectedNode}
+                  nodeState={selectedNode ? nodeStateOf(activeRun, selectedNode.id) : undefined}
+                  processingMode={activeRun?.processing_mode ?? ''}
+                  providerOptions={workflowProviderOptions}
+                  onPatch={patchNodeData}
+                  onToggleCross={toggleCrossVlm}
+                  crossOn={Boolean(activeRun?.graph_json.nodes.some(n => n.type === 'VLMDoubleCheck'))}
+                  busy={busy}
+                />
+                {activeRun && (
+                  <ul className="erp-tl">
+                    <div className="lab">Run timeline</div>
+                    {orderedNodes.map(node => {
+                      const state = nodeStateOf(activeRun, node.id)
+                      const kind = statusKind(state?.status)
+                      const cls = kind === 'done' ? 'ok' : kind === 'run' ? 'now' : kind === 'fail' ? 'fail' : 'wait'
+                      const v = state?.duration_ms != null ? fmtDuration(state.duration_ms) : kind === 'run' ? '\u2026' : '\u2014'
+                      const label = String((node.data as Record<string, unknown>)?.label ?? node.type)
+                      const fb = nodeDetailLines(state)[0]
+                      return (
+                        <li key={node.id} className={cls}>
+                          <span className="c" />
+                          <span className="g">
+                            {label}
+                            {fb ? <span className="erp-tl-fb">{fb.v}</span> : null}
+                          </span>
+                          <span className="v">{v}</span>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                )}
+              </div>
+            </>
+          )}
         </aside>
       </div>
 
@@ -1522,6 +2378,7 @@ export function ProcessingView() {
         error={filePreview.state.error}
         files={filePreview.fileList}
         activeFileId={filePreview.state.activeFileId}
+        page={filePreview.state.page}
         onSelectFile={id => void filePreview.openPreview(id)}
         onRetry={filePreview.retryPreview}
         onDownload={filePreview.downloadActive}
@@ -1553,6 +2410,17 @@ export function ProcessingView() {
         confirmLabel="Apply change"
         onConfirm={() => headerChangeConfirm?.onConfirm()}
         onCancel={() => headerChangeConfirm?.onCancel()}
+      />
+
+      <ConfirmDialog
+        open={stopConfirmOpen}
+        title="Stop this run?"
+        message="Pages already extracted stay on the grid. Queued pages will not run."
+        confirmLabel="Stop"
+        cancelLabel="Cancel"
+        destructive
+        onConfirm={() => void performStop()}
+        onCancel={() => setStopConfirmOpen(false)}
       />
     </div>
   )

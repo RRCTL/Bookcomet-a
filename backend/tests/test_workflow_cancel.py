@@ -71,7 +71,7 @@ def test_workflow_run_should_abort_when_run_no_longer_executing():
 
 
 @pytest.mark.asyncio
-async def test_finish_vlm_after_cancel_keeps_completed_and_leaves_pending():
+async def test_finish_vlm_after_cancel_keeps_completed_stopped_and_cancelled():
     from app.graph.workflow_service import _finish_vlm_after_cancel
 
     rf1 = WorkflowRunFile(
@@ -79,13 +79,25 @@ async def test_finish_vlm_after_cancel_keeps_completed_and_leaves_pending():
         run_id="run-1",
         task_file_id="tf-1",
         file_status="ok",
-        result_summary_json={"tsv_rows": [{"total": "1"}]},
+        result_summary_json={"tsv_rows": [{"amount": "1.00", "payee": "Fiction Co"}]},
     )
     rf2 = WorkflowRunFile(
         id="rf-2",
         run_id="run-1",
         task_file_id="tf-2",
+        file_status="running",
+    )
+    rf3 = WorkflowRunFile(
+        id="rf-3",
+        run_id="run-1",
+        task_file_id="tf-3",
         file_status="pending",
+    )
+    rf4 = WorkflowRunFile(
+        id="rf-4",
+        run_id="run-1",
+        task_file_id="tf-4",
+        file_status="queued",
     )
     run = SimpleNamespace(
         id="run-1",
@@ -95,7 +107,7 @@ async def test_finish_vlm_after_cancel_keeps_completed_and_leaves_pending():
         console_log_json=[],
     )
     db = MagicMock()
-    db.query.return_value.filter.return_value.all.return_value = [rf1, rf2]
+    db.query.return_value.filter.return_value.all.return_value = [rf1, rf2, rf3, rf4]
     hub = MagicMock()
     hub.snapshot = AsyncMock()
 
@@ -110,7 +122,17 @@ async def test_finish_vlm_after_cancel_keeps_completed_and_leaves_pending():
     assert summary["cancelled"] is True
     assert summary["ok_count"] == 1
     assert rf1.file_status == "ok"
-    assert rf2.file_status == "pending"
+    assert rf2.file_status == "stopped"
+    assert rf3.file_status == "cancelled"
+    assert rf4.file_status == "cancelled"
     assert run.run_status == "awaiting_review"
     assert run.node_states_json["vlm"]["status"] == "cancelled"
     assert "cancel_requested" not in run.node_states_json
+
+
+def test_processable_file_statuses_include_stopped_and_cancelled():
+    from app.graph.workflow_service import _PROCESSABLE_FILE_STATUSES
+
+    assert "stopped" in _PROCESSABLE_FILE_STATUSES
+    assert "cancelled" in _PROCESSABLE_FILE_STATUSES
+    assert "pending" in _PROCESSABLE_FILE_STATUSES

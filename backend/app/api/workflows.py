@@ -5,11 +5,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import uuid
-from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -44,7 +44,13 @@ from app.models.workflow import (
     WorkflowTemplate,
 )
 from app.database import get_db
-from app.services.file_storage import assert_file_type, storage
+from app.services.file_storage import (
+    prepare_upload_bytes,
+    resolve_path_under_root,
+    safe_upload_temp_suffix,
+    storage,
+    uploads_root,
+)
 from app.services.pool2_storage import pool2
 
 router = APIRouter(prefix="/api/workflows", tags=["workflows"])
@@ -89,6 +95,23 @@ class ReVlmRequest(BaseModel):
     rescan_reasons: list[str] = Field(default_factory=list)
     rescan_note: Optional[str] = None
     expected_receipt_count: Optional[int] = None
+    skip_crop_preview: bool = False
+    crop_preview_confirmed: bool = False
+    crop_boxes: Optional[list[dict[str, Any]]] = None
+
+
+class ConfirmCropPreviewRequest(BaseModel):
+    """M-VDU crop-preview gate: confirm edited boxes, skip preview, or cancel."""
+
+    action: str = Field(..., description="confirm | skip | cancel")
+    boxes: Optional[list[dict[str, Any]]] = None
+    page: Optional[int] = None
+
+
+class RebuildReviewRequest(BaseModel):
+    """Optional explicit file IDs; omit to rebuild from every file on the run."""
+
+    task_file_ids: Optional[list[str]] = None
 
 
 class MoveRunFileBatchRequest(BaseModel):
@@ -625,8 +648,18 @@ def download_node_debug_output(
     )
     if not row or not row.storage_path:
         raise HTTPException(status_code=404, detail="Debug output not found")
-    path = Path(row.storage_path)
-    if not path.is_file():
+    candidates = (
+        os.getenv("TRANSACTIONS_DIR", "./transactions"),
+        uploads_root(),
+    )
+    path = None
+    for root in candidates:
+        try:
+            path = resolve_path_under_root(root, row.storage_path)
+            break
+        except ValueError:
+            continue
+    if path is None or not path.is_file():
         raise HTTPException(status_code=404, detail="Debug output file not found")
     return FileResponse(path, media_type="application/json", filename=f"{row.node_id}-{row.id}.json")
 
@@ -889,10 +922,10 @@ async def upload_run_file(
 ):
     run = _get_run_or_404(run_id, company_id, db)
     file_uuid = str(uuid.uuid4())
-    ext = Path(file.filename or "file").suffix.lower() or ".bin"
     contents = await file.read()
     try:
-        assert_file_type(file.filename or f"upload{ext}", contents)
+        ext = safe_upload_temp_suffix(file.filename or "file.pdf")
+        contents = prepare_upload_bytes(file.filename or f"upload{ext}", contents)
         dest_path = storage.save(company_id, run.task_id, file_uuid, contents, ext)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1077,6 +1110,64 @@ async def re_vlm_run(
         rescan_reasons=body.rescan_reasons,
         rescan_note=body.rescan_note,
         expected_receipt_count=body.expected_receipt_count,
+        skip_crop_preview=body.skip_crop_preview,
+        crop_preview_confirmed=body.crop_preview_confirmed,
+        confirmed_crop_boxes=body.crop_boxes,
+    )
+    return _run_out(run, db)
+
+
+@router.post("/runs/{run_id}/files/{task_file_id}/confirm-crops")
+async def confirm_crop_preview(
+    run_id: str,
+    task_file_id: str,
+    body: ConfirmCropPreviewRequest,
+    company_id: str = Depends(get_current_company_id),
+    db: Session = Depends(get_db),
+):
+    """Confirm / skip / cancel the M-VDU crop-preview gate for one file."""
+    run = _get_run_or_404(run_id, company_id, db)
+    action = (body.action or "").strip().lower()
+    if action not in ("confirm", "skip", "cancel"):
+        raise HTTPException(status_code=400, detail="action must be confirm, skip, or cancel")
+    if action == "cancel":
+        run = WorkflowService.cancel_crop_preview(db, run, task_file_id)
+        return _run_out(run, db)
+    if action == "skip":
+        run = await WorkflowService.re_vlm_files(
+            db,
+            run,
+            [task_file_id],
+            skip_crop_preview=True,
+        )
+        return _run_out(run, db)
+    # confirm
+    run = await WorkflowService.re_vlm_files(
+        db,
+        run,
+        [task_file_id],
+        crop_preview_confirmed=True,
+        confirmed_crop_boxes=body.boxes or [],
+    )
+    return _run_out(run, db)
+
+
+@router.post("/runs/{run_id}/rebuild-review")
+async def rebuild_review_run(
+    run_id: str,
+    body: RebuildReviewRequest = Body(default_factory=RebuildReviewRequest),
+    company_id: str = Depends(get_current_company_id),
+    db: Session = Depends(get_db),
+):
+    """Re-extract the review table from this run's own uploaded files only.
+
+    Does not approve or transfer journals — user must Approve explicitly afterward.
+    """
+    run = _get_run_or_404(run_id, company_id, db)
+    run = await WorkflowService.rebuild_review_from_run_files(
+        db,
+        run,
+        task_file_ids=body.task_file_ids,
     )
     return _run_out(run, db)
 
@@ -1091,6 +1182,42 @@ async def force_process_file(
     run = _get_run_or_404(run_id, company_id, db)
     run = await WorkflowService.re_vlm_files(
         db, run, [task_file_id], force_process=True
+    )
+    return _run_out(run, db)
+
+
+@router.post("/runs/{run_id}/files/{task_file_id}/retry-empty-extract-page")
+async def retry_empty_extract_page(
+    run_id: str,
+    task_file_id: str,
+    page: int,
+    company_id: str = Depends(get_current_company_id),
+    db: Session = Depends(get_db),
+):
+    """Re-extract one bank PDF page flagged as dense OCR / empty extract miss."""
+    if page < 1:
+        raise HTTPException(status_code=400, detail="page must be >= 1")
+    run = _get_run_or_404(run_id, company_id, db)
+    run = await WorkflowService.retry_bank_empty_extract_page(
+        db, run, task_file_id, page
+    )
+    return _run_out(run, db)
+
+
+@router.post("/runs/{run_id}/files/{task_file_id}/mark-page-reviewed-no-rows")
+async def mark_page_reviewed_no_rows(
+    run_id: str,
+    task_file_id: str,
+    page: int,
+    company_id: str = Depends(get_current_company_id),
+    db: Session = Depends(get_db),
+):
+    """Rare secondary: user confirms they checked the PDF and accept no extracted rows."""
+    if page < 1:
+        raise HTTPException(status_code=400, detail="page must be >= 1")
+    run = _get_run_or_404(run_id, company_id, db)
+    run = WorkflowService.mark_bank_page_reviewed_with_no_rows(
+        db, run, task_file_id, page
     )
     return _run_out(run, db)
 

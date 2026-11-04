@@ -104,7 +104,7 @@ def main() -> None:
         print(f"    Username: {username}")
         if email:
             print(f"    Email:    {email}  (also accepted)")
-        print(f"    Password: {password}")
+        print("    Password: (not printed; see script docstring or TEST_USER_PASSWORD)")
         print("")
         print("  (Do not use this account in production.)")
     except Exception:

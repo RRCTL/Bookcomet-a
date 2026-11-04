@@ -27,7 +27,7 @@ export const MODULES: ModuleDef[] = [
   { id: 'bank', number: 4, label: 'Bank', crumb: 'Books / Bank', kind: 'grid', mode: 'BANK', enabled: true },
   { id: 'recon', number: 5, label: 'Reconciliation', crumb: 'Books / Bank / Reconcile', kind: 'recon', mode: 'RECON', enabled: true },
   { id: 'gl', number: 6, label: 'General Ledger', crumb: 'Books / GL / Journals', kind: 'journal', enabled: true },
-  { id: 'other', number: 7, label: 'Other', crumb: 'Books / Register', kind: 'grid', mode: 'OTHER', enabled: false },
+  { id: 'other', number: 7, label: 'Other', crumb: 'Books / Register', kind: 'grid', mode: 'OTHER', enabled: true },
   { id: 'reports', number: 8, label: 'Reports', crumb: 'Books / Reports', kind: 'grid', mode: 'REPORT', enabled: false },
   { id: 'setup', number: 10, label: 'Setup', crumb: 'Configuration', kind: 'setup', enabled: true },
 ]

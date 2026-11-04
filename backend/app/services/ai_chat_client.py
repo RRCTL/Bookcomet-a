@@ -20,7 +20,7 @@ class DeployChatClient:
     def __init__(self) -> None:
         self.api_key = os.getenv("LLM_API_KEY") or os.getenv("DEPLOY_API_KEY", "")
         self.base_url = (
-            os.getenv("LLM_BASE_URL") or os.getenv("DEPLOY_BASE_URL") or "https://www.dmxapi.cn"
+            os.getenv("LLM_BASE_URL") or os.getenv("DEPLOY_BASE_URL") or os.getenv("VLM_BASE_URL") or ""
         ).rstrip("/")
         self.model = settings.deploy_model
         self.connect_timeout = float(os.getenv("DEPLOY_API_CONNECT_TIMEOUT", "15"))
@@ -55,8 +55,15 @@ class DeployChatClient:
         last_error: Exception | None = None
         for attempt in range(1, self.max_retries + 2):
             try:
+                from app.core.gateway_settings import openai_chat_completions_url
+
+                if not (self.base_url or "").strip():
+                    raise ValueError(
+                        "LLM API URL missing. Set LLM_BASE_URL (or VLM_BASE_URL) "
+                        "in Settings → API."
+                    )
                 resp = requests.post(
-                    f"{self.base_url}/v1/chat/completions",
+                    openai_chat_completions_url(self.base_url),
                     headers={
                         "Authorization": f"Bearer {self.api_key}",
                         "Content-Type": "application/json",

@@ -22,6 +22,7 @@ import requests
 from sqlalchemy.orm import Session
 
 from app.models.company_manual import CompanyManual
+from app.core.gateway_settings import openai_chat_completions_url
 from app.models.company_context import CompanyRule
 from app.core.config import settings
 from app.services.abuse_guard import scan_output
@@ -39,7 +40,7 @@ SUMMARY_MAX_CHARS = 800
 
 _DEPLOY_API_KEY = os.getenv("LLM_API_KEY") or os.getenv("DEPLOY_API_KEY", "")
 _DEPLOY_BASE_URL = (
-    os.getenv("LLM_BASE_URL") or os.getenv("DEPLOY_BASE_URL") or "https://www.dmxapi.cn"
+    os.getenv("LLM_BASE_URL") or os.getenv("DEPLOY_BASE_URL") or os.getenv("VLM_BASE_URL") or ""
 ).rstrip("/")
 
 
@@ -149,7 +150,7 @@ def _summarise_manual(content: str) -> str:
     )
     try:
         resp = requests.post(
-            f"{_DEPLOY_BASE_URL}/v1/chat/completions",
+            openai_chat_completions_url(_DEPLOY_BASE_URL),
             headers={
                 "Authorization": f"Bearer {_DEPLOY_API_KEY}",
                 "Content-Type": "application/json",

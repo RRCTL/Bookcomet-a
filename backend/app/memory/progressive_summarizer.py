@@ -18,6 +18,7 @@ from typing import Any, TYPE_CHECKING
 import requests
 
 from app.core.config import settings
+from app.core.gateway_settings import openai_chat_completions_url
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,7 @@ def _call_llm_sync(messages: list[dict], max_tokens: int) -> str:
     """Synchronous LLM call used during summarization (runs in a thread pool)."""
     api_key = os.getenv("LLM_API_KEY") or os.getenv("DEPLOY_API_KEY", "")
     base_url = (
-        os.getenv("LLM_BASE_URL") or os.getenv("DEPLOY_BASE_URL") or "https://www.dmxapi.cn"
+        os.getenv("LLM_BASE_URL") or os.getenv("DEPLOY_BASE_URL") or os.getenv("VLM_BASE_URL") or ""
     ).rstrip("/")
     model = SUMMARIZE_CONFIG["summarize_model"]
 
@@ -130,7 +131,7 @@ def _call_llm_sync(messages: list[dict], max_tokens: int) -> str:
     }
     try:
         resp = requests.post(
-            f"{base_url}/v1/chat/completions",
+            openai_chat_completions_url(base_url),
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",

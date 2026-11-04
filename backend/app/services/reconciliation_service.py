@@ -99,12 +99,11 @@ class ReconciliationEngine:
             # Filter by currency and status — PARTIAL ledger txns are also eligible for future matching
             if ledger_txn.status not in (TransactionStatus.UNRECONCILED, TransactionStatus.PARTIAL):
                 continue
-            from app.services.gl_journal_service import _norm_currency
-
-            if _norm_currency(ledger_txn.currency) != _norm_currency(bank_txn.currency):
+            bank_ccy, bank_amt = self._match_ccy_amount(bank_txn)
+            ledger_ccy, ledger_amt = self._match_ccy_amount(ledger_txn)
+            if bank_ccy and ledger_ccy and bank_ccy != ledger_ccy:
                 continue
-            # Exact magnitude match (bank Cr is negative; ledger may be signed or abs + dr_cr).
-            if not self._amounts_match(ledger_txn.amount, bank_txn.amount):
+            if not self._amounts_match(ledger_amt, bank_amt):
                 continue
             # Filter by date window (±7 days)
             date_diff = abs((ledger_txn.book_date - bank_txn.bank_date).days)
@@ -123,6 +122,12 @@ class ReconciliationEngine:
             candidates.append(ledger_txn)
         
         return candidates
+
+    @staticmethod
+    def _match_ccy_amount(txn) -> tuple[str, float | None]:
+        from app.services.company_fx import company_amount_for_match
+
+        return company_amount_for_match(txn)
 
     @staticmethod
     def _amount_abs(amount: float | None) -> float:
@@ -553,8 +558,8 @@ class ReconciliationEngine:
             raise ValueError("No valid transactions found for the given IDs")
 
         # Compare magnitudes: bank Cr/outflow is stored negative; ledger uses abs + dr_cr.
-        total_bank = round(sum(abs(float(t.amount)) for t in all_bank_side), 2)
-        total_ledger = round(sum(abs(float(t.amount)) for t in all_ledger_side), 2)
+        total_bank = round(sum(abs(float(ReconciliationEngine._match_ccy_amount(t)[1] or t.amount or 0)) for t in all_bank_side), 2)
+        total_ledger = round(sum(abs(float(ReconciliationEngine._match_ccy_amount(t)[1] or t.amount or 0)) for t in all_ledger_side), 2)
         difference = round(total_bank - total_ledger, 2)
 
         n_bank = len(all_bank_side)

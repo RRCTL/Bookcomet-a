@@ -56,9 +56,30 @@ async def test_resume_run_stashes_payload_and_resumes_graph_from_save():
     db.commit = MagicMock()
     db.refresh = MagicMock()
 
-    query_mock = MagicMock()
-    query_mock.filter.return_value.first.return_value = task
-    db.query.return_value = query_mock
+    class _Chain:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def filter(self, *_a, **_k):
+            return self
+
+        def all(self):
+            return self._rows
+
+        def first(self):
+            return self._rows[0] if self._rows else None
+
+    def query_side_effect(model):
+        name = getattr(model, "__name__", str(model))
+        if name == "ChatTask":
+            return _Chain([task])
+        if name == "WorkflowRunFile":
+            return _Chain([])
+        if name == "TaskFile":
+            return _Chain([])
+        return _Chain([])
+
+    db.query.side_effect = query_side_effect
 
     payload = {"arapTransactions": []}
 

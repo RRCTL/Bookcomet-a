@@ -45,6 +45,55 @@ describe('buildSpreadsheetRowsFromOcrResult source page', () => {
     expect(spreadsheetData[1]?.file_position).toBe('receipts.pdf P3')
   })
 
+  it('maps VLM_CROP_TIMEOUT without tsv_rows to OCR timeout memo', () => {
+    const { spreadsheetData } = buildSpreadsheetRowsFromOcrResult({
+      fileId: 'file-a',
+      fileName: 'synthetic.pdf',
+      processingMode: 'AP',
+      rowIndexStart: 1,
+      result: {
+        document_type: 'multi_page_pdf',
+        pages: [
+          {
+            page: 6,
+            receipt_index: 2,
+            status: 'error',
+            error_code: 'VLM_CROP_TIMEOUT',
+            error_detail: 'Crop OCR exceeded the configured per-crop deadline',
+          },
+        ],
+      },
+    })
+    expect(spreadsheetData).toHaveLength(1)
+    expect(String(spreadsheetData[0]?.memo)).toMatch(/^\[OCR timeout\]/)
+  })
+
+  it('uses timeout stub tsv_rows instead of the error placeholder', () => {
+    const { spreadsheetData } = buildSpreadsheetRowsFromOcrResult({
+      fileId: 'file-a',
+      fileName: 'synthetic.pdf',
+      processingMode: 'AP',
+      rowIndexStart: 1,
+      result: {
+        document_type: 'multi_page_pdf',
+        pages: [
+          {
+            page: 6,
+            receipt_index: 2,
+            status: 'error',
+            error_code: 'VLM_CROP_TIMEOUT',
+            ai_enhanced: {
+              tsv_rows: [{ voucher_no: 'P6-R2', amount: '', memo: '[OCR timeout]' }],
+            },
+          },
+        ],
+      },
+    })
+    expect(spreadsheetData).toHaveLength(1)
+    expect(spreadsheetData[0]?.voucher_no).toBe('P6-R2')
+    expect(spreadsheetData[0]?.memo).toBe('[OCR timeout]')
+  })
+
   it('keeps per-page labels from multi_page_pdf pages[]', () => {
     const { spreadsheetData } = buildSpreadsheetRowsFromOcrResult({
       fileId: 'file-a',

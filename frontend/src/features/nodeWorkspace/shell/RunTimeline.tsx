@@ -198,8 +198,8 @@ export function RunTimeline({
                     </span>
                   </button>
                   {run.run_status === 'executing' ? (
-                    <p className="border-t border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
-                      VLM is processing files. Rows update as each file completes.
+                    <p className="border-t border-gray-100 px-4 py-1 text-xs text-gray-500 dark:border-gray-800">
+                      Processing…
                     </p>
                   ) : null}
                   {tableOpen ? (

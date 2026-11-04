@@ -1,3 +1,6 @@
+import { useEffect, useState } from 'react'
+import { api } from '../../services/api'
+import { FX_CURRENCY_OPTIONS, fxRatesFromSettings, reportingCurrencyFromSettings } from '../../utils/fxCurrency'
 import { useSettings } from './SettingsProvider'
 import { ManualSectionedView } from './markdownComponents'
 import { formatRelativeTime } from './helpers'
@@ -30,6 +33,46 @@ export function CompanyProfilePanel({ onClose }: CompanyProfilePanelProps) {
   const knowledgePreview = ((contextRule?.content as string | undefined) || manualContent || '').trim()
   const knowledgeLoading = manualLoading || classificationLoading
   const knowledgeSaving = manualSaveStatus === 'saving'
+  const [reportingCurrency, setReportingCurrency] = useState('')
+  const [fxRates, setFxRates] = useState<Record<string, number>>({})
+  const [reportingBusy, setReportingBusy] = useState(false)
+  const [reportingErr, setReportingErr] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const profile = await api.getCompanyProfile()
+        if (cancelled) return
+        setReportingCurrency(reportingCurrencyFromSettings(profile.custom_settings))
+        setFxRates(fxRatesFromSettings(profile.custom_settings))
+      } catch (e) {
+        if (!cancelled) setReportingErr(e instanceof Error ? e.message : String(e))
+      }
+    })()
+    return () => { cancelled = true }
+  }, [activeCompany?.id])
+
+  const saveReportingCurrency = async (next: string) => {
+    setReportingBusy(true)
+    setReportingErr('')
+    try {
+      const profile = await api.getCompanyProfile()
+      await api.upsertCompanyProfile({
+        industry: profile.industry,
+        accounting_basis: profile.accounting_basis,
+        fiscal_year_end: profile.fiscal_year_end,
+        company_name: profile.company_name,
+        company_name_keywords: profile.company_name_keywords,
+        custom_settings: { ...profile.custom_settings, reporting_currency: next || null },
+      })
+      setReportingCurrency(next)
+    } catch (e) {
+      setReportingErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setReportingBusy(false)
+    }
+  }
 
   return (
     <>
@@ -152,6 +195,35 @@ export function CompanyProfilePanel({ onClose }: CompanyProfilePanelProps) {
               )}
               {activeIsOwner && companies.length === 1 && (
                 <p className="settings-company-hint">Create another workspace before you can delete the current one.</p>
+              )}
+            </div>
+
+            <div className="settings-company-section settings-company-section--divided">
+              <h4 className="rules-section-title">Reporting currency</h4>
+              <p className="settings-company-lead">
+                Books currency for new receipts. Leave empty to choose per processing table. Changing this does not rewrite existing rows.
+              </p>
+              {reportingErr && (
+                <div className="settings-company-error" role="alert">{reportingErr}</div>
+              )}
+              <label className="settings-form-label" htmlFor="reporting-currency">Reporting currency</label>
+              <select
+                id="reporting-currency"
+                className="settings-input"
+                value={reportingCurrency}
+                disabled={reportingBusy}
+                onChange={e => { void saveReportingCurrency(e.target.value) }}
+              >
+                <option value="">Not set</option>
+                {FX_CURRENCY_OPTIONS.map(c => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+              {Object.keys(fxRates).length > 0 && (
+                <div className="settings-company-hint" style={{ marginTop: 12 }}>
+                  Saved exchange rates:{' '}
+                  {Object.entries(fxRates).map(([k, v]) => `${k} = ${v}`).join(', ')}
+                </div>
               )}
             </div>
 

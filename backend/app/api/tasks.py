@@ -12,7 +12,6 @@ import os
 import uuid
 from datetime import datetime, timezone
 from io import BytesIO
-from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File
@@ -41,7 +40,12 @@ from app.models.chat import (
 )
 from app.models.identity import Membership, User
 from app.models.workflow import WorkflowRun
-from app.services.file_storage import assert_file_type, read_stored_bytes, storage
+from app.services.file_storage import (
+    prepare_upload_bytes,
+    read_stored_bytes,
+    safe_upload_temp_suffix,
+    storage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -752,7 +756,10 @@ async def ap_cross_verify(
 
     async with long_running_db_work_slot():
         for tf in task_files:
-            storage_path = Path(tf.storage_path)
+            try:
+                storage_path = storage.load_path(tf.storage_path)
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail=f"File missing on disk: {tf.id}") from exc
             if not storage_path.is_file():
                 raise HTTPException(status_code=404, detail=f"File missing on disk: {tf.id}")
             content = read_stored_bytes(storage_path)
@@ -806,10 +813,10 @@ async def upload_file(
     _check_read_access(task, user)
 
     file_uuid = str(uuid.uuid4())
-    ext = Path(file.filename or "file").suffix.lower() or ".bin"
     contents = await file.read()
     try:
-        assert_file_type(file.filename or f"upload{ext}", contents)
+        ext = safe_upload_temp_suffix(file.filename or "file.pdf")
+        contents = prepare_upload_bytes(file.filename or f"upload{ext}", contents)
         dest_path = storage.save(company_id, task_id, file_uuid, contents, ext)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -863,7 +870,10 @@ def download_file(
     if not task_file:
         raise HTTPException(status_code=404, detail="File not found")
 
-    storage_path = Path(task_file.storage_path)
+    try:
+        storage_path = storage.load_path(task_file.storage_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="File not found on disk") from exc
     if not storage_path.exists():
         raise HTTPException(status_code=404, detail="File not found on disk")
 
@@ -918,7 +928,10 @@ def receipt_crop_preview(
     if not task_file:
         raise HTTPException(status_code=404, detail="File not found")
 
-    storage_path = Path(task_file.storage_path)
+    try:
+        storage_path = storage.load_path(task_file.storage_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="File not found on disk") from exc
     if not storage_path.exists():
         raise HTTPException(status_code=404, detail="File not found on disk")
 
@@ -973,10 +986,7 @@ def delete_file(
 
     # Remove file bytes from disk
     if task_file.storage_path:
-        try:
-            Path(task_file.storage_path).unlink(missing_ok=True)
-        except Exception as exc:
-            logger.warning("[TaskFiles] Could not delete file from disk: %s", exc)
+        storage.delete(task_file.storage_path)
 
     task_file.deleted_at = _now()
     db.commit()
@@ -1110,10 +1120,7 @@ def hard_delete_task(
     files = db.query(TaskFile).filter(TaskFile.task_id == task_id).all()
     for f in files:
         if f.storage_path:
-            try:
-                Path(f.storage_path).unlink(missing_ok=True)
-            except Exception as exc:
-                logger.warning("[HardDelete] Could not remove file: %s", exc)
+            storage.delete(f.storage_path)
         f.deleted_at = _now()
 
     # Soft-delete the task

@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from app.services.file_storage import write_bytes_atomic
+from app.services.file_storage import resolve_path_under_root, write_bytes_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -70,11 +70,15 @@ class Pool2Storage:
         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         cid = content_hash(raw)
         dest = self.node_output_path(company_id, run_id, node_id, cid, ext=ext)
-        write_bytes_atomic(dest, raw)
+        write_bytes_atomic(dest, raw, root=self._root)
         return cid, str(dest)
 
     def load_node_output(self, storage_path: str) -> dict[str, Any] | list[Any] | None:
-        path = Path(storage_path)
+        try:
+            path = resolve_path_under_root(self._root, storage_path)
+        except ValueError:
+            logger.warning("[Pool2] Refusing path outside transactions root: %s", storage_path)
+            return None
         if not path.is_file():
             return None
         with open(path, "r", encoding="utf-8") as handle:
@@ -100,7 +104,7 @@ class Pool2Storage:
         raw = json.dumps(manifest, ensure_ascii=False).encode("utf-8")
         package_id = content_hash(raw)
         dest = self.final_package_path(company_id, processing_mode, run_id, package_id)
-        write_bytes_atomic(dest, raw)
+        write_bytes_atomic(dest, raw, root=self._root)
         logger.debug("[Pool2] Saved final package %s", dest)
         return package_id, str(dest)
 

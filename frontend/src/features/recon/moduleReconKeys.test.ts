@@ -3,6 +3,7 @@ import {
   bankAmountFromModuleTx,
   bankReconDedupKey,
   isModuleTxnLocked,
+  isReconMatchLockedStatus,
   ledgerReconDedupKey,
   ledgerVoucherFromModuleTx,
   normalizeReconCurrency,
@@ -28,6 +29,15 @@ describe('isModuleTxnLocked', () => {
     expect(isModuleTxnLocked({ matched_id: 'group-1' })).toBe(true)
     expect(isModuleTxnLocked({ matched_id: '' })).toBe(false)
     expect(isModuleTxnLocked({})).toBe(false)
+  })
+})
+
+describe('isReconMatchLockedStatus', () => {
+  it('skips FX refresh only for matched or partial', () => {
+    expect(isReconMatchLockedStatus('matched')).toBe(true)
+    expect(isReconMatchLockedStatus('partial')).toBe(true)
+    expect(isReconMatchLockedStatus('unreconciled')).toBe(false)
+    expect(isReconMatchLockedStatus('')).toBe(false)
   })
 })
 

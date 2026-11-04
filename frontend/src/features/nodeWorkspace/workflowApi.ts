@@ -338,6 +338,9 @@ export const workflowApi = {
       rescan_reasons?: string[]
       rescan_note?: string | null
       expected_receipt_count?: number | null
+      skip_crop_preview?: boolean
+      crop_preview_confirmed?: boolean
+      crop_boxes?: Array<Record<string, unknown>>
     },
   ) =>
     wfJson<WorkflowRun>(companyId, `/api/workflows/runs/${id}/re-vlm`, {
@@ -349,12 +352,58 @@ export const workflowApi = {
         rescan_reasons: options?.rescan_reasons ?? [],
         rescan_note: options?.rescan_note ?? null,
         expected_receipt_count: options?.expected_receipt_count ?? null,
+        skip_crop_preview: options?.skip_crop_preview ?? false,
+        crop_preview_confirmed: options?.crop_preview_confirmed ?? false,
+        crop_boxes: options?.crop_boxes ?? null,
       }),
+    }),
+  /** M-VDU crop-preview gate: confirm edited boxes, skip preview, or cancel. */
+  confirmCrops: (
+    companyId: string,
+    runId: string,
+    taskFileId: string,
+    body: {
+      action: 'confirm' | 'skip' | 'cancel'
+      boxes?: Array<Record<string, unknown>>
+      page?: number
+    },
+  ) =>
+    wfJson<WorkflowRun>(
+      companyId,
+      `/api/workflows/runs/${runId}/files/${encodeURIComponent(taskFileId)}/confirm-crops`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    ),
+  /** Re-extract review rows from this run's own uploads only (no Approve / journal transfer). */
+  rebuildReview: (companyId: string, id: string, task_file_ids?: string[]) =>
+    wfJson<WorkflowRun>(companyId, `/api/workflows/runs/${id}/rebuild-review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        task_file_ids && task_file_ids.length > 0 ? { task_file_ids } : {},
+      ),
     }),
   forceProcess: (companyId: string, runId: string, taskFileId: string) =>
     wfJson<WorkflowRun>(companyId, `/api/workflows/runs/${runId}/files/${taskFileId}/force-process`, {
       method: 'POST',
     }),
+  /** Re-extract one dense bank page whose VLM returned no rows (extract miss). */
+  retryEmptyExtractPage: (companyId: string, runId: string, taskFileId: string, page: number) =>
+    wfJson<WorkflowRun>(
+      companyId,
+      `/api/workflows/runs/${runId}/files/${taskFileId}/retry-empty-extract-page?page=${encodeURIComponent(String(page))}`,
+      { method: 'POST' },
+    ),
+  /** Rare secondary: user confirms they checked the PDF and accept no extracted rows. */
+  markPageReviewedNoRows: (companyId: string, runId: string, taskFileId: string, page: number) =>
+    wfJson<WorkflowRun>(
+      companyId,
+      `/api/workflows/runs/${runId}/files/${taskFileId}/mark-page-reviewed-no-rows?page=${encodeURIComponent(String(page))}`,
+      { method: 'POST' },
+    ),
   recoverStuck: (companyId: string, runId: string) =>
     wfJson<WorkflowRun>(companyId, `/api/workflows/runs/${runId}/recover-stuck`, { method: 'POST' }),
   removeRunFile: (companyId: string, runId: string, taskFileId: string) =>
@@ -441,9 +490,18 @@ export function shouldIgnoreRunRefreshAfterStop(
 
 /** Optimistic UI while hard Stop is in flight (matches backend cancel reset). */
 export function applyRunStoppedLocally(run: WorkflowRun): WorkflowRun {
-  const files = run.files.map(f =>
-    f.file_status === 'running' ? { ...f, file_status: 'pending', error_text: null } : f,
-  )
+  const files = run.files.map(f => {
+    const status = (f.file_status ?? '').toLowerCase()
+    if (status === 'running') {
+      // Interrupted in-flight page — keep the row on the grid with Stopped.
+      return { ...f, file_status: 'stopped', error_text: null }
+    }
+    if (status === 'pending' || status === 'queued') {
+      // Never started — Cancelled so Live output matches the stop dialog.
+      return { ...f, file_status: 'cancelled', error_text: null }
+    }
+    return f
+  })
   const nodeStates: Record<string, unknown> = { ...(run.node_states_json ?? {}) }
   delete nodeStates.cancel_requested
   for (const [nodeId, raw] of Object.entries(nodeStates)) {

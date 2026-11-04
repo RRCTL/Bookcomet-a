@@ -44,7 +44,12 @@ export function ReconPage() {
   }
 
   const currencyWarning = useMemo(() => {
-    const norm = (c: string | undefined) => (c ?? '').trim().toUpperCase()
+    const norm = (c: string | undefined) => {
+      const raw = (c ?? '').trim()
+      if (!raw) return ''
+      if (['港元', '港幣', '港币', 'HK$', 'HK'].includes(raw) || raw.toUpperCase() === 'HKD') return 'HKD'
+      return raw.toUpperCase() === 'JYP' ? 'JPY' : raw.toUpperCase()
+    }
     const currencies = new Set<string>()
     ws.selectedBankIds.forEach(id => {
       const c = norm(ws.bankRowById.get(id)?.currency)
@@ -54,7 +59,7 @@ export function ReconPage() {
       const c = norm(ws.ledgerRowById.get(id)?.currency)
       if (c) currencies.add(c)
     })
-    if (currencies.size > 1) return 'Cross-currency matching is not supported in v1.'
+    if (currencies.size > 1) return 'Different company currencies cannot be matched.'
     return null
   }, [ws.bankRowById, ws.ledgerRowById, ws.selectedBankIds, ws.selectedLedgerIds])
 

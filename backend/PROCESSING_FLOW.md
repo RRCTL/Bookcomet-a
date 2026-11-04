@@ -37,7 +37,7 @@ The live workspace pipeline runs through **`ocr_test_core`** in `backend/app/api
 
 ### Models and prompts (AP)
 
-- **Registry provider name** is `qwen-vl-ocr-latest`; the **actual model id** sent to the gateway is **`AP_VLM_MODEL`** (env `AP_VLM_MODEL` or legacy `AP_MULTI_RECEIPT_OCR_MODEL`, default `qwen-vl-ocr-latest`).
+- **Registry provider name** is `OCR_PROVIDER` when set, otherwise Settings `VLM_MODEL`. The **actual model id** sent to the gateway is **`AP_VLM_MODEL`** (env `AP_VLM_MODEL` or legacy `AP_MULTI_RECEIPT_OCR_MODEL`, else Settings `VLM_MODEL`).
 - **Stage‑1 (document parsing) prompt:** `AP_MULTI_RECEIPT_DOCUMENT_PARSING_PROMPT` for AR/AP, optionally prefixed with **company profile** and appended with **rule-memory AI hints** (`_load_rule_memory_for_ocr` / `_extract_ai_instructions` for modes in `AR`, `AP`, `BANK`, `OTHER`).
 - OCR text passed into prompts is **`sanitise_ocr_text`**’d where applicable.
 
@@ -47,7 +47,7 @@ The live workspace pipeline runs through **`ocr_test_core`** in `backend/app/api
 
 ### Layout routing (invoice vs composite receipts)
 
-**Classifier:** `_classify_document_layout` — fast VLM (`qwen3-vl-plus`), normalized to **`invoice`** (single structured document) vs **`receipts`** (composite scan).
+**Classifier:** `_classify_document_layout` — VLM (`DOCUMENT_LAYOUT_CLASSIFY_MODEL` if set, else Settings `VLM_MODEL`), normalized to **`invoice`** (single structured document) vs **`receipts`** (composite scan).
 
 **Shortcuts**
 
@@ -67,15 +67,25 @@ The live workspace pipeline runs through **`ocr_test_core`** in `backend/app/api
 
 ### Multi-receipt on one page: regions and cutting (`_run_ap_multi_receipt_ocr_from_image`)
 
-**1) Build region list**
+**1) Build region list (Settings VLM Detect; no OpenCV crop fallback)**
 
-- If **`processing_mode == "AP"`** and **`AP_VLM_LAYOUT_CROP_ENABLED`**: **`_ap_vlm_layout_try_receipt_regions`**
-  - Thumbnail (`AP_VLM_LAYOUT_THUMB_MAX_SIDE`), VLM returns JSON: **`confidence`**, **`count`**, **`receipts: [{x,y,w,h}]`** normalized to **[0,1]** per **`AP_VLM_LAYOUT_DETECTION_PROMPT`**.
-  - **`_validate_layout_json`**: min confidence, **≥ 2** boxes, geometry, **`count` == len(receipts)**. Maps to full-resolution pixels with **`AP_VLM_LAYOUT_BOX_PAD_PCT`**.
-  - On failure → fallback.
-- **Else:** **`_detect_receipt_regions_v2`** (Canny, column/row dominant-gap grid, density filter), with fallbacks to contour-based **`_detect_receipt_regions`** and **`_detect_receipt_regions_pil`**.
-- Balanced split-evidence gate applies before multi-crop OCR on AP pages: weakly separated / fragment-heavy candidates are collapsed back to one region.
-- If **≤ 1** region: without **`confirmed`** return **`None`**; with user confirm run **`_force_split_receipt_regions`** (multi-gap or bisect long axis).
+- AP/AR crop boxes come from **`_ap_vlm_layout_try_receipt_regions`** (`vlm_only=True`) using Settings VLM and **`VLM_RECEIPT_DETECT_PROMPT`**.
+  - Thumbnail longest side defaults to **`AP_VLM_LAYOUT_THUMB_MAX_SIDE=1600`**. Detect JSON token budget is **`AP_VLM_DETECT_MAX_TOKENS=4096`**.
+  - Model returns **`{count, receipts}`** (or a box list). `count` is the **model’s own** slip tally — not a hardcoded N (no 3×3 / 9).
+  - Parser accepts `bbox_2d`, corner keys, or `{x,y,w,h}` in 0–1 or 0–1000; maps to full-resolution pixels with **`AP_VLM_LAYOUT_BOX_PAD_PCT`**.
+  - **One self-repair Detect** (`vlm_detect_repair`) if the first pass looks incomplete: declared `count` > parsed boxes, truncated JSON, or one box much larger than siblings. At most two Detect calls; keep the denser valid set. Repair does not invent a fixed slip count.
+  - Empty / unusable Detect → **`needs_crop_preview`** with empty overlay (`mvdu_crop_preview.build_crop_preview_payload`). OpenCV / force-split are **not** retried on this live path.
+
+**1b) Crop-preview gate (M-VDU / Comet MultiCut pattern)**
+
+- After Detect (or empty Detect), the pipeline pauses with **`needs_crop_preview`** and numbered green boxes on the full page unless:
+  - **`skip_crop_preview`** (power user) *and* Detect returned usable boxes, or
+  - **`crop_preview_confirmed`** with user-edited **`confirmed_crop_boxes`**.
+- **Multipage (Scenario D):** Detect gates are collected for every PDF page in the gate set, then merged into one payload with **`crop_preview.pages[]`** (page thumbs: pending / confirmed; viewer marks the active page RUNNING). User confirms page-by-page; extract runs only after no PENDING pages remain (or Skip). Confirmed boxes are filtered per PDF page on extract — never invent boxes for unseen pages.
+- Workflow UI: `POST /api/workflows/runs/{id}/files/{task_file_id}/confirm-crops` with `action=confirm|skip|cancel`.
+- Cancel closes the gate without extract; run stays **`awaiting_review`**; Detect boxes retained for Retry. Skip uses Detect boxes as-is with provenance **`skipped_preview=true`** (confirm dialog when multiple PENDING pages). Confirm extracts submitted boxes for all confirmed pages.
+- During extract, `crop_preview.phase=extracting` updates per-box `extract_status` (pending/running/done/error) for the strip + active-box highlight.
+- **UI placement:** the crop-preview gate docks in Processing’s **right document panel** only (`MvduCropPreviewGate` inside `erp-proc-right`). Left run list and center Live output stay visible — not a fullscreen modal overlay. Far-right page thumbs are the page control when `crop_preview.pages.length > 1`.
 
 **2) Cut and process each region**
 
@@ -107,9 +117,12 @@ For **`processing_mode in ("AR", "AP")`**, Step 4 uses **`_extract_ar_ap_ai_fiel
 | Variable | Role |
 |----------|------|
 | `AP_VLM_MODEL` / `AP_MULTI_RECEIPT_OCR_MODEL` | Main VLM id for AP |
-| `AP_VLM_LAYOUT_CROP_ENABLED` | Enable VLM bounding-box multi-receipt detection |
-| `AP_VLM_LAYOUT_CONFIDENCE_MIN`, `AP_VLM_LAYOUT_THUMB_MAX_SIDE`, `AP_VLM_LAYOUT_BOX_PAD_PCT`, `AP_VLM_LAYOUT_MAX_RETRIES` | Layout JSON validation / retries |
+| `AP_VLM_LAYOUT_CROP_ENABLED` | Legacy layout flag; AP/AR crop uses Settings VLM Detect regardless |
+| `AP_VLM_LAYOUT_CONFIDENCE_MIN`, `AP_VLM_LAYOUT_THUMB_MAX_SIDE` (default 1600), `AP_VLM_LAYOUT_BOX_PAD_PCT`, `AP_VLM_LAYOUT_MAX_RETRIES` | Layout thumb / pad / legacy JSON retries |
+| `AP_VLM_DETECT_MAX_TOKENS` | Detect JSON token budget (default 4096) so collage box lists are less likely to truncate |
 | `AP_CROP_OCR_CONCURRENCY`, `AP_CROP_OCR_IMAGE_MAX_SIDE`, `AP_CROP_OCR_JPEG_QUALITY` | Multi-crop OCR |
+| `AP_CROP_OCR_TIMEOUT_S` | Per-crop OCR deadline (seconds). Empty uses `VLM_READ_TIMEOUT` → `VLM_TIMEOUT` → `240` |
+| `VLM_HTTP_MAX_RETRIES` | HTTP attempts per upload profile on Timeout/ConnectionError. Empty = 3. Crop/receipt OCR passes 1 via `ocr_options` |
 | `AP_CROP_MIN_WIDTH_PX`, `AP_CROP_MIN_HEIGHT_PX`, `AP_CROP_MIN_AREA_PX`, `AP_CROP_MIN_ASPECT_RATIO`, `AP_CROP_MAX_ASPECT_RATIO` | Crop preflight guards before OCR |
 | `AP_SEG_MULTI_MIN_REGION_AREA_FRAC`, `AP_SEG_MULTI_MAX_DOMINANCE`, `AP_SEG_MIN_GAP_FRAC`, `AP_SEG_FRAGMENT_REL_AREA_MAX`, `AP_SEG_SINGLE_MERGE_PAD_FRAC` | AP anti-over-split evidence gate / single-collapse behavior |
 | `AP_LAYOUT_MAX_PAGE_CONCURRENCY`, `OCR_SCENARIO_D_MAX_CONSECUTIVE_FAILURES`, `OCR_SCENARIO_D_MAX_FAILURE_RATIO`, `OCR_SCENARIO_D_FAILURE_RATIO_MIN_SAMPLES` | Scenario D queue scheduling / early termination |
@@ -241,7 +254,7 @@ Removes temp upload and converted page images; releases concurrency slot.
 | PDF rasterization | PyMuPDF | Workspace AP/AR always image path |
 | OCR (AP/AR) | VLM via `ocr_service` | Model from env (e.g. `AP_VLM_MODEL`) |
 | Receipt splitting | OpenCV / PIL | `_detect_receipt_regions_v2`, optional VLM boxes (AP) |
-| Layout classify | VLM (`qwen3-vl-plus`) | Invoice vs composite receipts |
+| Layout classify | VLM (Settings `VLM_MODEL`, or `DOCUMENT_LAYOUT_CLASSIFY_MODEL`) | Invoice vs composite receipts |
 | Document gate | Rules + keywords + LLM | `document_gate.py` |
 | Structured rows (AP/AR) | VLM JSON + validation | `_extract_ap_ai_fields_for_page`, cheque branches |
 | Optional enhance (non-AR/AP path) | DeepSeek-compatible API | When key configured |

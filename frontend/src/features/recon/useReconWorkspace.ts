@@ -184,7 +184,7 @@ function sameCurrency(bankIds: string[], ledgerIds: string[], bankMap: Map<strin
     if (c) currencies.add(c)
   })
   if (currencies.size <= 1) return null
-  return 'Cross-currency matching is not supported in v1. Select transactions in the same currency.'
+  return 'Different company currencies cannot be matched. Select transactions in the same company currency.'
 }
 
 function filterIdsByCurrency(

@@ -34,6 +34,7 @@ from app.graph.graph_utils import (
     vlm_node_params,
     vlm_settings,
 )
+from app.graph.ocr_partial_merge import merge_partial_ocr_summary
 from app.graph.vlm_call_budget import (
     can_make_vlm_call,
     record_vlm_call,
@@ -66,10 +67,14 @@ from app.services.re_vlm_hints import (
 
 logger = logging.getLogger(__name__)
 
-_PROCESSABLE_FILE_STATUSES = frozenset({"pending", "warning", "failed"})
-_DRAFT_RESET_FILE_STATUSES = frozenset({"running", "ok"})
+# stopped/cancelled are re-runnable after a mid-batch Stop (Run / Re-VLM).
+_PROCESSABLE_FILE_STATUSES = frozenset(
+    {"pending", "warning", "failed", "stopped", "cancelled"}
+)
+_DRAFT_RESET_FILE_STATUSES = frozenset({"running", "ok", "stopped", "cancelled"})
 _CANCEL_REQUESTED_KEY = "cancel_requested"
 _VLM_NODE_TYPES = frozenset({"VLM_API", "VLMDoubleCheck", "VLMProposer"})
+_QUEUED_FILE_STATUSES = frozenset({"pending", "queued"})
 
 
 def _clear_run_cancel(run: WorkflowRun) -> None:
@@ -178,8 +183,14 @@ async def _finish_vlm_after_cancel(
         db.query(WorkflowRunFile).filter(WorkflowRunFile.run_id == run.id).all()
     )
     for rf in run_files:
-        if rf.file_status == "running":
-            rf.file_status = "pending"
+        status = (rf.file_status or "").lower()
+        if status == "running":
+            # Interrupted page stays on the grid as Stopped.
+            rf.file_status = "stopped"
+            rf.error_text = None
+        elif status in _QUEUED_FILE_STATUSES:
+            # Queued pages that never started — Cancelled.
+            rf.file_status = "cancelled"
             rf.error_text = None
 
     ok_count = sum(1 for rf in run_files if rf.file_status == "ok")
@@ -191,7 +202,8 @@ async def _finish_vlm_after_cancel(
     _append_console(
         run,
         "warn",
-        f"Stopped by user: {ok_count} ok, {warn_count} warning(s); in-progress files reset.",
+        f"Stopped by user: {ok_count} ok, {warn_count} warning(s); "
+        "in-progress page Stopped, queued pages Cancelled.",
     )
 
     if ok_count or warn_count or merged:
@@ -319,6 +331,68 @@ _POST_APPROVE_RUN_STATUSES = frozenset({"coa_running", "completed", "done", "sav
 RE_VLM_LOCKED_DETAIL = (
     "Approved and loaded into modules — Re-VLM is disabled to avoid conflicting updates."
 )
+REBUILD_NO_FILES_DETAIL = "This run has no uploaded files"
+REBUILD_FOREIGN_FILES_DETAIL = "File IDs aren't in this run"
+
+
+def resolve_rebuild_task_file_ids(
+    run_files: list[Any],
+    requested_ids: list[str] | None = None,
+) -> list[str]:
+    """Return run-owned file IDs for a review rebuild; reject empty runs and foreign IDs."""
+    owned_ids = [
+        str(getattr(rf, "task_file_id", "") or "")
+        for rf in (run_files or [])
+        if getattr(rf, "task_file_id", None)
+    ]
+    if not owned_ids:
+        raise HTTPException(status_code=400, detail=REBUILD_NO_FILES_DETAIL)
+
+    if not requested_ids:
+        # Preserve first-seen order; drop empty / duplicate ids.
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for fid in owned_ids:
+            if fid and fid not in seen:
+                seen.add(fid)
+                ordered.append(fid)
+        return ordered
+
+    owned_set = set(owned_ids)
+    foreign = [fid for fid in requested_ids if fid and fid not in owned_set]
+    if foreign:
+        raise HTTPException(status_code=400, detail=REBUILD_FOREIGN_FILES_DETAIL)
+
+    seen_req: set[str] = set()
+    ordered_req: list[str] = []
+    for fid in requested_ids:
+        if fid and fid not in seen_req:
+            seen_req.add(fid)
+            ordered_req.append(fid)
+    if not ordered_req:
+        raise HTTPException(status_code=400, detail=REBUILD_NO_FILES_DETAIL)
+    return ordered_req
+
+
+def clear_run_review_ocr_state(run: WorkflowRun, run_files: list[Any], target_ids: list[str]) -> None:
+    """Drop saved review/OCR rows for target files so rebuild never shows stale wrong data."""
+    target = set(target_ids)
+    for rf in run_files:
+        if str(getattr(rf, "task_file_id", "") or "") not in target:
+            continue
+        rf.result_summary_json = None
+        rf.file_status = "pending"
+        rf.error_text = None
+        rf.gate_result = None
+
+    states = dict(run.node_states_json) if isinstance(run.node_states_json, dict) else {}
+    states.pop("merged_ocr", None)
+    states.pop("ocr_by_file", None)
+    # Draft review only — never auto-post. Drop uncommitted approve payload so the
+    # rebuilt table is the sole source until the user Approves again.
+    if not _run_has_locked_approved_table(run):
+        states.pop("approved_payload", None)
+    run.node_states_json = states
 
 
 def _approved_payload_has_rows(payload: dict[str, Any], processing_mode: str | None) -> bool:
@@ -450,11 +524,19 @@ def _rescan_prior_summary_for_run_file(run_file: WorkflowRunFile) -> str:
     return "; ".join(parts)
 
 
+# Include in-flight files so Scenario D page snapshots stream into the review table.
+_OCR_LIVE_FILE_STATUSES = frozenset({"ok", "running", "warning"})
+
+
+def _run_file_has_live_ocr(rf: Any) -> bool:
+    return str(getattr(rf, "file_status", "") or "") in _OCR_LIVE_FILE_STATUSES
+
+
 def _merge_run_files_ocr(run_files: list[WorkflowRunFile]) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     for rf in run_files:
         payload = rf.result_summary_json
-        if not isinstance(payload, dict) or rf.file_status != "ok":
+        if not isinstance(payload, dict) or not _run_file_has_live_ocr(rf):
             continue
         merged.extend(rows_from_ocr_payload(payload))
     return merged
@@ -516,6 +598,119 @@ def resolve_row_task_file_id(row: dict[str, Any], run_files: list[WorkflowRunFil
     return None
 
 
+def _strip_source_page_suffix(value: str) -> str:
+    """Strip trailing page markers like ' P12' / ' P12-R3' in linear time.
+
+    Avoids regex on uncontrolled source_file strings (CodeQL py/polynomial-redos).
+    Input length is bounded; only the basename is considered.
+    """
+    from pathlib import PurePath
+
+    # Bound uncontrolled input before any scanning.
+    raw = (value or "")[:4096]
+    base = PurePath(raw.replace("\\", "/")).name
+    s = base.strip()
+    if not s:
+        return ""
+
+    # Match suffix: whitespace + 'p' + digits + optional ('-r' + digits), casefolded.
+    i = len(s) - 1
+    if i < 0 or not s[i].isdigit():
+        return s
+    while i >= 0 and s[i].isdigit():
+        i -= 1
+    # Optional -R\d+ (already casefolded to -r\d+)
+    if i >= 1 and s[i] == "r" and s[i - 1] == "-":
+        i -= 2
+        if i < 0 or not s[i].isdigit():
+            return s
+        while i >= 0 and s[i].isdigit():
+            i -= 1
+    if i < 0 or s[i] != "p":
+        return s
+    i -= 1
+    if i < 0 or not s[i].isspace():
+        return s
+    while i >= 0 and s[i].isspace():
+        i -= 1
+    return s[: i + 1].rstrip()
+
+
+def resolve_row_task_file_id_strict(
+    row: dict[str, Any], run_files: list[WorkflowRunFile]
+) -> str | None:
+    """Match a review row to a run file without the single-file fallback.
+
+    Used on Approve so rows from another run's PDF cannot be accepted just
+    because the current run happens to have exactly one file.
+    """
+    explicit = str(row.get("task_file_id") or row.get("source_file_id") or "").strip()
+    if explicit:
+        for rf in run_files:
+            if rf.task_file_id == explicit:
+                return rf.task_file_id
+        return None
+
+    file_key = _ar_ap_file_key(row).casefold()[:4096]
+    if not file_key:
+        # Unmarked rows are only allowed when the run has a single file.
+        if len(run_files) == 1:
+            return run_files[0].task_file_id
+        return None
+
+    key_stem = _strip_source_page_suffix(file_key)
+
+    for rf in run_files:
+        name, stem = _filename_stems(rf)
+        name = (name or "").casefold()
+        stem = (stem or "").casefold()
+        if not name and not stem:
+            continue
+        tfid = (rf.task_file_id or "").casefold()
+        if file_key == tfid:
+            return rf.task_file_id
+        # Strict: exact filename, exact stem, or key starts with "name " / "stem ".
+        if key_stem == name or key_stem == stem:
+            return rf.task_file_id
+        if name and (
+            file_key == name
+            or file_key.startswith(name + " ")
+            or file_key.startswith(name + "p")
+        ):
+            return rf.task_file_id
+        if stem and (file_key.startswith(stem + ".") or file_key.startswith(stem + " ")):
+            return rf.task_file_id
+    return None
+
+
+def assert_review_rows_belong_to_run(
+    review_rows: list[Any] | None,
+    run_files: list[WorkflowRunFile],
+) -> None:
+    """Reject approve/resume payloads that reference files outside this run."""
+    if not isinstance(review_rows, list) or not review_rows:
+        return
+    if not run_files:
+        raise HTTPException(
+            status_code=400,
+            detail="These rows don't belong to this run. Reload the run.",
+        )
+    foreign = 0
+    for row in review_rows:
+        if not isinstance(row, dict):
+            continue
+        if resolve_row_task_file_id_strict(row, run_files) is None:
+            foreign += 1
+    if foreign:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Some rows came from files that aren't in this run and are hidden. "
+                "Reload the run to fix this."
+            ),
+        )
+
+
 def row_file_ids_for_rows(
     rows: list[dict[str, Any]],
     run_files: list[WorkflowRunFile],
@@ -539,12 +734,70 @@ def _ocr_by_file_from_run_files(run_files: list[WorkflowRunFile]) -> dict[str, l
     out: dict[str, list[dict[str, Any]]] = {}
     for rf in run_files:
         payload = rf.result_summary_json
-        if not isinstance(payload, dict) or rf.file_status != "ok":
+        if not isinstance(payload, dict) or not _run_file_has_live_ocr(rf):
             continue
         rows = rows_from_ocr_payload(payload)
         if rows:
             out[rf.task_file_id] = rows
     return out
+
+
+def apply_partial_ocr_to_running_file(
+    run: WorkflowRun,
+    run_files: list[WorkflowRunFile],
+    running_file: WorkflowRunFile,
+    result_json: dict[str, Any],
+) -> None:
+    """Stamp mid-flight OCR pages onto a still-running file and refresh ocr_by_file."""
+    prior = running_file.result_summary_json
+    running_file.result_summary_json = merge_partial_ocr_summary(
+        prior if isinstance(prior, dict) else None,
+        result_json,
+    )
+    merged = _merge_run_files_ocr(run_files)
+    _apply_vlm_ocr_states(run, run_files, merged)
+
+
+def persist_workflow_ocr_partial(
+    workflow_run_id: str,
+    result_json: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Commit Scenario D page snapshots so GET /runs + WS can fill the table early."""
+    if not workflow_run_id or not isinstance(result_json, dict):
+        return None
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        run = db.query(WorkflowRun).filter(WorkflowRun.id == workflow_run_id).first()
+        if not run or str(run.run_status) not in {"executing", "queued", "running", "coa_running"}:
+            return None
+        rf = (
+            db.query(WorkflowRunFile)
+            .filter(
+                WorkflowRunFile.run_id == run.id,
+                WorkflowRunFile.file_status == "running",
+            )
+            .first()
+        )
+        if not rf:
+            return None
+        live = db.query(WorkflowRunFile).filter(WorkflowRunFile.run_id == run.id).all()
+        apply_partial_ocr_to_running_file(run, live, rf, result_json)
+        db.commit()
+        return {
+            "run_status": run.run_status,
+            "node_states_json": run.node_states_json,
+        }
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "[OCR Partial] failed to persist workflow snapshot for run %s",
+            workflow_run_id,
+        )
+        return None
+    finally:
+        db.close()
 
 
 def _apply_vlm_ocr_states(
@@ -1174,6 +1427,9 @@ class WorkflowService:
         rescan_reasons: list[str] | None = None,
         rescan_note: str | None = None,
         expected_receipt_count: int | None = None,
+        skip_crop_preview: bool = False,
+        crop_preview_confirmed: bool = False,
+        confirmed_crop_boxes: list | None = None,
     ) -> dict[str, Any]:
         from app.services.abuse_guard import company_ocr_concurrency
 
@@ -1184,15 +1440,22 @@ class WorkflowService:
         db.commit()
 
         path = task_file.storage_path
-        if not path or not os.path.isfile(path):
+        if not path:
             run_file.file_status = "failed"
             run_file.error_text = "File missing on disk"
             db.commit()
             return {"ok": False, "error": run_file.error_text}
 
         filename = task_file.original_filename or "upload"
-        with open(path, "rb") as handle:
-            content = handle.read()
+        try:
+            from app.services.file_storage import read_stored_bytes
+
+            content = read_stored_bytes(path)
+        except (ValueError, FileNotFoundError, OSError):
+            run_file.file_status = "failed"
+            run_file.error_text = "File missing on disk"
+            db.commit()
+            return {"ok": False, "error": run_file.error_text}
         upload = UploadFile(filename=filename, file=BytesIO(content))
         trace_id = str(uuid.uuid4())
         validated_reasons = validate_rescan_reasons(rescan_reasons)
@@ -1221,9 +1484,12 @@ class WorkflowService:
                         rescan_note=safe_note or None,
                         rescan_prior_summary=prior_summary or None,
                         expected_receipt_count=expected_count,
+                        skip_crop_preview=skip_crop_preview,
+                        crop_preview_confirmed=crop_preview_confirmed,
+                        confirmed_crop_boxes=confirmed_crop_boxes,
                     )
         except WorkflowRunCancelled:
-            run_file.file_status = "pending"
+            run_file.file_status = "stopped"
             run_file.error_text = None
             db.commit()
             return {"ok": False, "cancelled": True}
@@ -1242,7 +1508,7 @@ class WorkflowService:
             return {"ok": False, "error": run_file.error_text}
 
         if workflow_run_should_abort_processing(run.id):
-            run_file.file_status = "pending"
+            run_file.file_status = "stopped"
             run_file.error_text = None
             db.commit()
             return {"ok": False, "cancelled": True}
@@ -1262,6 +1528,18 @@ class WorkflowService:
             run_file.result_summary_json = result
             db.commit()
             return {"ok": False, "warning": True, "needs_confirmation": True, "result": result}
+
+        if result.get("needs_crop_preview"):
+            run_file.file_status = "warning"
+            run_file.error_text = "needs_crop_preview"
+            run_file.result_summary_json = result
+            db.commit()
+            return {
+                "ok": False,
+                "warning": True,
+                "needs_crop_preview": True,
+                "result": result,
+            }
 
         count_val = result.get("count_validation") if isinstance(result, dict) else None
         if isinstance(count_val, dict):
@@ -1285,6 +1563,44 @@ class WorkflowService:
                     "count_mismatch": True,
                     "result": result,
                 }
+
+        # Preserve user mark-reviewed pages: a late VLM finish must not restore
+        # EMPTY_EXTRACT or Passed over an acknowledged page on this file.
+        if isinstance(result, dict):
+            from app.services.bank_empty_extract import merge_result_preserving_reviewed
+
+            prior_summary = run_file.result_summary_json
+            if isinstance(prior_summary, dict):
+                result = merge_result_preserving_reviewed(prior_summary, result)
+
+        # Dense-OCR extract miss: do not report whole-file Passed while any page
+        # still needs retry (amber). Journals stay draft until explicit Approve.
+        if (run.processing_mode or "").upper() == "BANK" and isinstance(result, dict):
+            from app.services.bank_empty_extract import (
+                EMPTY_EXTRACT_GATE,
+                summarize_empty_extract_for_file,
+            )
+
+            empty_summary = summarize_empty_extract_for_file(result.get("pages"))
+            if empty_summary:
+                run_file.file_status = "warning"
+                run_file.gate_result = EMPTY_EXTRACT_GATE
+                run_file.result_summary_json = result
+                WorkflowService._refresh_bank_file_status_from_pages(run_file)
+                db.commit()
+                return {
+                    "ok": False,
+                    "warning": True,
+                    "empty_extract": True,
+                    "empty_extract_summary": empty_summary,
+                    "result": result,
+                }
+
+            # No pending amber — still stamp per-page Live output (incl. reviewed).
+            run_file.result_summary_json = result
+            WorkflowService._refresh_bank_file_status_from_pages(run_file)
+            db.commit()
+            return {"ok": run_file.file_status == "ok", "result": result}
 
         run_file.file_status = "ok"
         run_file.gate_result = None
@@ -1761,6 +2077,9 @@ class WorkflowService:
         rescan_reasons: list[str] | None = None,
         rescan_note: str | None = None,
         expected_receipt_count: int | None = None,
+        skip_crop_preview: bool = False,
+        crop_preview_confirmed: bool = False,
+        confirmed_crop_boxes: list | None = None,
     ) -> WorkflowRun:
         if _run_has_locked_approved_table(run):
             raise HTTPException(status_code=409, detail=RE_VLM_LOCKED_DETAIL)
@@ -1849,6 +2168,9 @@ class WorkflowService:
                         rescan_reasons=validated_reasons,
                         rescan_note=safe_note,
                         expected_receipt_count=expected_count,
+                        skip_crop_preview=skip_crop_preview,
+                        crop_preview_confirmed=crop_preview_confirmed,
+                        confirmed_crop_boxes=confirmed_crop_boxes,
                         **vlm_kwargs,
                     )
                 )
@@ -1908,6 +2230,399 @@ class WorkflowService:
         )
         db.commit()
         db.refresh(run)
+        return run
+
+    @staticmethod
+    def cancel_crop_preview(
+        db: Session,
+        run: WorkflowRun,
+        task_file_id: str,
+    ) -> WorkflowRun:
+        """Dismiss crop-preview gate without writing extract rows."""
+        if _run_has_locked_approved_table(run):
+            raise HTTPException(status_code=409, detail=RE_VLM_LOCKED_DETAIL)
+        rf = (
+            db.query(WorkflowRunFile)
+            .filter(
+                WorkflowRunFile.run_id == run.id,
+                WorkflowRunFile.task_file_id == task_file_id,
+            )
+            .first()
+        )
+        if not rf:
+            raise HTTPException(status_code=404, detail="Run file not found")
+        summary = rf.result_summary_json if isinstance(rf.result_summary_json, dict) else {}
+        if not summary.get("needs_crop_preview") and rf.error_text != "needs_crop_preview":
+            raise HTTPException(status_code=400, detail="File is not awaiting crop preview")
+        # Keep Detect boxes for Retry; clear the live gate so the docked panel closes.
+        # Session page-thumb state is discarded; no extract.
+        kept_preview = None
+        if isinstance(summary, dict):
+            cp = summary.get("crop_preview")
+            if isinstance(cp, dict):
+                kept_preview = dict(cp)
+                kept_preview["phase"] = "preview"
+        rf.file_status = "pending"
+        rf.error_text = None
+        rf.gate_result = None
+        if kept_preview is not None:
+            rf.result_summary_json = {
+                "crop_preview": kept_preview,
+                "crop_preview_dismissed": True,
+                "needs_crop_preview": False,
+            }
+        else:
+            rf.result_summary_json = None
+        _append_console(run, "info", f"Crop preview cancelled for {rf.task_file_id[:8]}…")
+        # Spec: Cancel leaves awaiting_review (no extract).
+        live = db.query(WorkflowRunFile).filter(WorkflowRunFile.run_id == run.id).all()
+        any_running = any((x.file_status or "") == "running" for x in live)
+        if not any_running:
+            run.run_status = "awaiting_review"
+        db.commit()
+        db.refresh(run)
+        return run
+
+    @staticmethod
+    async def rebuild_review_from_run_files(
+        db: Session,
+        run: WorkflowRun,
+        task_file_ids: list[str] | None = None,
+    ) -> WorkflowRun:
+        """Re-extract review rows from this run's own uploads only (no journal transfer).
+
+        Clears stored OCR/review state for the selected run files, then reuses the
+        existing Re-VLM extraction pipeline. Journals stay draft until explicit Approve.
+        """
+        if _run_has_locked_approved_table(run):
+            raise HTTPException(status_code=409, detail=RE_VLM_LOCKED_DETAIL)
+
+        all_run_files = (
+            db.query(WorkflowRunFile).filter(WorkflowRunFile.run_id == run.id).all()
+        )
+        target_ids = resolve_rebuild_task_file_ids(all_run_files, task_file_ids)
+        clear_run_review_ocr_state(run, all_run_files, target_ids)
+        _append_console(
+            run,
+            "info",
+            f"Rebuild review from {len(target_ids)} run file(s)...",
+        )
+        db.commit()
+        db.refresh(run)
+
+        return await WorkflowService.re_vlm_files(
+            db,
+            run,
+            target_ids,
+            force_process=True,
+        )
+
+    @staticmethod
+    def _refresh_bank_file_status_from_pages(run_file: WorkflowRunFile) -> None:
+        """Set file_status from page-level flags (per-page Live output; mark wins)."""
+        from app.services.bank_empty_extract import (
+            EMPTY_EXTRACT_GATE,
+            REVIEWED_NO_ROWS_GATE,
+            REVIEWED_NO_ROWS_LABEL,
+            format_live_output_page_statuses,
+            summarize_empty_extract_for_file,
+            summarize_reviewed_no_rows_for_file,
+        )
+
+        payload = run_file.result_summary_json
+        if not isinstance(payload, dict):
+            return
+        pages = payload.get("pages")
+        summary = summarize_empty_extract_for_file(pages)
+        reviewed = summarize_reviewed_no_rows_for_file(pages)
+        page_count = None
+        try:
+            if payload.get("total_pages") is not None:
+                page_count = int(payload.get("total_pages"))
+        except (TypeError, ValueError):
+            page_count = None
+        live_detail = format_live_output_page_statuses(
+            pages,
+            file_status=run_file.file_status,
+            page_count=page_count,
+        )
+        if summary:
+            # File stays Needs review while any page is still empty-extract.
+            run_file.file_status = "warning"
+            run_file.gate_result = EMPTY_EXTRACT_GATE
+            run_file.error_text = (live_detail or str(summary.get("message") or EMPTY_EXTRACT_GATE))[
+                :2000
+            ]
+        elif run_file.file_status != "failed":
+            # Clear EMPTY_EXTRACT soft warning only; leave other failures alone.
+            if run_file.gate_result in (
+                None,
+                EMPTY_EXTRACT_GATE,
+                REVIEWED_NO_ROWS_GATE,
+                "",
+            ):
+                # Whole file looks clear only when every page is extracted / marked.
+                run_file.file_status = "ok"
+                if reviewed:
+                    run_file.gate_result = REVIEWED_NO_ROWS_GATE
+                    run_file.error_text = (
+                        live_detail or str(reviewed.get("message") or REVIEWED_NO_ROWS_LABEL)
+                    )[:2000]
+                else:
+                    run_file.gate_result = None
+                    run_file.error_text = None
+        if isinstance(pages, list):
+            from app.api.ocr import recompute_ocr_job_outcome_from_pages
+
+            payload = dict(payload)
+            payload["ocr_job_outcome"] = recompute_ocr_job_outcome_from_pages(pages)
+            if reviewed:
+                payload["reviewed_no_rows_summary"] = reviewed
+            else:
+                payload.pop("reviewed_no_rows_summary", None)
+            if live_detail:
+                payload["live_page_statuses"] = live_detail
+            else:
+                payload.pop("live_page_statuses", None)
+            run_file.result_summary_json = payload
+
+    @staticmethod
+    async def retry_bank_empty_extract_page(
+        db: Session,
+        run: WorkflowRun,
+        task_file_id: str,
+        page_num: int,
+    ) -> WorkflowRun:
+        """Re-run Re-VLM extract for one bank PDF page flagged as dense empty-extract miss."""
+        from app.api.ocr import retry_scenario_d_pdf_page
+        from app.services.bank_empty_extract import page_has_pending_empty_extract
+        from app.services.file_storage import read_stored_bytes
+
+        if _run_has_locked_approved_table(run):
+            raise HTTPException(status_code=409, detail=RE_VLM_LOCKED_DETAIL)
+        if (run.processing_mode or "").upper() != "BANK":
+            raise HTTPException(status_code=400, detail="Empty-extract page retry is BANK-only")
+        if page_num < 1:
+            raise HTTPException(status_code=400, detail="page must be >= 1")
+
+        run_file = (
+            db.query(WorkflowRunFile)
+            .filter(
+                WorkflowRunFile.run_id == run.id,
+                WorkflowRunFile.task_file_id == task_file_id,
+            )
+            .first()
+        )
+        if not run_file:
+            raise HTTPException(status_code=404, detail="Run file not found")
+        task_file = (
+            db.query(TaskFile)
+            .filter(TaskFile.id == task_file_id, TaskFile.deleted_at.is_(None))
+            .first()
+        )
+        if not task_file or not task_file.storage_path:
+            raise HTTPException(status_code=404, detail="File missing on disk")
+
+        payload = run_file.result_summary_json
+        if not isinstance(payload, dict) or not isinstance(payload.get("pages"), list):
+            raise HTTPException(status_code=400, detail="No multi-page extract result on this file")
+        pages = list(payload["pages"])
+        target = next(
+            (
+                p
+                for p in pages
+                if isinstance(p, dict) and int(p.get("page", -1)) == page_num
+            ),
+            None,
+        )
+        if target is None:
+            raise HTTPException(status_code=404, detail=f"Page {page_num} not found in extract")
+        if not page_has_pending_empty_extract(target) and target.get("status") != "error":
+            raise HTTPException(
+                status_code=400,
+                detail="Page is not flagged for empty-extract retry",
+            )
+
+        # Write bytes to a temp PDF path for Scenario D single-page retry.
+        import tempfile
+
+        content = read_stored_bytes(task_file.storage_path)
+        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        try:
+            tmp.write(content)
+            tmp.flush()
+            tmp.close()
+            new_rows = await retry_scenario_d_pdf_page(
+                pdf_path=tmp.name,
+                page_num=page_num,
+                processing_mode="BANK",
+                multi_receipt_confirmed=False,
+                company_id=run.company_id,
+                trace_id=str(uuid.uuid4()),
+                filename=task_file.original_filename or "upload.pdf",
+                db=db,
+                background_job_id=None,
+            )
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+
+        kept = [
+            p
+            for p in pages
+            if not (isinstance(p, dict) and int(p.get("page", -1)) == page_num)
+        ]
+        merged_pages = kept + [r for r in new_rows if isinstance(r, dict)]
+        merged_pages.sort(key=lambda p: int(p.get("page") or 0))
+        updated = dict(payload)
+        updated["pages"] = merged_pages
+        from app.api.ocr import recompute_ocr_job_outcome_from_pages
+
+        updated["ocr_job_outcome"] = recompute_ocr_job_outcome_from_pages(merged_pages)
+        hist = updated.get("empty_extract_retry_history")
+        if not isinstance(hist, list):
+            hist = []
+        hist.append(
+            {
+                "page": page_num,
+                "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "ok": not any(
+                    page_has_pending_empty_extract(r) for r in new_rows if isinstance(r, dict)
+                ),
+            }
+        )
+        updated["empty_extract_retry_history"] = hist
+        run_file.result_summary_json = updated
+        WorkflowService._refresh_bank_file_status_from_pages(run_file)
+
+        all_run_files = (
+            db.query(WorkflowRunFile).filter(WorkflowRunFile.run_id == run.id).all()
+        )
+        ok_count = sum(1 for rf in all_run_files if rf.file_status == "ok")
+        warn_count = sum(1 for rf in all_run_files if rf.file_status == "warning")
+        merged = _merge_run_files_ocr(all_run_files)
+        _finalize_run_after_vlm(
+            run,
+            all_run_files,
+            ok_count=ok_count,
+            warn_count=warn_count,
+            console_message=(
+                f"Retry page {page_num} on {task_file.original_filename or task_file_id}: "
+                f"{len(merged)} row(s) in table."
+            ),
+        )
+        db.commit()
+        db.refresh(run)
+        return run
+
+    @staticmethod
+    def mark_bank_page_reviewed_with_no_rows(
+        db: Session,
+        run: WorkflowRun,
+        task_file_id: str,
+        page_num: int,
+    ) -> WorkflowRun:
+        """Rare secondary action: user confirms they checked the PDF and accept no rows."""
+        import copy
+        import json
+
+        from sqlalchemy.orm.attributes import flag_modified
+
+        from app.services.bank_empty_extract import (
+            REVIEWED_NO_ROWS_LABEL,
+            mark_page_reviewed_with_no_rows,
+            page_has_pending_empty_extract,
+        )
+
+        if _run_has_locked_approved_table(run):
+            raise HTTPException(status_code=409, detail=RE_VLM_LOCKED_DETAIL)
+        if (run.processing_mode or "").upper() != "BANK":
+            raise HTTPException(status_code=400, detail="Mark-reviewed is BANK-only")
+        if page_num < 1:
+            raise HTTPException(status_code=400, detail="page must be >= 1")
+
+        run_file = (
+            db.query(WorkflowRunFile)
+            .filter(
+                WorkflowRunFile.run_id == run.id,
+                WorkflowRunFile.task_file_id == task_file_id,
+            )
+            .first()
+        )
+        if not run_file:
+            raise HTTPException(status_code=404, detail="Run file not found")
+        payload = run_file.result_summary_json
+        if not isinstance(payload, dict) or not isinstance(payload.get("pages"), list):
+            raise HTTPException(status_code=400, detail="No multi-page extract result on this file")
+
+        # Deep-copy so SQLAlchemy JSON columns always see a new persisted payload.
+        pages = [copy.deepcopy(p) if isinstance(p, dict) else p for p in payload["pages"]]
+        found = False
+        for i, p in enumerate(pages):
+            if not isinstance(p, dict):
+                continue
+            try:
+                pn = int(p.get("page", -1))
+            except (TypeError, ValueError):
+                continue
+            if pn != page_num:
+                continue
+            if not page_has_pending_empty_extract(p):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Page is not flagged for empty-extract review",
+                )
+            # Only offer mark-reviewed after auto-retry already failed (rare secondary).
+            if not p.get("empty_extract_auto_retried"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Retry this page first before marking as reviewed with no rows",
+                )
+            pages[i] = mark_page_reviewed_with_no_rows(p)
+            found = True
+            break
+        if not found:
+            raise HTTPException(status_code=404, detail=f"Page {page_num} not found in extract")
+
+        # Round-trip through JSON so the ORM cannot treat nested mutations as unchanged.
+        updated = json.loads(json.dumps({**payload, "pages": pages}, default=str))
+        run_file.result_summary_json = updated
+        try:
+            flag_modified(run_file, "result_summary_json")
+        except Exception:
+            # Non-mapped test doubles / detached instances still get the assignment.
+            pass
+        WorkflowService._refresh_bank_file_status_from_pages(run_file)
+        try:
+            flag_modified(run_file, "result_summary_json")
+        except Exception:
+            pass
+
+        all_run_files = (
+            db.query(WorkflowRunFile).filter(WorkflowRunFile.run_id == run.id).all()
+        )
+        ok_count = sum(1 for rf in all_run_files if rf.file_status == "ok")
+        warn_count = sum(1 for rf in all_run_files if rf.file_status == "warning")
+        merged = _merge_run_files_ocr(all_run_files)
+        _finalize_run_after_vlm(
+            run,
+            all_run_files,
+            ok_count=ok_count,
+            warn_count=warn_count,
+            console_message=(
+                f"Page {page_num} {REVIEWED_NO_ROWS_LABEL.lower()} "
+                f"({task_file_id})."
+            ),
+        )
+        db.add(run_file)
+        db.commit()
+        db.refresh(run)
+        try:
+            db.refresh(run_file)
+        except Exception:
+            pass
         return run
 
     @staticmethod
@@ -2080,6 +2795,86 @@ class WorkflowService:
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
 
+        from app.services.company_fx import row_ready_for_books
+        from app.services.statement_activity_map import bank_row_has_placement_issues
+
+        mode = (run.processing_mode or "").upper()
+        review_rows = (
+            approved_payload.get("bankTransactions")
+            if mode == "BANK"
+            else approved_payload.get("arapTransactions")
+        )
+        run_files = (
+            db.query(WorkflowRunFile).filter(WorkflowRunFile.run_id == run.id).all()
+        )
+        # Attach TaskFile.original_filename for ownership matching (not on WorkflowRunFile).
+        task_file_ids = [rf.task_file_id for rf in run_files if rf.task_file_id]
+        task_files_by_id = {
+            tf.id: tf
+            for tf in (
+                db.query(TaskFile).filter(TaskFile.id.in_(task_file_ids)).all()
+                if task_file_ids
+                else []
+            )
+        }
+        for rf in run_files:
+            tf = task_files_by_id.get(rf.task_file_id)
+            if tf is not None and not getattr(rf, "original_filename", None):
+                try:
+                    rf.original_filename = tf.original_filename  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+        assert_review_rows_belong_to_run(
+            review_rows if isinstance(review_rows, list) else None,
+            run_files,
+        )
+        if isinstance(review_rows, list):
+            pending = [
+                row
+                for row in review_rows
+                if isinstance(row, dict) and not row_ready_for_books(row)
+            ]
+            if pending:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Set company currency amounts for every row before approving.",
+                )
+            if mode == "BANK":
+                misplaced = [
+                    row
+                    for row in review_rows
+                    if isinstance(row, dict) and bank_row_has_placement_issues(row)
+                ]
+                if misplaced:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"{len(misplaced)} row(s) need checking: date or amount looks "
+                            "misplaced. Fix or delete them before approving."
+                        ),
+                    )
+                from app.services.bank_empty_extract import (
+                    EMPTY_EXTRACT_TITLE,
+                    summarize_empty_extract_for_file,
+                )
+
+                pending_extract: list[int] = []
+                for rf in run_files:
+                    payload = getattr(rf, "result_summary_json", None)
+                    if not isinstance(payload, dict):
+                        continue
+                    summary = summarize_empty_extract_for_file(payload.get("pages"))
+                    if summary:
+                        pending_extract.extend(int(p) for p in summary.get("pending_pages") or [])
+                if pending_extract:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"{len(sorted(set(pending_extract)))} page(s) still need retry: "
+                            f"{EMPTY_EXTRACT_TITLE}"
+                        ),
+                    )
+
         states = dict(run.node_states_json) if isinstance(run.node_states_json, dict) else {}
         states["approved_payload"] = approved_payload
         states["skip_coa"] = skip_coa
@@ -2139,6 +2934,10 @@ class WorkflowService:
                         transaction_type=row.get("transaction_type"),
                         amount=row.get("amount"),
                         currency=row.get("currency"),
+                        company_currency=row.get("company_currency"),
+                        company_amount=row.get("company_amount"),
+                        company_tax_amount=row.get("company_tax_amount"),
+                        exchange_rate=row.get("exchange_rate"),
                         date=row.get("date"),
                         payer=row.get("payer"),
                         payee=row.get("payee"),

@@ -2,8 +2,9 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
+import jwt
 from fastapi import HTTPException, status
-from jose import JWTError, jwt
+from jwt.exceptions import PyJWTError
 
 from app.core.config import settings
 
@@ -49,7 +50,7 @@ def decode_access_token(token: str | None) -> dict:
         if not isinstance(sub, str) or not sub.strip():
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token subject")
         return payload
-    except JWTError:
+    except PyJWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
 
 
@@ -76,7 +77,7 @@ def decode_mfa_challenge_token(token: str | None) -> dict:
         if not isinstance(sub, str) or not sub.strip():
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid MFA subject")
         return payload
-    except JWTError:
+    except PyJWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired MFA challenge",
