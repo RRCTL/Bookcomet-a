@@ -85,7 +85,7 @@ The live workspace pipeline runs through **`ocr_test_core`** in `backend/app/api
 - Workflow UI: `POST /api/workflows/runs/{id}/files/{task_file_id}/confirm-crops` with `action=confirm|skip|cancel`.
 - Cancel closes the gate without extract; run stays **`awaiting_review`**; Detect boxes retained for Retry. Skip uses Detect boxes as-is with provenance **`skipped_preview=true`** (confirm dialog when multiple PENDING pages). Confirm extracts submitted boxes for all confirmed pages.
 - During extract, `crop_preview.phase=extracting` updates per-box `extract_status` (pending/running/done/error) for the strip + active-box highlight.
-- **UI placement:** the crop-preview gate docks in Processing’s **right document panel** only (`MvduCropPreviewGate` inside `erp-proc-right`). Left run list and center Live output stay visible — not a fullscreen modal overlay. Far-right page thumbs are the page control when `crop_preview.pages.length > 1`.
+- **UI placement:** the crop-preview gate docks in Processing’s **right document panel** only (`MvduCropPreviewGate` inside `erp-proc-right`). Left run list and center Live output stay visible — not a fullscreen modal overlay. Far-right page thumbs are the page control when `crop_preview.pages.length > 1`. When a run has **2+ files** awaiting crop preview, a **file** prev/next strip sits **above** those page thumbs (same rail — no third pane). Switching files loads that file’s page-1 as RUNNING and restores in-memory gate edits if the user returns mid-review; extract/Skip/Cancel stay scoped to the **active file**. Single-file runs hide the file control.
 
 **2) Cut and process each region**
 
