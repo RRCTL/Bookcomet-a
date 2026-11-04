@@ -95,6 +95,17 @@ class ReVlmRequest(BaseModel):
     rescan_reasons: list[str] = Field(default_factory=list)
     rescan_note: Optional[str] = None
     expected_receipt_count: Optional[int] = None
+    skip_crop_preview: bool = False
+    crop_preview_confirmed: bool = False
+    crop_boxes: Optional[list[dict[str, Any]]] = None
+
+
+class ConfirmCropPreviewRequest(BaseModel):
+    """M-VDU crop-preview gate: confirm edited boxes, skip preview, or cancel."""
+
+    action: str = Field(..., description="confirm | skip | cancel")
+    boxes: Optional[list[dict[str, Any]]] = None
+    page: Optional[int] = None
 
 
 class RebuildReviewRequest(BaseModel):
@@ -1099,6 +1110,44 @@ async def re_vlm_run(
         rescan_reasons=body.rescan_reasons,
         rescan_note=body.rescan_note,
         expected_receipt_count=body.expected_receipt_count,
+        skip_crop_preview=body.skip_crop_preview,
+        crop_preview_confirmed=body.crop_preview_confirmed,
+        confirmed_crop_boxes=body.crop_boxes,
+    )
+    return _run_out(run, db)
+
+
+@router.post("/runs/{run_id}/files/{task_file_id}/confirm-crops")
+async def confirm_crop_preview(
+    run_id: str,
+    task_file_id: str,
+    body: ConfirmCropPreviewRequest,
+    company_id: str = Depends(get_current_company_id),
+    db: Session = Depends(get_db),
+):
+    """Confirm / skip / cancel the M-VDU crop-preview gate for one file."""
+    run = _get_run_or_404(run_id, company_id, db)
+    action = (body.action or "").strip().lower()
+    if action not in ("confirm", "skip", "cancel"):
+        raise HTTPException(status_code=400, detail="action must be confirm, skip, or cancel")
+    if action == "cancel":
+        run = WorkflowService.cancel_crop_preview(db, run, task_file_id)
+        return _run_out(run, db)
+    if action == "skip":
+        run = await WorkflowService.re_vlm_files(
+            db,
+            run,
+            [task_file_id],
+            skip_crop_preview=True,
+        )
+        return _run_out(run, db)
+    # confirm
+    run = await WorkflowService.re_vlm_files(
+        db,
+        run,
+        [task_file_id],
+        crop_preview_confirmed=True,
+        confirmed_crop_boxes=body.boxes or [],
     )
     return _run_out(run, db)
 

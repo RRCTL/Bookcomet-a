@@ -259,6 +259,7 @@ async def test_vlm_mode_no_opencv_on_empty(monkeypatch: pytest.MonkeyPatch) -> N
     )
     assert result is not None
     assert result["needs_split_review"] is True
+    assert result.get("needs_crop_preview") is True
     assert result["opencv_calls"] == 0
     assert opencv_calls == []
 
@@ -298,6 +299,7 @@ async def test_vlm_mode_valid_boxes_skip_opencv(monkeypatch: pytest.MonkeyPatch)
         ocr_prompt_override=None,
         processing_mode="AP",
         confirmed=True,
+        skip_crop_preview=True,
         expected_receipt_count=9,
         prefer_denser_split=True,
     )
@@ -420,6 +422,7 @@ async def test_vlm_each_box_becomes_instance_and_ocr(monkeypatch, tmp_path) -> N
         ocr_prompt_override=None,
         processing_mode="AP",
         confirmed=True,
+        skip_crop_preview=True,
         pdf_page_num=4,
     )
     assert result is not None
@@ -489,6 +492,7 @@ async def test_structured_only_off_runs_pass1_recognize(monkeypatch, tmp_path) -
         ocr_prompt_override=None,
         processing_mode="AP",
         confirmed=True,
+        skip_crop_preview=True,
         pdf_page_num=1,
     )
     assert result is not None
@@ -544,6 +548,7 @@ async def test_crop_extract_uses_settings_image_options(monkeypatch, tmp_path) -
         ocr_prompt_override=None,
         processing_mode="AP",
         confirmed=True,
+        skip_crop_preview=True,
         pdf_page_num=1,
     )
     assert result is not None
@@ -601,6 +606,7 @@ async def test_vlm_empty_extraction_still_emits_linked_candidate(monkeypatch, tm
         ocr_prompt_override=None,
         processing_mode="AP",
         confirmed=True,
+        skip_crop_preview=True,
         pdf_page_num=1,
     )
     page = result["pages"][0]

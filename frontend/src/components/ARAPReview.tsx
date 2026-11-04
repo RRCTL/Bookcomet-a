@@ -26,6 +26,8 @@ import {
 import { taskApi } from '../services/api'
 import { formatBankSourceFile } from '../utils/bankSourceFile'
 import { formatCurrencyAmount, parseFxNumber } from '../utils/fxCurrency'
+import { MvduReviewPagePane } from '../features/mvduCropPreview/MvduReviewPagePane'
+import '../features/mvduCropPreview/mvduCropPreview.css'
 
 const EMPTY_LOCK_KEYS: ReadonlySet<string> = new Set()
 
@@ -100,6 +102,9 @@ interface Props {
     taskId: string
     companyId?: string | null
     files: CropPreviewFile[]
+    /** Detect boxes from the latest multi-receipt result (full-page overlay). */
+    previewBoxes?: unknown
+    page?: number
   } | null
   hideReceiptCurrency?: boolean
   onCompanyAmountClick?: (row: ARAPTransaction) => void
@@ -1299,6 +1304,20 @@ export function ARAPReview({
           </tbody>
         </table>
       </div>
+
+      {/* ── M-VDU full page / this receipt (bidirectional with row selection) ── */}
+      {cropPreview?.taskId && cropEligibleCount > 0 && (
+        <MvduReviewPagePane
+          taskId={cropPreview.taskId}
+          companyId={cropPreview.companyId}
+          files={cropPreview.files ?? []}
+          rows={rows as Array<Record<string, unknown> & { _id: number }>}
+          selectedRowIds={selected}
+          onSelectRowIds={next => setSelected(new Set(Array.from(next).map(Number)))}
+          previewBoxes={cropPreview.previewBoxes}
+          page={cropPreview.page ?? 1}
+        />
+      )}
 
       {/* ── Receipt preview / image quality panel ── */}
       {selectedDetailRow && (
