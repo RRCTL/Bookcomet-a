@@ -98,6 +98,23 @@ def test_write_bytes_atomic_rejects_outside_trusted_root(tmp_path):
         assert "escapes" in str(exc)
 
 
+def test_resolve_path_rejects_prefix_collision_sibling(tmp_path):
+    """`/uploads` must not authorize `/uploads-evil` (startswith without os.sep would)."""
+    from app.services.file_storage import resolve_path_under_root
+
+    uploads = tmp_path / "uploads"
+    evil = tmp_path / "uploads-evil"
+    uploads.mkdir()
+    evil.mkdir()
+    target = evil / "leak.bin"
+    target.write_bytes(b"x")
+    try:
+        resolve_path_under_root(uploads, target)
+        raise AssertionError("expected prefix-collision sibling to fail")
+    except ValueError as exc:
+        assert "escapes" in str(exc)
+
+
 def test_resolve_path_under_root_rejects_absolute_outside(tmp_path):
     from app.services.file_storage import resolve_path_under_root
 
