@@ -269,7 +269,8 @@ def write_bytes_atomic(dest: Path, data: bytes, *, root: str | Path | None = Non
     else:
         dest = Path(os.path.realpath(os.fspath(dest)))
     dest.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=dest.parent, prefix=".tmp_", suffix=dest.suffix)
+    # Constant suffix: avoid user-controlled dest.suffix in the temp path (CodeQL path-injection).
+    fd, tmp_path = tempfile.mkstemp(dir=dest.parent, prefix=".tmp_", suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
