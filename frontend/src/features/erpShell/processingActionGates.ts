@@ -131,3 +131,23 @@ export function canReVlmOnActiveRun(opts: {
   if (opts.anotherRunProcessing) return false
   return true
 }
+
+/**
+ * Retry / Mark-as-reviewed-with-no-rows for dense empty-extract pages.
+ *
+ * Must NOT wait on this run's long execute/Re-VLM HTTP (`busyOnActiveRun`):
+ * amber banners appear mid-batch while that request is still in flight, and
+ * Confirm would otherwise close the dialog then silently no-op.
+ */
+export function canActOnEmptyExtractPage(opts: {
+  hasActiveRun: boolean
+  emptyExtractBusy: boolean
+  rebuilding: boolean
+  approving: boolean
+}): boolean {
+  if (!opts.hasActiveRun) return false
+  if (opts.emptyExtractBusy) return false
+  if (opts.rebuilding) return false
+  if (opts.approving) return false
+  return true
+}

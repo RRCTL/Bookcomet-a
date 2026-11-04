@@ -17,6 +17,7 @@ import {
 import {
   ANOTHER_RUN_PROCESSING_HINT,
   anotherRunIsProcessing,
+  canActOnEmptyExtractPage,
   canExecuteOnActiveRun,
   canReVlmOnActiveRun,
   canStopActiveRun,
@@ -1129,8 +1130,24 @@ export function ProcessingView() {
 
   const retryEmptyExtractPage = useCallback(
     async (flag: EmptyExtractPageFlag) => {
-      if (!activeRun || emptyExtractBusy || rebuilding || busyRunId === activeRun.id || approving)
+      // Do not gate on busyRunId: amber appears mid-batch while execute HTTP is
+      // still open; Retry must still call the API (same as Mark Confirm).
+      if (
+        !canActOnEmptyExtractPage({
+          hasActiveRun: Boolean(activeRun),
+          emptyExtractBusy,
+          rebuilding,
+          approving,
+        })
+      ) {
+        setError(
+          emptyExtractBusy
+            ? 'Page retry is already in progress.'
+            : 'Cannot retry this page right now — Approve or Rebuild is still running.',
+        )
         return
+      }
+      if (!activeRun) return
       if (runHasLockedApprovedTable(activeRun)) {
         setError(
           'Approved and loaded into modules — page retry is disabled to avoid conflicting updates.',
@@ -1146,7 +1163,7 @@ export function ProcessingView() {
           flag.taskFileId,
           flag.page,
         )
-        applyRunFromServer(updated, true)
+        applyRunFromServer(updated, true, { force: true })
         void reloadRuns()
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Could not retry this page.')
@@ -1158,7 +1175,6 @@ export function ProcessingView() {
       activeRun,
       applyRunFromServer,
       approving,
-      busyRunId,
       companyId,
       emptyExtractBusy,
       rebuilding,
@@ -1168,8 +1184,24 @@ export function ProcessingView() {
 
   const markEmptyExtractReviewed = useCallback(
     async (flag: EmptyExtractPageFlag) => {
-      if (!activeRun || emptyExtractBusy || rebuilding || busyRunId === activeRun.id || approving)
+      // Do not gate on busyRunId: Confirm would close the dialog then silently
+      // no-op while this run's execute/Re-VLM HTTP is still in flight.
+      if (
+        !canActOnEmptyExtractPage({
+          hasActiveRun: Boolean(activeRun),
+          emptyExtractBusy,
+          rebuilding,
+          approving,
+        })
+      ) {
+        setError(
+          emptyExtractBusy
+            ? 'Mark as reviewed is already in progress.'
+            : 'Cannot mark as reviewed right now — Approve or Rebuild is still running.',
+        )
         return
+      }
+      if (!activeRun) return
       if (runHasLockedApprovedTable(activeRun)) {
         setError(
           'Approved and loaded into modules — mark-reviewed is disabled to avoid conflicting updates.',
@@ -1185,7 +1217,8 @@ export function ProcessingView() {
           flag.taskFileId,
           flag.page,
         )
-        applyRunFromServer(updated, true)
+        // force: mid-execute mark must paint even if a stop-guard is active.
+        applyRunFromServer(updated, true, { force: true })
         void reloadRuns()
       } catch (err) {
         setError(
@@ -1199,7 +1232,6 @@ export function ProcessingView() {
       activeRun,
       applyRunFromServer,
       approving,
-      busyRunId,
       companyId,
       emptyExtractBusy,
       rebuilding,

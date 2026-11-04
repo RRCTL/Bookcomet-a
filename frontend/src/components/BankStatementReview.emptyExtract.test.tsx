@@ -100,21 +100,20 @@ describe('BankStatementReview empty-extract amber flags', () => {
   it('uses in-app Confirm dialog for Mark as reviewed (Cancel / Confirm)', () => {
     const onMark = vi.fn()
     const confirmSpy = vi.spyOn(window, 'confirm')
+    const flag = {
+      page: 3,
+      taskFileId: 'tf-fictional',
+      filename: 'Fictional-Statement.pdf',
+      autoRetried: true,
+      title: EMPTY_EXTRACT_TITLE,
+      body: EMPTY_EXTRACT_BODY,
+    }
     render(
       <BankStatementReview
         transactions={[]}
         onApprove={() => undefined}
         canApprove={true}
-        emptyExtractPages={[
-          {
-            page: 3,
-            taskFileId: 'tf-fictional',
-            filename: 'Fictional-Statement.pdf',
-            autoRetried: true,
-            title: EMPTY_EXTRACT_TITLE,
-            body: EMPTY_EXTRACT_BODY,
-          },
-        ]}
+        emptyExtractPages={[flag]}
         onRetryEmptyExtractPage={() => undefined}
         onMarkEmptyExtractReviewed={onMark}
       />,
@@ -124,10 +123,15 @@ describe('BankStatementReview empty-extract amber flags', () => {
     expect(screen.getByRole('dialog')).toHaveTextContent(EMPTY_EXTRACT_MARK_CONFIRM)
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(onMark).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: EMPTY_EXTRACT_MARK_ACTION }))
     fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
     expect(onMark).toHaveBeenCalledTimes(1)
+    expect(onMark).toHaveBeenCalledWith(
+      expect.objectContaining({ page: 3, taskFileId: 'tf-fictional' }),
+    )
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     confirmSpy.mockRestore()
   })
 })
