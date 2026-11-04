@@ -12,7 +12,8 @@ import { authApi, type AuthUser, API_BASE_URL } from '../services/authApi';
 import { getLoginFlowErrorMessage } from '../utils/httpErrorMessage';
 import {
   clearAuthRefreshCooldown,
-  markAuthRefreshCooldown,
+  notifyApiRefreshFailure,
+  refreshAccessTokenShared,
   setAccessTokenGetter,
   setApiRefreshFailureHandler,
   setCompanyIdGetter,
@@ -182,9 +183,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return config;
     });
 
-    let isRefreshing = false;
-    let queue: Array<(t: string) => void> = [];
-
     const responseId = axios.interceptors.response.use(
       (res) => res,
       async (error) => {
@@ -192,30 +190,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (error.response?.status !== 401 || original._retry) {
           return Promise.reject(error);
         }
-        if (isRefreshing) {
-          return new Promise((resolve) => {
-            queue.push((t) => {
-              original.headers['Authorization'] = `Bearer ${t}`;
-              resolve(axios(original));
-            });
-          });
-        }
         original._retry = true;
-        isRefreshing = true;
         try {
-          const { access_token } = await authApi.refresh();
+          // Shared single-flight with apiFetch — avoids dual /auth/refresh 401s.
+          const access_token = await refreshAccessTokenShared();
           setAccessToken(access_token);
-          queue.forEach((cb) => cb(access_token));
-          queue = [];
           original.headers['Authorization'] = `Bearer ${access_token}`;
           return axios(original);
         } catch {
-          markAuthRefreshCooldown();
-          setUser(null);
-          setAccessToken(null);
+          // Same recovery path as apiFetch: clear session once, no silent hang.
+          notifyApiRefreshFailure();
           return Promise.reject(error);
-        } finally {
-          isRefreshing = false;
         }
       },
     );

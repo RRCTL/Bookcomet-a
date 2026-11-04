@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   applyPayloadsIfCurrentRun,
+  bindEmptyReviewTableAfterLoadFailure,
   clearReviewTableForRebuild,
   clearReviewTableOnRunSwitch,
   emptyReviewTableSession,
@@ -161,6 +162,34 @@ describe('reviewTableSession', () => {
     const rows = session.payloads['batch-b']?.bankTransactions as { source_file: string }[]
     expect(rows).toHaveLength(2)
     expect(rows.every(r => r.source_file.startsWith('Jan.pdf'))).toBe(true)
+  })
+
+  it('bindEmpty after load/auth failure clears eternal Loading so run switch stays usable', () => {
+    // Mimic remount → select run-a → clearOnSwitch leaves loading with unbound table.
+    let session = clearReviewTableOnRunSwitch('run-a')
+    expect(reviewTableShowingLoader('run-a', session)).toBe(true)
+
+    // getRun / refresh 401 fails — must bind empty to active run, not leave boundRunId null.
+    session = bindEmptyReviewTableAfterLoadFailure('run-a')
+    expect(session.loading).toBe(false)
+    expect(session.boundRunId).toBe('run-a')
+    expect(session.payloads).toEqual({})
+    expect(reviewTableShowingLoader('run-a', session)).toBe(false)
+
+    // User can select another run; loader is temporary until that run binds.
+    session = clearReviewTableOnRunSwitch('run-b')
+    expect(reviewTableShowingLoader('run-b', session)).toBe(true)
+    session = bindEmptyReviewTableAfterLoadFailure('run-b')
+    expect(reviewTableShowingLoader('run-b', session)).toBe(false)
+    expect(session.boundRunId).toBe('run-b')
+  })
+
+  it('old trap: nulling boundRunId after failure left Loading forever while activeRunId set', () => {
+    // Historical bug: catch set boundRunId=null + loading=false while activeRunId stayed set.
+    const trapped = { boundRunId: null, payloads: {}, editedRows: null, loading: false }
+    expect(reviewTableShowingLoader('run-a', trapped)).toBe(true)
+    const recovered = bindEmptyReviewTableAfterLoadFailure('run-a')
+    expect(reviewTableShowingLoader('run-a', recovered)).toBe(false)
   })
 
   it('approve/resume body built from filtered rows never includes foreign files', () => {

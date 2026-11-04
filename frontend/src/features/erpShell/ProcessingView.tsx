@@ -122,6 +122,7 @@ import {
   partitionRowsByRunOwnership,
 } from './runReviewRowOwnership'
 import {
+  bindEmptyReviewTableAfterLoadFailure,
   clearReviewTableForRebuild,
   clearReviewTableOnRunSwitch,
   editedRowsSafeForApprove,
@@ -550,34 +551,57 @@ export function ProcessingView() {
   // Load the active run (graph + node states) and its extracted table payloads.
   const loadActiveRun = useCallback(
     async (runId: string) => {
-      const run = await workflowApi.getRun(companyId, runId)
-      if (run.company_id !== companyId) return run
-      if (runId !== activeRunIdRef.current) return run
-      setActiveRun(run)
-      setSelectedNodeId(prev => {
-        if (prev && run.graph_json.nodes.some(n => n.id === prev)) return prev
-        const running = run.graph_json.nodes.find(n => statusKind(nodeStateOf(run, n.id)?.status) === 'run')
-        return running?.id ?? run.graph_json.nodes[0]?.id ?? null
-      })
       try {
-        const p = await loadAllBatchTablePayloads(run, companyId).then(loaded =>
-          resolveBatchPayloads(run, loaded),
-        )
+        const run = await workflowApi.getRun(companyId, runId)
         if (runId !== activeRunIdRef.current) return run
-        // Replace table for this run only; drop any overlay from a prior run.
-        setPayloads(p)
-        setTableBoundRunId(runId)
-        setEditedRows(null)
-        setTableLoading(false)
-      } catch {
-        if (runId !== activeRunIdRef.current) return run
-        setPayloads({})
-        setTableBoundRunId(runId)
-        setEditedRows(null)
-        setTableLoading(false)
+        if (run.company_id !== companyId) {
+          // Bind empty so we never leave eternal Loading… after a scope mismatch.
+          const empty = bindEmptyReviewTableAfterLoadFailure(runId)
+          setPayloads(empty.payloads)
+          setTableBoundRunId(empty.boundRunId)
+          setEditedRows(empty.editedRows as null)
+          setTableLoading(empty.loading)
+          return run
+        }
+        setActiveRun(run)
+        setSelectedNodeId(prev => {
+          if (prev && run.graph_json.nodes.some(n => n.id === prev)) return prev
+          const running = run.graph_json.nodes.find(
+            n => statusKind(nodeStateOf(run, n.id)?.status) === 'run',
+          )
+          return running?.id ?? run.graph_json.nodes[0]?.id ?? null
+        })
+        try {
+          const p = await loadAllBatchTablePayloads(run, companyId).then(loaded =>
+            resolveBatchPayloads(run, loaded),
+          )
+          if (runId !== activeRunIdRef.current) return run
+          // Replace table for this run only; drop any overlay from a prior run.
+          setPayloads(p)
+          setTableBoundRunId(runId)
+          setEditedRows(null)
+          setTableLoading(false)
+        } catch {
+          if (runId !== activeRunIdRef.current) return run
+          const empty = bindEmptyReviewTableAfterLoadFailure(runId)
+          setPayloads(empty.payloads)
+          setTableBoundRunId(empty.boundRunId)
+          setEditedRows(empty.editedRows as null)
+          setTableLoading(empty.loading)
+        }
+        void refreshAssetRecords(run)
+        return run
+      } catch (err) {
+        if (runId !== activeRunIdRef.current) throw err
+        // Keep run selection; clear Loading so the left rail stays clickable after 401/network.
+        const empty = bindEmptyReviewTableAfterLoadFailure(runId)
+        setPayloads(empty.payloads)
+        setTableBoundRunId(empty.boundRunId)
+        setEditedRows(empty.editedRows as null)
+        setTableLoading(empty.loading)
+        setBusyRunId(prev => (prev === runId ? null : prev))
+        throw err
       }
-      void refreshAssetRecords(run)
-      return run
     },
     [companyId, refreshAssetRecords],
   )
@@ -600,14 +624,19 @@ export function ProcessingView() {
     setEditedRows(cleared.editedRows as null)
     setTableLoading(cleared.loading)
     setAssetRecords([])
+    // Clear prior load/auth errors so a failed refresh on run A does not stick after selecting B.
+    setError(null)
     let cancelled = false
     loadActiveRun(activeRunId).catch(err => {
       if (cancelled) return
-      setActiveRun(null)
-      setPayloads({})
-      setTableBoundRunId(null)
-      setEditedRows(null)
-      setTableLoading(false)
+      // Do not null activeRun / boundRunId — that left Loading… forever while
+      // boundRunId !== activeRunId and blocked the feeling of run switching.
+      const empty = bindEmptyReviewTableAfterLoadFailure(activeRunId)
+      setPayloads(empty.payloads)
+      setTableBoundRunId(empty.boundRunId)
+      setEditedRows(empty.editedRows as null)
+      setTableLoading(empty.loading)
+      setBusyRunId(prev => (prev === activeRunId ? null : prev))
       setError(err instanceof Error ? err.message : 'Could not load run.')
     })
     return () => {

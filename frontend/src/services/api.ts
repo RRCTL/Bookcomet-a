@@ -90,14 +90,54 @@ export function markAuthRefreshCooldown(ms: number = DEFAULT_AUTH_REFRESH_COOLDO
   _authRefreshCooldownUntil = Date.now() + ms;
 }
 
-function _isAuthRefreshCoolingDown(): boolean {
+export function _isAuthRefreshCoolingDown(): boolean {
   return Date.now() < _authRefreshCooldownUntil;
+}
+
+/**
+ * Single-flight refresh shared by apiFetch and the axios interceptor.
+ * Prevents concurrent /auth/refresh calls (fetch + axios) from rotating the
+ * cookie twice and leaving one caller with 401 — which froze Processing loads.
+ */
+let _refreshInFlight: Promise<string> | null = null;
+
+export function refreshAccessTokenShared(): Promise<string> {
+  if (_isAuthRefreshCoolingDown()) {
+    return Promise.reject(new Error('Session expired. Please log in again.'));
+  }
+  if (!_refreshToken) {
+    return Promise.reject(new Error('Session expired. Please log in again.'));
+  }
+  if (!_refreshInFlight) {
+    _refreshInFlight = _refreshToken()
+      .then(token => {
+        clearAuthRefreshCooldown();
+        return token;
+      })
+      .catch(err => {
+        markAuthRefreshCooldown();
+        throw err;
+      })
+      .finally(() => {
+        _refreshInFlight = null;
+      });
+  }
+  return _refreshInFlight;
 }
 
 /** Clear session when fetch-path refresh fails (align with axios interceptor). */
 let _onApiRefreshFailure: (() => void) | null = null;
 export function setApiRefreshFailureHandler(fn: (() => void) | null): void {
   _onApiRefreshFailure = fn;
+}
+
+/** Invoke the registered refresh-failure handler (apiFetch + axios share this). */
+export function notifyApiRefreshFailure(): void {
+  try {
+    _onApiRefreshFailure?.();
+  } catch {
+    /* ignore */
+  }
 }
 
 // Company ID getter — resolved from the auth context after login.
@@ -201,16 +241,10 @@ export const apiFetch = async (path: string, init: ApiFetchInit = {}): Promise<R
       return res;
     }
     try {
-      const newToken = await _refreshToken();
-      clearAuthRefreshCooldown();
+      const newToken = await refreshAccessTokenShared();
       return await runFetch(newToken);
     } catch {
-      markAuthRefreshCooldown();
-      try {
-        _onApiRefreshFailure?.();
-      } catch {
-        /* ignore */
-      }
+      notifyApiRefreshFailure();
       return res;
     }
   }
