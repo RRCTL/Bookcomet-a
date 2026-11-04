@@ -83,4 +83,34 @@ describe('applyRunStoppedLocally', () => {
     )
     expect(next.run_status).toBe('draft')
   })
+
+  it('reopens crop gate instead of Stopped+extracting desync on mid-confirm Stop', () => {
+    const next = applyRunStoppedLocally(
+      baseRun({
+        processing_mode: 'AP',
+        files: [
+          {
+            id: 'rf-crop',
+            task_file_id: 'file-crop',
+            file_status: 'running',
+            original_filename: 'synthetic-crop.pdf',
+            result_summary_json: {
+              needs_crop_preview: false,
+              crop_status: 'extracting',
+              crop_preview: {
+                phase: 'extracting',
+                page: 1,
+                boxes: [{ id: 'a', index: 1, extract_status: 'running' }],
+              },
+            },
+          },
+        ],
+      }),
+    )
+    const f = next.files.find(x => x.task_file_id === 'file-crop')!
+    expect(f.file_status).toBe('warning')
+    expect(f.error_text).toBe('needs_crop_preview')
+    expect((f.result_summary_json?.crop_preview as { phase: string }).phase).toBe('preview')
+    expect(next.run_status).toBe('awaiting_review')
+  })
 })

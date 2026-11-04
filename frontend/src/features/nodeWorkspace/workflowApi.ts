@@ -1,4 +1,8 @@
 import { apiFetch, type ApiFetchInit } from '../../services/api'
+import {
+  isStaleCropExtracting,
+  reopenCropGateAfterInterrupt,
+} from '../mvduCropPreview/cropGateConfirm'
 import { RE_VLM_REASON_CHIPS } from './reVlmReasonChips'
 
 export type WorkflowRunFile = {
@@ -493,12 +497,33 @@ export function applyRunStoppedLocally(run: WorkflowRun): WorkflowRun {
   const files = run.files.map(f => {
     const status = (f.file_status ?? '').toLowerCase()
     if (status === 'running') {
+      const phase = (() => {
+        const summary = f.result_summary_json
+        const cp =
+          summary && typeof summary === 'object'
+            ? (summary as Record<string, unknown>).crop_preview
+            : null
+        return cp && typeof cp === 'object'
+          ? String((cp as Record<string, unknown>).phase || '')
+          : ''
+      })()
+      // Mid crop-extract Confirm: reopen Needs-review instead of Stopped+extracting desync.
+      if (phase === 'extracting' || phase === 'preview') {
+        return reopenCropGateAfterInterrupt({ ...f, file_status: 'stopped' })
+      }
       // Interrupted in-flight page — keep the row on the grid with Stopped.
       return { ...f, file_status: 'stopped', error_text: null }
     }
     if (status === 'pending' || status === 'queued') {
       // Never started — Cancelled so Live output matches the stop dialog.
       return { ...f, file_status: 'cancelled', error_text: null }
+    }
+    // Already stopped/failed with stale extracting phase (e.g. poll after Stop).
+    if (
+      (status === 'stopped' || status === 'failed' || status === 'cancelled') &&
+      isStaleCropExtracting(f)
+    ) {
+      return reopenCropGateAfterInterrupt(f)
     }
     return f
   })

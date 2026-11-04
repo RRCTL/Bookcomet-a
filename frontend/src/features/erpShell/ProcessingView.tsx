@@ -54,7 +54,11 @@ function resolveBatchPayloads(
 import { ARAPReview, type ARAPTransaction } from '../../components/ARAPReview'
 import { MvduCropPreviewGate } from '../mvduCropPreview/MvduCropPreviewGate'
 import { parseCropPreviewFromSummary } from '../mvduCropPreview/boxOps'
-import { applyCropConfirmOptimisticRun } from '../mvduCropPreview/cropGateConfirm'
+import {
+  applyCropConfirmOptimisticRun,
+  normalizeCropGateFile,
+  normalizeRunCropGateFiles,
+} from '../mvduCropPreview/cropGateConfirm'
 import type { CropPreviewPayload } from '../mvduCropPreview/types'
 import { BankStatementReview, type BankTransaction } from '../../components/BankStatementReview'
 import { OtherTable } from '../../components/OtherTable'
@@ -615,36 +619,41 @@ export function ProcessingView() {
   }, [activeRunId])
 
   const applyRunFromServer = useCallback(
-    (run: WorkflowRun, refreshPayloads = false) => {
-      if (shouldIgnoreRunRefreshAfterStop(stopGuardRunIdRef.current, run)) return
+    (run: WorkflowRun, refreshPayloads = false, opts?: { force?: boolean }) => {
+      // Confirm/skip/cancel must always land — stop-guard only drops stale execute polls.
+      if (!opts?.force && shouldIgnoreRunRefreshAfterStop(stopGuardRunIdRef.current, run)) return
       if (run.company_id !== companyId) return
-      setRuns(prev => prev.map(r => (r.id === run.id ? summaryFromRun(run) : r)))
-      if (run.id !== activeRunIdRef.current) return
-      setActiveRun(run)
+      // Heal Stopped-vs-extracting / ok-vs-extracting before Live output + crop gate paint.
+      const normalized = normalizeRunCropGateFiles(run)
+      setRuns(prev => prev.map(r => (r.id === normalized.id ? summaryFromRun(normalized) : r)))
+      if (normalized.id !== activeRunIdRef.current) return
+      setActiveRun(normalized)
       setSelectedNodeId(prev => {
-        if (prev && run.graph_json.nodes.some(n => n.id === prev)) return prev
-        const running = run.graph_json.nodes.find(n => statusKind(nodeStateOf(run, n.id)?.status) === 'run')
-        return running?.id ?? prev ?? run.graph_json.nodes[0]?.id ?? null
+        if (prev && normalized.graph_json.nodes.some(n => n.id === prev)) return prev
+        const running = normalized.graph_json.nodes.find(
+          n => statusKind(nodeStateOf(normalized, n.id)?.status) === 'run',
+        )
+        return running?.id ?? prev ?? normalized.graph_json.nodes[0]?.id ?? null
       })
       const shouldRefreshPayloads =
         refreshPayloads ||
-        run.run_status === 'executing' ||
-        run.run_status === 'awaiting_review' ||
-        run.run_status === 'coa_running' ||
-        run.run_status === 'completed' ||
-        run.run_status === 'done' ||
-        run.run_status === 'saved'
+        normalized.run_status === 'executing' ||
+        normalized.run_status === 'awaiting_review' ||
+        normalized.run_status === 'coa_running' ||
+        normalized.run_status === 'completed' ||
+        normalized.run_status === 'done' ||
+        normalized.run_status === 'saved'
       if (shouldRefreshPayloads) {
-        const runId = run.id
-        void loadAllBatchTablePayloads(run, companyId)
+        const runId = normalized.id
+        void loadAllBatchTablePayloads(normalized, companyId)
           .then(loaded => {
             if (runId !== activeRunIdRef.current) return
-            setPayloads(resolveBatchPayloads(run, loaded))
+            setPayloads(resolveBatchPayloads(normalized, loaded))
             setTableBoundRunId(runId)
             setTableLoading(false)
           })
           .catch(() => {})
-        void refreshAssetRecords(run)
+        void refreshAssetRecords(normalized)
       }
     },
     [companyId, refreshAssetRecords],
@@ -1600,17 +1609,19 @@ export function ProcessingView() {
     if (!activeRun?.task_id) return null
     const mode = (activeRun.processing_mode ?? '').toUpperCase()
     if (mode !== 'AP' && mode !== 'AR') return null
-    for (const f of activeRun.files ?? []) {
+    for (const raw of activeRun.files ?? []) {
+      // Belt-and-suspenders: never show extracting for a Stopped/ok file.
+      const f = normalizeCropGateFile(raw)
       const summary = (f.result_summary_json ?? null) as Record<string, unknown> | null
       const parsed = parseCropPreviewFromSummary(summary)
       if (!parsed.preview) continue
       const phase = parsed.preview.phase
-      // Keep the docked gate visible through extract progress (phase=extracting),
-      // not only while needs_crop_preview is still true on the summary.
+      // Keep the docked gate visible through live extract progress (phase=extracting
+      // while file is still running), not only while needs_crop_preview is true.
       const waitingConfirm =
         phase === 'preview' &&
         (f.error_text === 'needs_crop_preview' || parsed.needsGate)
-      const extracting = phase === 'extracting'
+      const extracting = phase === 'extracting' && (f.file_status ?? '').toLowerCase() === 'running'
       if (waitingConfirm || extracting) {
         return {
           taskFileId: f.task_file_id,
@@ -1652,13 +1663,16 @@ export function ProcessingView() {
           phase: 'extracting',
         }),
         true,
+        { force: true },
       )
       try {
         const updated = await workflowApi.confirmCrops(companyId, runId, taskFileId, {
           action: 'confirm',
           boxes,
         })
-        applyRunFromServer(updated, true)
+        // Force: stop-guard must not drop a completed confirm (incl. cross-VLM
+        // timeout keep-primary → 200) or Needs-review / extracting never clears.
+        applyRunFromServer(updated, true, { force: true })
         void reloadRuns()
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Could not confirm crops.'
@@ -1666,7 +1680,7 @@ export function ProcessingView() {
         setCropGateError(message)
         void workflowApi
           .getRun(companyId, runId)
-          .then(run => applyRunFromServer(run, true))
+          .then(run => applyRunFromServer(run, true, { force: true }))
           .catch(() => {})
         throw err instanceof Error ? err : new Error(message)
       } finally {
@@ -1697,12 +1711,13 @@ export function ProcessingView() {
     applyRunFromServer(
       applyCropConfirmOptimisticRun(activeRun, taskFileId, { phase: 'extracting' }),
       true,
+      { force: true },
     )
     try {
       const updated = await workflowApi.confirmCrops(companyId, runId, taskFileId, {
         action: 'skip',
       })
-      applyRunFromServer(updated, true)
+      applyRunFromServer(updated, true, { force: true })
       void reloadRuns()
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Could not skip crop preview.'
@@ -1710,7 +1725,7 @@ export function ProcessingView() {
       setCropGateError(message)
       void workflowApi
         .getRun(companyId, runId)
-        .then(run => applyRunFromServer(run, true))
+        .then(run => applyRunFromServer(run, true, { force: true }))
         .catch(() => {})
       throw err instanceof Error ? err : new Error(message)
     } finally {
@@ -1732,7 +1747,7 @@ export function ProcessingView() {
       const updated = await workflowApi.confirmCrops(companyId, runId, taskFileId, {
         action: 'cancel',
       })
-      applyRunFromServer(updated, true)
+      applyRunFromServer(updated, true, { force: true })
       void reloadRuns()
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Could not cancel crop preview.'

@@ -193,4 +193,62 @@ describe('MvduCropPreviewGate multipage page control', () => {
     expect(onSkip).not.toHaveBeenCalled()
     confirmSpy.mockRestore()
   })
+
+  it('keeps page-2 stage overlays across extracting poll (no reset to page-1 boxes)', async () => {
+    const extracting = (): CropPreviewPayload => ({
+      ...multipagePreview(),
+      phase: 'extracting',
+      page: 1,
+      pages: multipagePreview().pages!.map(p => ({
+        ...p,
+        boxes: p.boxes.map(b => ({
+          ...b,
+          extract_status: p.page === 1 ? 'running' : 'pending',
+        })),
+      })),
+    })
+
+    const { rerender } = render(
+      <MvduCropPreviewGate
+        open
+        taskId="task-1"
+        taskFileId="file-1"
+        filename="Scanned Document 2.pdf"
+        preview={extracting()}
+        onConfirm={vi.fn()}
+        onSkip={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/page 1 of 2/i)).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: /Page 2/i }))
+    await waitFor(() => {
+      expect(screen.getByText(/page 2 of 2/i)).toBeInTheDocument()
+    })
+
+    // Poll delivers a new extracting payload still centered on page 1 — must not
+    // yank the stage back to page-1 boxes while the user is on thumb 2.
+    rerender(
+      <MvduCropPreviewGate
+        open
+        taskId="task-1"
+        taskFileId="file-1"
+        filename="Scanned Document 2.pdf"
+        preview={extracting()}
+        onConfirm={vi.fn()}
+        onSkip={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText(/page 2 of 2/i)).toBeInTheDocument()
+    })
+    // Active thumb is page 2 (RUNNING); stage subtitle already asserts page 2.
+    expect(screen.getByRole('button', { name: /Page 2/i })).toHaveAttribute(
+      'aria-current',
+      'page',
+    )
+  })
 })

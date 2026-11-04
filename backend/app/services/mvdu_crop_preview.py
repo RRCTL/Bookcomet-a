@@ -476,6 +476,44 @@ def stamp_box_extract_status(
     return out
 
 
+def reopen_crop_gate_after_interrupt(
+    summary: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Clear stale phase=extracting after Stop so the UI is not stuck mid-extract.
+
+    Returns an updated result_summary_json (needs_crop_preview gate reopened), or
+    None when there is no crop-preview payload to repair.
+    """
+    if not isinstance(summary, Mapping):
+        return None
+    cp = summary.get("crop_preview")
+    if not isinstance(cp, dict):
+        return None
+    phase = str(cp.get("phase") or "")
+    if phase not in ("extracting", "preview"):
+        return None
+    next_preview = dict(cp)
+    next_preview["phase"] = "preview"
+    next_preview["active_box_id"] = None
+    boxes = next_preview.get("boxes")
+    if isinstance(boxes, list):
+        reset_boxes: list[Any] = []
+        for b in boxes:
+            if isinstance(b, dict):
+                nb = dict(b)
+                nb["extract_status"] = "pending"
+                reset_boxes.append(nb)
+            else:
+                reset_boxes.append(b)
+        next_preview["boxes"] = reset_boxes
+    out = dict(summary)
+    out["crop_preview"] = next_preview
+    out["needs_crop_preview"] = True
+    out["crop_status"] = "needs_crop_preview"
+    out["crop_preview_dismissed"] = False
+    return out
+
+
 def page_image_size(image_path: str) -> tuple[int, int]:
     from PIL import Image
 
