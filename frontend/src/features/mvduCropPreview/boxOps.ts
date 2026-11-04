@@ -148,6 +148,31 @@ export function boxesForApi(boxes: CropPreviewBox[]) {
   }))
 }
 
+/** Stable geometry signature — ignores extract_status so polling does not churn thumbs. */
+export function boxesGeometrySignature(boxes: CropPreviewBox[]): string {
+  return boxes
+    .map(
+      b =>
+        `${b.id}|${b.index}|${b.page}|${b.region_norm.x},${b.region_norm.y},${b.region_norm.w},${b.region_norm.h}|${b.rotation_deg}`,
+    )
+    .join(';')
+}
+
+/** Merge server extract_status / active highlighting without clobbering local geometry. */
+export function mergeServerBoxStatus(
+  local: CropPreviewBox[],
+  server: CropPreviewBox[],
+): CropPreviewBox[] {
+  if (!server.length) return local
+  const byId = new Map(server.map(b => [b.id, b]))
+  const byIndex = new Map(server.map(b => [b.index, b]))
+  return local.map(b => {
+    const s = byId.get(b.id) ?? byIndex.get(b.index)
+    if (!s) return b
+    return { ...b, extract_status: s.extract_status, source: s.source ?? b.source }
+  })
+}
+
 function parseConfirmStatus(raw: unknown): CropPageConfirmStatus {
   const s = String(raw || 'pending').toLowerCase()
   if (s === 'confirmed') return 'confirmed'
