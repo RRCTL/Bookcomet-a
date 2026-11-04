@@ -214,7 +214,7 @@ async def update_ai_settings(
         logger.error(f"Failed to update settings: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to save settings: {str(e)}",
+            detail="Failed to save settings",
         )
 
 
@@ -272,7 +272,7 @@ async def update_env_settings(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         logger.error("Failed to update env settings: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to save settings: {str(exc)}") from exc
+        raise HTTPException(status_code=500, detail="Failed to save settings") from exc
 
 
 @router.get("/settings/api")
@@ -327,7 +327,7 @@ async def put_api_settings(
     except Exception as exc:
         logger.error("Failed to apply API settings: %s", exc, exc_info=True)
         raise HTTPException(
-            status_code=500, detail=f"Failed to save API settings: {exc}"
+            status_code=500, detail="Failed to save API settings"
         ) from exc
 
     from app.core.gateway_settings import (

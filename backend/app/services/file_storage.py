@@ -45,21 +45,25 @@ def _safe_path_segment(value: str, *, field_name: str) -> str:
     return cleaned
 
 
+def _is_under_realpath_root(base: str, target: str) -> bool:
+    """True when *target* is *base* or a path under it (prefix-collision safe)."""
+    return target == base or target.startswith(base + os.sep)
+
+
 def resolve_path_under_root(root: str | Path, candidate: str | Path) -> Path:
     """Resolve *candidate* and require it stay inside *root*.
 
-    Uses os.path.realpath + commonpath so CodeQL models this as a path sanitizer.
+    Uses os.path.realpath + startswith(base + os.sep) — the pattern CodeQL's
+    py/path-injection query models as a sanitizer (commonpath is not modelled).
+    The os.sep suffix blocks prefix-collision siblings (e.g. /uploads vs /uploads-evil).
     """
     raw = Path(candidate)
     if any(part == ".." for part in raw.parts):
         raise ValueError("Storage path escapes configured directory")
     base = os.path.realpath(os.fspath(root))
     target = os.path.realpath(os.fspath(candidate))
-    try:
-        shared = os.path.commonpath([base, target])
-    except ValueError as exc:
-        raise ValueError("Storage path escapes configured directory") from exc
-    if shared != base:
+    # Dominating startswith guard (CodeQL-modelled sanitizer).
+    if not _is_under_realpath_root(base, target):
         raise ValueError("Storage path escapes configured directory")
     return Path(target)
 
@@ -264,16 +268,23 @@ def write_bytes_atomic(dest: Path, data: bytes, *, root: str | Path | None = Non
     dest = Path(dest)
     if any(part == ".." for part in dest.parts):
         raise ValueError("Invalid destination path")
-    if root is not None:
-        dest = resolve_path_under_root(root, dest)
-    else:
-        dest = Path(os.path.realpath(os.fspath(dest)))
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=dest.parent, prefix=".tmp_", suffix=dest.suffix)
+    # Trusted root only (caller root or uploads) — never derive base from dest.parent.
+    base = os.path.realpath(os.fspath(root if root is not None else uploads_root()))
+    # Inline realpath + startswith so CodeQL's modelled sanitizer dominates the
+    # mkdir / mkstemp(dir=) / os.replace sinks (helper Path returns did not).
+    target = os.path.realpath(os.fspath(dest))
+    if not target.startswith(base + os.sep):
+        raise ValueError("Storage path escapes configured directory")
+    tmp_dir = os.path.dirname(target)
+    if tmp_dir != base and not tmp_dir.startswith(base + os.sep):
+        raise ValueError("Storage path escapes configured directory")
+    os.makedirs(tmp_dir, exist_ok=True)
+    # Constant prefix/suffix; dir rebound to startswith-validated parent under base.
+    fd, tmp_path = tempfile.mkstemp(dir=tmp_dir, prefix=".tmp_", suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
-        os.replace(tmp_path, dest)
+        os.replace(tmp_path, target)
     except Exception:
         try:
             os.unlink(tmp_path)

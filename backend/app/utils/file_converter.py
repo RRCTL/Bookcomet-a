@@ -22,12 +22,10 @@ def _resolved_pdf_path(pdf_path: str) -> str:
         os.path.realpath(os.getenv("UPLOADS_DIR", "./uploads")),
         os.path.realpath(tempfile.gettempdir()),
     )
+    # realpath + startswith(base + os.sep): CodeQL-modelled py/path-injection sanitizer.
     for root in allowed_roots:
-        try:
-            if os.path.commonpath([root, target]) == root:
-                return target
-        except ValueError:
-            continue
+        if target == root or target.startswith(root + os.sep):
+            return target
     raise ValueError("PDF path is outside the allowed directories")
 
 
