@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   ANOTHER_RUN_PROCESSING_HINT,
   anotherRunIsProcessing,
+  canActOnEmptyExtractPage,
   canExecuteOnActiveRun,
   canReVlmOnActiveRun,
   canStopActiveRun,
@@ -84,29 +85,45 @@ describe('cross-run upload vs Run/Re-VLM gates', () => {
     )
   })
 
-  it('allows Upload on a quiet open run while another is Processing', () => {
+  it('allows Upload / append on a quiet open run while another is Processing', () => {
     expect(
       canUploadOnActiveRun({
         hasActiveRun: true,
-        fileCount: 0,
         busyOnActiveRun: false,
+        activeRunProcessing: false,
+      }),
+    ).toBe(true)
+    // Append after Passed: existing files must not grey Upload on an idle run.
+    expect(
+      canUploadOnActiveRun({
+        hasActiveRun: true,
+        busyOnActiveRun: false,
+        activeRunProcessing: false,
+        lockedApproved: false,
       }),
     ).toBe(true)
   })
 
-  it('blocks Upload only for this run busy or when files already staged', () => {
+  it('blocks Upload while this run is busy, processing, or approved-locked', () => {
     expect(
       canUploadOnActiveRun({
         hasActiveRun: true,
-        fileCount: 0,
         busyOnActiveRun: true,
       }),
     ).toBe(false)
     expect(
       canUploadOnActiveRun({
         hasActiveRun: true,
-        fileCount: 2,
         busyOnActiveRun: false,
+        activeRunProcessing: true,
+      }),
+    ).toBe(false)
+    expect(
+      canUploadOnActiveRun({
+        hasActiveRun: true,
+        busyOnActiveRun: false,
+        activeRunProcessing: false,
+        lockedApproved: true,
       }),
     ).toBe(false)
   })
@@ -149,5 +166,54 @@ describe('cross-run upload vs Run/Re-VLM gates', () => {
     expect(ANOTHER_RUN_PROCESSING_HINT).toContain('Another run is processing')
     expect(ANOTHER_RUN_PROCESSING_HINT).toContain('upload files now')
     expect(ANOTHER_RUN_PROCESSING_HINT).toContain('Run unlocks')
+  })
+})
+
+describe('canActOnEmptyExtractPage', () => {
+  it('allows Mark/Retry Confirm while this run’s execute HTTP would still be busy', () => {
+    // busyOnActiveRun is intentionally not a parameter — Confirm must not silent-no-op mid-batch.
+    expect(
+      canActOnEmptyExtractPage({
+        hasActiveRun: true,
+        emptyExtractBusy: false,
+        rebuilding: false,
+        approving: false,
+      }),
+    ).toBe(true)
+  })
+
+  it('blocks only when the empty-extract action itself is in flight or Approve/Rebuild is running', () => {
+    expect(
+      canActOnEmptyExtractPage({
+        hasActiveRun: true,
+        emptyExtractBusy: true,
+        rebuilding: false,
+        approving: false,
+      }),
+    ).toBe(false)
+    expect(
+      canActOnEmptyExtractPage({
+        hasActiveRun: true,
+        emptyExtractBusy: false,
+        rebuilding: true,
+        approving: false,
+      }),
+    ).toBe(false)
+    expect(
+      canActOnEmptyExtractPage({
+        hasActiveRun: true,
+        emptyExtractBusy: false,
+        rebuilding: false,
+        approving: true,
+      }),
+    ).toBe(false)
+    expect(
+      canActOnEmptyExtractPage({
+        hasActiveRun: false,
+        emptyExtractBusy: false,
+        rebuilding: false,
+        approving: false,
+      }),
+    ).toBe(false)
   })
 })

@@ -97,3 +97,18 @@ export function reviewTableShowingLoader(
   if (!activeRunId) return false
   return session.loading || session.boundRunId !== activeRunId
 }
+
+/**
+ * After getRun / payload fetch fails (incl. 401 refresh), bind an empty table to
+ * the active run so Live output leaves eternal "Loading…" and run switching stays usable.
+ */
+export function bindEmptyReviewTableAfterLoadFailure(
+  activeRunId: string | null,
+): ReviewTableSession {
+  return {
+    boundRunId: activeRunId,
+    payloads: {},
+    editedRows: null,
+    loading: false,
+  }
+}

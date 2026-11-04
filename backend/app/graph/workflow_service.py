@@ -182,16 +182,38 @@ async def _finish_vlm_after_cancel(
     run_files = (
         db.query(WorkflowRunFile).filter(WorkflowRunFile.run_id == run.id).all()
     )
+    from app.services import mvdu_crop_preview as _mvdu_crop_gate
+
     for rf in run_files:
         status = (rf.file_status or "").lower()
         if status == "running":
-            # Interrupted page stays on the grid as Stopped.
-            rf.file_status = "stopped"
-            rf.error_text = None
+            summary = rf.result_summary_json if isinstance(rf.result_summary_json, dict) else None
+            reopened = _mvdu_crop_gate.reopen_crop_gate_after_interrupt(summary)
+            if reopened is not None:
+                # Mid Confirm-crops extract: reopen Needs-review instead of
+                # Stopped + phase=extracting (UI desync / Confirm hang).
+                rf.file_status = "warning"
+                rf.error_text = "needs_crop_preview"
+                rf.result_summary_json = reopened
+            else:
+                # Interrupted page stays on the grid as Stopped.
+                rf.file_status = "stopped"
+                rf.error_text = None
         elif status in _QUEUED_FILE_STATUSES:
             # Queued pages that never started — Cancelled.
             rf.file_status = "cancelled"
             rf.error_text = None
+        elif status in ("stopped", "failed", "cancelled"):
+            # Heal already-terminal files that still claim phase=extracting.
+            summary = rf.result_summary_json if isinstance(rf.result_summary_json, dict) else None
+            if isinstance(summary, dict):
+                cp = summary.get("crop_preview")
+                if isinstance(cp, dict) and str(cp.get("phase") or "") == "extracting":
+                    reopened = _mvdu_crop_gate.reopen_crop_gate_after_interrupt(summary)
+                    if reopened is not None:
+                        rf.file_status = "warning"
+                        rf.error_text = "needs_crop_preview"
+                        rf.result_summary_json = reopened
 
     ok_count = sum(1 for rf in run_files if rf.file_status == "ok")
     warn_count = sum(1 for rf in run_files if rf.file_status == "warning")
@@ -2594,28 +2616,47 @@ class WorkflowService:
         except Exception:
             # Non-mapped test doubles / detached instances still get the assignment.
             pass
+
+        console_message = (
+            f"Page {page_num} {REVIEWED_NO_ROWS_LABEL.lower()} "
+            f"({task_file_id})."
+        )
+        # Mid-batch mark: execute/Re-VLM still owns run_status and node states.
+        # Only persist the page acknowledgment so the amber banner can clear.
+        still_processing = (run.run_status or "").lower() in (
+            "executing",
+            "running",
+            "queued",
+        )
+        prior_file_status = run_file.file_status
         WorkflowService._refresh_bank_file_status_from_pages(run_file)
+        if still_processing and (prior_file_status or "").lower() in (
+            "running",
+            "pending",
+            "queued",
+        ):
+            # Keep Live output mid-batch; do not flash Passed while pages remain.
+            run_file.file_status = prior_file_status
         try:
             flag_modified(run_file, "result_summary_json")
         except Exception:
             pass
 
-        all_run_files = (
-            db.query(WorkflowRunFile).filter(WorkflowRunFile.run_id == run.id).all()
-        )
-        ok_count = sum(1 for rf in all_run_files if rf.file_status == "ok")
-        warn_count = sum(1 for rf in all_run_files if rf.file_status == "warning")
-        merged = _merge_run_files_ocr(all_run_files)
-        _finalize_run_after_vlm(
-            run,
-            all_run_files,
-            ok_count=ok_count,
-            warn_count=warn_count,
-            console_message=(
-                f"Page {page_num} {REVIEWED_NO_ROWS_LABEL.lower()} "
-                f"({task_file_id})."
-            ),
-        )
+        if still_processing:
+            _append_console(run, "info", console_message)
+        else:
+            all_run_files = (
+                db.query(WorkflowRunFile).filter(WorkflowRunFile.run_id == run.id).all()
+            )
+            ok_count = sum(1 for rf in all_run_files if rf.file_status == "ok")
+            warn_count = sum(1 for rf in all_run_files if rf.file_status == "warning")
+            _finalize_run_after_vlm(
+                run,
+                all_run_files,
+                ok_count=ok_count,
+                warn_count=warn_count,
+                console_message=console_message,
+            )
         db.add(run_file)
         db.commit()
         db.refresh(run)

@@ -10,6 +10,7 @@ from app.services.mvdu_crop_preview import (
     nudge_pixel_box,
     parse_user_crop_boxes,
     regions_to_preview_boxes,
+    reopen_crop_gate_after_interrupt,
     rotate_box_content_90,
     stamp_box_extract_status,
 )
@@ -121,6 +122,26 @@ def test_stamp_box_extract_status() -> None:
     assert next_p["active_box_id"] == "b"
     assert next_p["boxes"][1]["extract_status"] == "running"
     assert next_p["boxes"][0]["extract_status"] == "pending"
+
+
+def test_reopen_crop_gate_after_interrupt_clears_extracting() -> None:
+    summary = {
+        "needs_crop_preview": False,
+        "crop_status": "extracting",
+        "crop_preview": {
+            "phase": "extracting",
+            "active_box_id": "a",
+            "boxes": [{"id": "a", "index": 1, "extract_status": "running"}],
+        },
+    }
+    next_s = reopen_crop_gate_after_interrupt(summary)
+    assert next_s is not None
+    assert next_s["needs_crop_preview"] is True
+    assert next_s["crop_status"] == "needs_crop_preview"
+    assert next_s["crop_preview"]["phase"] == "preview"
+    assert next_s["crop_preview"]["active_box_id"] is None
+    assert next_s["crop_preview"]["boxes"][0]["extract_status"] == "pending"
+    assert reopen_crop_gate_after_interrupt({"crop_preview": {"phase": "done"}}) is None
 
 
 def test_build_crop_preview_includes_page_entries() -> None:

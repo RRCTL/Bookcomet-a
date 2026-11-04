@@ -77,16 +77,24 @@ export function anotherRunIsProcessing(
   )
 }
 
-/** Staging PDFs on the open run never waits on someone else's VLM. */
+/**
+ * Staging PDFs on the open run (first batch or append) never waits on someone
+ * else's VLM. Block only while THIS run is busy / mid-processing, or after the
+ * review table is approved+locked into modules.
+ */
 export function canUploadOnActiveRun(opts: {
   hasActiveRun: boolean
-  fileCount: number
-  /** True only while THIS run's own upload request is in flight. */
+  /** True only while THIS run's own upload/HTTP request is in flight. */
   busyOnActiveRun: boolean
+  /** True while THIS run's VLM / workflow is executing. */
+  activeRunProcessing?: boolean
+  /** Approved + loaded into modules — do not append conflicting source files. */
+  lockedApproved?: boolean
 }): boolean {
   if (!opts.hasActiveRun) return false
   if (opts.busyOnActiveRun) return false
-  if (opts.fileCount > 0) return false
+  if (opts.activeRunProcessing) return false
+  if (opts.lockedApproved) return false
   return true
 }
 
@@ -121,5 +129,25 @@ export function canReVlmOnActiveRun(opts: {
   if (opts.activeRunProcessing) return false
   if (opts.busyOnActiveRun) return false
   if (opts.anotherRunProcessing) return false
+  return true
+}
+
+/**
+ * Retry / Mark-as-reviewed-with-no-rows for dense empty-extract pages.
+ *
+ * Must NOT wait on this run's long execute/Re-VLM HTTP (`busyOnActiveRun`):
+ * amber banners appear mid-batch while that request is still in flight, and
+ * Confirm would otherwise close the dialog then silently no-op.
+ */
+export function canActOnEmptyExtractPage(opts: {
+  hasActiveRun: boolean
+  emptyExtractBusy: boolean
+  rebuilding: boolean
+  approving: boolean
+}): boolean {
+  if (!opts.hasActiveRun) return false
+  if (opts.emptyExtractBusy) return false
+  if (opts.rebuilding) return false
+  if (opts.approving) return false
   return true
 }

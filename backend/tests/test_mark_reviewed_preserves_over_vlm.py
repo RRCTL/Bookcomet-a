@@ -151,6 +151,28 @@ def test_refresh_file_status_all_reviewed_is_neutral_not_passed_warning() -> Non
     assert EMPTY_EXTRACT_GATE != run_file.gate_result
 
 
+def _mark_reviewed_db(run_file: SimpleNamespace) -> MagicMock:
+    class _Chain:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def filter(self, *_a, **_k):
+            return self
+
+        def first(self):
+            return self._rows[0] if self._rows else None
+
+        def all(self):
+            return self._rows
+
+    db = MagicMock()
+    db.query.side_effect = lambda model: _Chain([run_file])
+    db.commit = MagicMock()
+    db.refresh = MagicMock()
+    db.add = MagicMock()
+    return db
+
+
 def test_mark_bank_page_reviewed_persists_acknowledged_flag() -> None:
     pages = [
         {"page": 1, "status": "success"},
@@ -172,25 +194,7 @@ def test_mark_bank_page_reviewed_persists_acknowledged_flag() -> None:
         node_states_json={},
         console_log_json=[],
     )
-
-    class _Chain:
-        def __init__(self, rows):
-            self._rows = rows
-
-        def filter(self, *_a, **_k):
-            return self
-
-        def first(self):
-            return self._rows[0] if self._rows else None
-
-        def all(self):
-            return self._rows
-
-    db = MagicMock()
-    db.query.side_effect = lambda model: _Chain([run_file])
-    db.commit = MagicMock()
-    db.refresh = MagicMock()
-    db.add = MagicMock()
+    db = _mark_reviewed_db(run_file)
 
     out = WorkflowService.mark_bank_page_reviewed_with_no_rows(
         db, run, "tf-fictional", 2
@@ -204,3 +208,46 @@ def test_mark_bank_page_reviewed_persists_acknowledged_flag() -> None:
     assert run_file.gate_result == REVIEWED_NO_ROWS_GATE
     assert REVIEWED_NO_ROWS_LABEL in (run_file.error_text or "")
     db.commit.assert_called()
+
+
+def test_mark_bank_page_reviewed_mid_execute_persists_without_flipping_status() -> None:
+    """Confirm during in-flight execute must persist the mark and keep run executing."""
+    pages = [
+        _amber_page(1, auto_retried=True),
+        {"page": 2, "status": "success"},
+        {"page": 3, "status": "processing"},
+    ]
+    run_file = SimpleNamespace(
+        id="rf-fictional-mid",
+        run_id="run-fictional-mid",
+        task_file_id="tf-fictional-mid",
+        file_status="running",
+        gate_result=EMPTY_EXTRACT_GATE,
+        error_text="Page 1: needs retry",
+        result_summary_json={"pages": pages, "total_pages": 3},
+    )
+    run = SimpleNamespace(
+        id="run-fictional-mid",
+        processing_mode="BANK",
+        run_status="executing",
+        node_states_json={"vlm": {"status": "running"}},
+        console_log_json=[],
+    )
+    db = _mark_reviewed_db(run_file)
+
+    out = WorkflowService.mark_bank_page_reviewed_with_no_rows(
+        db, run, "tf-fictional-mid", 1
+    )
+    assert out is run
+    assert run.run_status == "executing"
+    assert run_file.file_status == "running"
+    page1 = next(p for p in run_file.result_summary_json["pages"] if p["page"] == 1)
+    assert page1["empty_extract_acknowledged"] is True
+    assert page1["status"] == REVIEWED_NO_ROWS_STATUS
+    assert page_has_pending_empty_extract(page1) is False
+    db.commit.assert_called()
+    assert any(
+        REVIEWED_NO_ROWS_LABEL.lower() in str(entry.get("message", "")).lower()
+        for entry in (run.console_log_json or [])
+        if isinstance(entry, dict)
+    )

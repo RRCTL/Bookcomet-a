@@ -17,6 +17,7 @@ import {
 import {
   ANOTHER_RUN_PROCESSING_HINT,
   anotherRunIsProcessing,
+  canActOnEmptyExtractPage,
   canExecuteOnActiveRun,
   canReVlmOnActiveRun,
   canStopActiveRun,
@@ -54,7 +55,11 @@ function resolveBatchPayloads(
 import { ARAPReview, type ARAPTransaction } from '../../components/ARAPReview'
 import { MvduCropPreviewGate } from '../mvduCropPreview/MvduCropPreviewGate'
 import { parseCropPreviewFromSummary } from '../mvduCropPreview/boxOps'
-import { applyCropConfirmOptimisticRun } from '../mvduCropPreview/cropGateConfirm'
+import {
+  applyCropConfirmOptimisticRun,
+  normalizeCropGateFile,
+  normalizeRunCropGateFiles,
+} from '../mvduCropPreview/cropGateConfirm'
 import type { CropPreviewPayload } from '../mvduCropPreview/types'
 import { BankStatementReview, type BankTransaction } from '../../components/BankStatementReview'
 import { OtherTable } from '../../components/OtherTable'
@@ -118,6 +123,7 @@ import {
   partitionRowsByRunOwnership,
 } from './runReviewRowOwnership'
 import {
+  bindEmptyReviewTableAfterLoadFailure,
   clearReviewTableForRebuild,
   clearReviewTableOnRunSwitch,
   editedRowsSafeForApprove,
@@ -546,34 +552,57 @@ export function ProcessingView() {
   // Load the active run (graph + node states) and its extracted table payloads.
   const loadActiveRun = useCallback(
     async (runId: string) => {
-      const run = await workflowApi.getRun(companyId, runId)
-      if (run.company_id !== companyId) return run
-      if (runId !== activeRunIdRef.current) return run
-      setActiveRun(run)
-      setSelectedNodeId(prev => {
-        if (prev && run.graph_json.nodes.some(n => n.id === prev)) return prev
-        const running = run.graph_json.nodes.find(n => statusKind(nodeStateOf(run, n.id)?.status) === 'run')
-        return running?.id ?? run.graph_json.nodes[0]?.id ?? null
-      })
       try {
-        const p = await loadAllBatchTablePayloads(run, companyId).then(loaded =>
-          resolveBatchPayloads(run, loaded),
-        )
+        const run = await workflowApi.getRun(companyId, runId)
         if (runId !== activeRunIdRef.current) return run
-        // Replace table for this run only; drop any overlay from a prior run.
-        setPayloads(p)
-        setTableBoundRunId(runId)
-        setEditedRows(null)
-        setTableLoading(false)
-      } catch {
-        if (runId !== activeRunIdRef.current) return run
-        setPayloads({})
-        setTableBoundRunId(runId)
-        setEditedRows(null)
-        setTableLoading(false)
+        if (run.company_id !== companyId) {
+          // Bind empty so we never leave eternal Loading… after a scope mismatch.
+          const empty = bindEmptyReviewTableAfterLoadFailure(runId)
+          setPayloads(empty.payloads)
+          setTableBoundRunId(empty.boundRunId)
+          setEditedRows(empty.editedRows as null)
+          setTableLoading(empty.loading)
+          return run
+        }
+        setActiveRun(run)
+        setSelectedNodeId(prev => {
+          if (prev && run.graph_json.nodes.some(n => n.id === prev)) return prev
+          const running = run.graph_json.nodes.find(
+            n => statusKind(nodeStateOf(run, n.id)?.status) === 'run',
+          )
+          return running?.id ?? run.graph_json.nodes[0]?.id ?? null
+        })
+        try {
+          const p = await loadAllBatchTablePayloads(run, companyId).then(loaded =>
+            resolveBatchPayloads(run, loaded),
+          )
+          if (runId !== activeRunIdRef.current) return run
+          // Replace table for this run only; drop any overlay from a prior run.
+          setPayloads(p)
+          setTableBoundRunId(runId)
+          setEditedRows(null)
+          setTableLoading(false)
+        } catch {
+          if (runId !== activeRunIdRef.current) return run
+          const empty = bindEmptyReviewTableAfterLoadFailure(runId)
+          setPayloads(empty.payloads)
+          setTableBoundRunId(empty.boundRunId)
+          setEditedRows(empty.editedRows as null)
+          setTableLoading(empty.loading)
+        }
+        void refreshAssetRecords(run)
+        return run
+      } catch (err) {
+        if (runId !== activeRunIdRef.current) throw err
+        // Keep run selection; clear Loading so the left rail stays clickable after 401/network.
+        const empty = bindEmptyReviewTableAfterLoadFailure(runId)
+        setPayloads(empty.payloads)
+        setTableBoundRunId(empty.boundRunId)
+        setEditedRows(empty.editedRows as null)
+        setTableLoading(empty.loading)
+        setBusyRunId(prev => (prev === runId ? null : prev))
+        throw err
       }
-      void refreshAssetRecords(run)
-      return run
     },
     [companyId, refreshAssetRecords],
   )
@@ -596,14 +625,19 @@ export function ProcessingView() {
     setEditedRows(cleared.editedRows as null)
     setTableLoading(cleared.loading)
     setAssetRecords([])
+    // Clear prior load/auth errors so a failed refresh on run A does not stick after selecting B.
+    setError(null)
     let cancelled = false
     loadActiveRun(activeRunId).catch(err => {
       if (cancelled) return
-      setActiveRun(null)
-      setPayloads({})
-      setTableBoundRunId(null)
-      setEditedRows(null)
-      setTableLoading(false)
+      // Do not null activeRun / boundRunId — that left Loading… forever while
+      // boundRunId !== activeRunId and blocked the feeling of run switching.
+      const empty = bindEmptyReviewTableAfterLoadFailure(activeRunId)
+      setPayloads(empty.payloads)
+      setTableBoundRunId(empty.boundRunId)
+      setEditedRows(empty.editedRows as null)
+      setTableLoading(empty.loading)
+      setBusyRunId(prev => (prev === activeRunId ? null : prev))
       setError(err instanceof Error ? err.message : 'Could not load run.')
     })
     return () => {
@@ -615,36 +649,41 @@ export function ProcessingView() {
   }, [activeRunId])
 
   const applyRunFromServer = useCallback(
-    (run: WorkflowRun, refreshPayloads = false) => {
-      if (shouldIgnoreRunRefreshAfterStop(stopGuardRunIdRef.current, run)) return
+    (run: WorkflowRun, refreshPayloads = false, opts?: { force?: boolean }) => {
+      // Confirm/skip/cancel must always land — stop-guard only drops stale execute polls.
+      if (!opts?.force && shouldIgnoreRunRefreshAfterStop(stopGuardRunIdRef.current, run)) return
       if (run.company_id !== companyId) return
-      setRuns(prev => prev.map(r => (r.id === run.id ? summaryFromRun(run) : r)))
-      if (run.id !== activeRunIdRef.current) return
-      setActiveRun(run)
+      // Heal Stopped-vs-extracting / ok-vs-extracting before Live output + crop gate paint.
+      const normalized = normalizeRunCropGateFiles(run)
+      setRuns(prev => prev.map(r => (r.id === normalized.id ? summaryFromRun(normalized) : r)))
+      if (normalized.id !== activeRunIdRef.current) return
+      setActiveRun(normalized)
       setSelectedNodeId(prev => {
-        if (prev && run.graph_json.nodes.some(n => n.id === prev)) return prev
-        const running = run.graph_json.nodes.find(n => statusKind(nodeStateOf(run, n.id)?.status) === 'run')
-        return running?.id ?? prev ?? run.graph_json.nodes[0]?.id ?? null
+        if (prev && normalized.graph_json.nodes.some(n => n.id === prev)) return prev
+        const running = normalized.graph_json.nodes.find(
+          n => statusKind(nodeStateOf(normalized, n.id)?.status) === 'run',
+        )
+        return running?.id ?? prev ?? normalized.graph_json.nodes[0]?.id ?? null
       })
       const shouldRefreshPayloads =
         refreshPayloads ||
-        run.run_status === 'executing' ||
-        run.run_status === 'awaiting_review' ||
-        run.run_status === 'coa_running' ||
-        run.run_status === 'completed' ||
-        run.run_status === 'done' ||
-        run.run_status === 'saved'
+        normalized.run_status === 'executing' ||
+        normalized.run_status === 'awaiting_review' ||
+        normalized.run_status === 'coa_running' ||
+        normalized.run_status === 'completed' ||
+        normalized.run_status === 'done' ||
+        normalized.run_status === 'saved'
       if (shouldRefreshPayloads) {
-        const runId = run.id
-        void loadAllBatchTablePayloads(run, companyId)
+        const runId = normalized.id
+        void loadAllBatchTablePayloads(normalized, companyId)
           .then(loaded => {
             if (runId !== activeRunIdRef.current) return
-            setPayloads(resolveBatchPayloads(run, loaded))
+            setPayloads(resolveBatchPayloads(normalized, loaded))
             setTableBoundRunId(runId)
             setTableLoading(false)
           })
           .catch(() => {})
-        void refreshAssetRecords(run)
+        void refreshAssetRecords(normalized)
       }
     },
     [companyId, refreshAssetRecords],
@@ -915,15 +954,21 @@ export function ProcessingView() {
   const handleUpload = useCallback(
     async (files: FileList | null) => {
       if (!activeRun || !files || files.length === 0) return
-      // One upload per task: block adding a second batch (avoids max-up bugs).
-      if (activeRun.files.length > 0) {
-        setError('Files already uploaded for this task. Use Re-VLM to retry failed files.')
+      if (runHasLockedApprovedTable(activeRun)) {
+        setError(
+          'Approved and loaded into modules — upload is disabled to avoid conflicting updates.',
+        )
+        return
+      }
+      if (runLooksProcessing(activeRun) || busyRunId === activeRun.id) {
+        setError('Wait for this run to finish processing before uploading more files.')
         return
       }
       const runId = activeRun.id
       setBusyRunId(runId)
       setError(null)
       try {
+        // New batch id per append — backend already supports multi-batch runs.
         const uploadBatchId = safeRandomUUID()
         const uploadedAt = new Date().toISOString()
         for (const file of Array.from(files)) {
@@ -937,7 +982,7 @@ export function ProcessingView() {
         setBusyRunId(prev => (prev === runId ? null : prev))
       }
     },
-    [activeRun, companyId, loadActiveRun, reloadRuns],
+    [activeRun, busyRunId, companyId, loadActiveRun, reloadRuns],
   )
 
   const openReVlmModal = useCallback((taskFileIds: string[] = []) => {
@@ -1085,8 +1130,24 @@ export function ProcessingView() {
 
   const retryEmptyExtractPage = useCallback(
     async (flag: EmptyExtractPageFlag) => {
-      if (!activeRun || emptyExtractBusy || rebuilding || busyRunId === activeRun.id || approving)
+      // Do not gate on busyRunId: amber appears mid-batch while execute HTTP is
+      // still open; Retry must still call the API (same as Mark Confirm).
+      if (
+        !canActOnEmptyExtractPage({
+          hasActiveRun: Boolean(activeRun),
+          emptyExtractBusy,
+          rebuilding,
+          approving,
+        })
+      ) {
+        setError(
+          emptyExtractBusy
+            ? 'Page retry is already in progress.'
+            : 'Cannot retry this page right now — Approve or Rebuild is still running.',
+        )
         return
+      }
+      if (!activeRun) return
       if (runHasLockedApprovedTable(activeRun)) {
         setError(
           'Approved and loaded into modules — page retry is disabled to avoid conflicting updates.',
@@ -1102,7 +1163,7 @@ export function ProcessingView() {
           flag.taskFileId,
           flag.page,
         )
-        applyRunFromServer(updated, true)
+        applyRunFromServer(updated, true, { force: true })
         void reloadRuns()
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Could not retry this page.')
@@ -1114,7 +1175,6 @@ export function ProcessingView() {
       activeRun,
       applyRunFromServer,
       approving,
-      busyRunId,
       companyId,
       emptyExtractBusy,
       rebuilding,
@@ -1124,8 +1184,24 @@ export function ProcessingView() {
 
   const markEmptyExtractReviewed = useCallback(
     async (flag: EmptyExtractPageFlag) => {
-      if (!activeRun || emptyExtractBusy || rebuilding || busyRunId === activeRun.id || approving)
+      // Do not gate on busyRunId: Confirm would close the dialog then silently
+      // no-op while this run's execute/Re-VLM HTTP is still in flight.
+      if (
+        !canActOnEmptyExtractPage({
+          hasActiveRun: Boolean(activeRun),
+          emptyExtractBusy,
+          rebuilding,
+          approving,
+        })
+      ) {
+        setError(
+          emptyExtractBusy
+            ? 'Mark as reviewed is already in progress.'
+            : 'Cannot mark as reviewed right now — Approve or Rebuild is still running.',
+        )
         return
+      }
+      if (!activeRun) return
       if (runHasLockedApprovedTable(activeRun)) {
         setError(
           'Approved and loaded into modules — mark-reviewed is disabled to avoid conflicting updates.',
@@ -1141,7 +1217,8 @@ export function ProcessingView() {
           flag.taskFileId,
           flag.page,
         )
-        applyRunFromServer(updated, true)
+        // force: mid-execute mark must paint even if a stop-guard is active.
+        applyRunFromServer(updated, true, { force: true })
         void reloadRuns()
       } catch (err) {
         setError(
@@ -1155,7 +1232,6 @@ export function ProcessingView() {
       activeRun,
       applyRunFromServer,
       approving,
-      busyRunId,
       companyId,
       emptyExtractBusy,
       rebuilding,
@@ -1434,16 +1510,17 @@ export function ProcessingView() {
     files: activeRun?.files ?? [],
     nodeStates: activeRun?.node_states_json,
   })
-  const canUpload = canUploadOnActiveRun({
-    hasActiveRun: Boolean(activeRun),
-    fileCount: activeRun?.files.length ?? 0,
-    busyOnActiveRun: busy,
-  })
   // Once approved (CoA posting / completed) the output table is view-only.
   const outputReadOnly = runStatus === 'coa_running' || runStatus === 'completed'
   const reVlmLocked = Boolean(activeRun && runHasLockedApprovedTable(activeRun))
   const reVlmLockedTitle =
     'Approved and loaded into modules — Re-VLM is disabled to avoid conflicting updates.'
+  const canUpload = canUploadOnActiveRun({
+    hasActiveRun: Boolean(activeRun),
+    busyOnActiveRun: busy,
+    activeRunProcessing: isRunning,
+    lockedApproved: reVlmLocked,
+  })
   const canReVlm = canReVlmOnActiveRun({
     hasActiveRun: Boolean(activeRun),
     hasProcessedFiles,
@@ -1600,17 +1677,19 @@ export function ProcessingView() {
     if (!activeRun?.task_id) return null
     const mode = (activeRun.processing_mode ?? '').toUpperCase()
     if (mode !== 'AP' && mode !== 'AR') return null
-    for (const f of activeRun.files ?? []) {
+    for (const raw of activeRun.files ?? []) {
+      // Belt-and-suspenders: never show extracting for a Stopped/ok file.
+      const f = normalizeCropGateFile(raw)
       const summary = (f.result_summary_json ?? null) as Record<string, unknown> | null
       const parsed = parseCropPreviewFromSummary(summary)
       if (!parsed.preview) continue
       const phase = parsed.preview.phase
-      // Keep the docked gate visible through extract progress (phase=extracting),
-      // not only while needs_crop_preview is still true on the summary.
+      // Keep the docked gate visible through live extract progress (phase=extracting
+      // while file is still running), not only while needs_crop_preview is true.
       const waitingConfirm =
         phase === 'preview' &&
         (f.error_text === 'needs_crop_preview' || parsed.needsGate)
-      const extracting = phase === 'extracting'
+      const extracting = phase === 'extracting' && (f.file_status ?? '').toLowerCase() === 'running'
       if (waitingConfirm || extracting) {
         return {
           taskFileId: f.task_file_id,
@@ -1652,13 +1731,16 @@ export function ProcessingView() {
           phase: 'extracting',
         }),
         true,
+        { force: true },
       )
       try {
         const updated = await workflowApi.confirmCrops(companyId, runId, taskFileId, {
           action: 'confirm',
           boxes,
         })
-        applyRunFromServer(updated, true)
+        // Force: stop-guard must not drop a completed confirm (incl. cross-VLM
+        // timeout keep-primary → 200) or Needs-review / extracting never clears.
+        applyRunFromServer(updated, true, { force: true })
         void reloadRuns()
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Could not confirm crops.'
@@ -1666,7 +1748,7 @@ export function ProcessingView() {
         setCropGateError(message)
         void workflowApi
           .getRun(companyId, runId)
-          .then(run => applyRunFromServer(run, true))
+          .then(run => applyRunFromServer(run, true, { force: true }))
           .catch(() => {})
         throw err instanceof Error ? err : new Error(message)
       } finally {
@@ -1697,12 +1779,13 @@ export function ProcessingView() {
     applyRunFromServer(
       applyCropConfirmOptimisticRun(activeRun, taskFileId, { phase: 'extracting' }),
       true,
+      { force: true },
     )
     try {
       const updated = await workflowApi.confirmCrops(companyId, runId, taskFileId, {
         action: 'skip',
       })
-      applyRunFromServer(updated, true)
+      applyRunFromServer(updated, true, { force: true })
       void reloadRuns()
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Could not skip crop preview.'
@@ -1710,7 +1793,7 @@ export function ProcessingView() {
       setCropGateError(message)
       void workflowApi
         .getRun(companyId, runId)
-        .then(run => applyRunFromServer(run, true))
+        .then(run => applyRunFromServer(run, true, { force: true }))
         .catch(() => {})
       throw err instanceof Error ? err : new Error(message)
     } finally {
@@ -1732,7 +1815,7 @@ export function ProcessingView() {
       const updated = await workflowApi.confirmCrops(companyId, runId, taskFileId, {
         action: 'cancel',
       })
-      applyRunFromServer(updated, true)
+      applyRunFromServer(updated, true, { force: true })
       void reloadRuns()
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Could not cancel crop preview.'
@@ -1895,11 +1978,15 @@ export function ProcessingView() {
           className="erp-btn"
           disabled={!canUpload}
           title={
-            (activeRun?.files.length ?? 0) > 0
-              ? 'Files already uploaded for this task'
-              : otherRunProcessing
-                ? 'Upload files on this run while another run processes'
-                : 'Upload files (one batch per task)'
+            reVlmLocked
+              ? 'Approved and loaded into modules — upload is disabled'
+              : isRunning || busy
+                ? 'Wait for this run to finish before uploading more files'
+                : otherRunProcessing
+                  ? 'Upload or append files on this run while another run processes'
+                  : (activeRun?.files.length ?? 0) > 0
+                    ? 'Add more files to this run, then Run / Re-VLM'
+                    : 'Upload files to this run'
           }
           onClick={() => fileInputRef.current?.click()}
         >

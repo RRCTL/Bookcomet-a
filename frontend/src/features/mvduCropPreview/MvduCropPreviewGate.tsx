@@ -8,6 +8,7 @@ import {
   confirmPageInSet,
   countPendingPages,
   deleteBox,
+  mergeServerBoxStatus,
   mergeWithNeighbor,
   nextPendingPage,
   normalizeIncomingBoxes,
@@ -100,6 +101,8 @@ export function MvduCropPreviewGate({
   const dragRef = useRef<DragState | null>(null)
   const stageRef = useRef<HTMLDivElement | null>(null)
   const gateBootstrapKeyRef = useRef<string>('')
+  const activePageRef = useRef<number>(activePage)
+  activePageRef.current = activePage
   const extracting = preview.phase === 'extracting'
   const editable = preview.phase === 'preview' && !busy && !actionPending
   const shownError = localActionError || actionError
@@ -136,14 +139,29 @@ export function MvduCropPreviewGate({
   useEffect(() => {
     const nextPages = pagesFromPreview(preview)
     if (preview.phase === 'extracting' || preview.phase === 'done') {
-      setPageEntries(nextPages)
-      const start = preview.page || nextPages[0]?.page || 1
-      setActivePage(start)
-      const entry = nextPages.find(p => p.page === start)
-      const nextBoxes = normalizeIncomingBoxes(entry?.boxes ?? preview.boxes, start)
-      setBoxes(nextBoxes)
-      setSelectedId(preview.active_box_id ?? nextBoxes[0]?.id ?? null)
+      // Preserve the page the user selected in the thumb rail across extract polls.
+      // Previously every poll forced page 1, leaving page-1 overlays after clicking thumb 2.
+      const keyChanged = gateBootstrapKeyRef.current !== gateBootstrapKey
       gateBootstrapKeyRef.current = gateBootstrapKey
+      setPageEntries(nextPages)
+      const prevActive = activePageRef.current
+      const start =
+        !keyChanged && nextPages.some(p => p.page === prevActive)
+          ? prevActive
+          : Number(preview.page) || nextPages[0]?.page || 1
+      if (start !== prevActive) setActivePage(start)
+      const entry = nextPages.find(p => p.page === start)
+      const serverBoxes = normalizeIncomingBoxes(entry?.boxes ?? preview.boxes, start)
+      setBoxes(prev => {
+        const samePage =
+          prev.length > 0 && prev.every(b => (b.page || start) === start)
+        if (!keyChanged && samePage) return mergeServerBoxStatus(prev, serverBoxes)
+        return serverBoxes
+      })
+      setSelectedId(prev => {
+        if (!keyChanged && prev && serverBoxes.some(b => b.id === prev)) return prev
+        return preview.active_box_id ?? serverBoxes[0]?.id ?? null
+      })
       return
     }
     if (gateBootstrapKeyRef.current === gateBootstrapKey) {
