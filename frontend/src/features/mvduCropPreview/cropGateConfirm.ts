@@ -222,3 +222,60 @@ export function applyCropConfirmOptimisticRun<
     }),
   }
 }
+
+/** Serialized crop-extract job while another file is still extracting. */
+export type CropExtractQueueItem = {
+  taskFileId: string
+  action: 'confirm' | 'skip'
+  boxes?: Array<Record<string, unknown>>
+}
+
+/** Live extract ids: phase=extracting and file still running (not sealed/stale). */
+export function extractingCropFileIds(files: Array<CropGateFileLike>): string[] {
+  const out: string[] = []
+  for (const raw of files) {
+    const f = normalizeCropGateFile(raw)
+    if (cropPreviewPhase(f) !== 'extracting') continue
+    if ((f.file_status ?? '').toLowerCase() !== 'running') continue
+    out.push(f.task_file_id)
+  }
+  return out
+}
+
+/**
+ * Queue Confirm/Skip when another file is already extracting or a confirm HTTP
+ * is in flight. Same-file re-confirm while that file extracts is rejected by the
+ * gate UI (actionLocked); this helper only decides serialize-vs-start.
+ */
+export function shouldQueueCropExtract(opts: {
+  cropGateBusy: boolean
+  extractingFileIds: string[]
+  targetFileId: string
+}): boolean {
+  if (opts.cropGateBusy) return true
+  return opts.extractingFileIds.some(id => id !== opts.targetFileId)
+}
+
+/** Upsert one queued extract job (latest Confirm/Skip wins per file). */
+export function enqueueCropExtract(
+  queue: CropExtractQueueItem[],
+  item: CropExtractQueueItem,
+): CropExtractQueueItem[] {
+  return [...queue.filter(q => q.taskFileId !== item.taskFileId), item]
+}
+
+export function removeCropExtractQueueItem(
+  queue: CropExtractQueueItem[],
+  taskFileId: string,
+): CropExtractQueueItem[] {
+  return queue.filter(q => q.taskFileId !== taskFileId)
+}
+
+export function dequeueCropExtract(queue: CropExtractQueueItem[]): {
+  next: CropExtractQueueItem | null
+  rest: CropExtractQueueItem[]
+} {
+  if (queue.length === 0) return { next: null, rest: [] }
+  const [next, ...rest] = queue
+  return { next: next ?? null, rest }
+}

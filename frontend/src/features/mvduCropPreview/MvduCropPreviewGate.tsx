@@ -42,6 +42,11 @@ type Props = {
    */
   gatedFiles?: CropPreviewGateNavFile[]
   busy?: boolean
+  /**
+   * File ids whose Confirm/Skip is queued behind another file's extract.
+   * Active queued file locks footer actions but never blocks WAITING nav.
+   */
+  queuedFileIds?: string[]
   /** Optional parent-surfaced action error (confirm/skip/cancel). */
   actionError?: string | null
   onConfirm: (boxes: ReturnType<typeof boxesForApi>) => void | Promise<void>
@@ -98,6 +103,7 @@ export function MvduCropPreviewGate({
   preview,
   gatedFiles,
   busy = false,
+  queuedFileIds,
   actionError = null,
   onConfirm,
   onSkip,
@@ -141,7 +147,14 @@ export function MvduCropPreviewGate({
   selectedIdRef.current = selectedId
 
   const extracting = preview.phase === 'extracting'
-  const editable = preview.phase === 'preview' && !busy && !actionPending
+  const queuedIds = useMemo(
+    () => new Set(queuedFileIds ?? []),
+    [queuedFileIds],
+  )
+  const queued = queuedIds.has(taskFileId)
+  // Footer / box edits lock for THIS file only. Never gate WAITING file nav on sibling extract.
+  const actionLocked = busy || actionPending || extracting || queued
+  const editable = preview.phase === 'preview' && !busy && !actionPending && !queued
   const shownError = localActionError || actionError
   const multipage = pageEntries.length > 1
   const fileNavList = useMemo(() => {
@@ -169,7 +182,6 @@ export function MvduCropPreviewGate({
   const confirmLabel = isLastUnconfirmed
     ? 'Confirm crops & extract →'
     : 'Confirm page →'
-  const blocked = busy || actionPending || extracting
 
   const { stageSize, fit, onImageLoad } = useContainFitStage({
     stageRef,
@@ -294,13 +306,14 @@ export function MvduCropPreviewGate({
 
   const switchToFile = useCallback(
     (nextFileId: string) => {
-      if (!nextFileId || nextFileId === taskFileId || blocked) return
+      // Always allow WAITING / sibling file nav while another file extracts.
+      if (!nextFileId || nextFileId === taskFileId) return
       if (!fileNavList.some(f => f.taskFileId === nextFileId)) return
       stashActiveFile()
       setLocalActionError(null)
       onActiveFileChange?.(nextFileId)
     },
-    [taskFileId, blocked, fileNavList, stashActiveFile, onActiveFileChange],
+    [taskFileId, fileNavList, stashActiveFile, onActiveFileChange],
   )
 
   const persistActiveBoxes = useCallback(
@@ -585,7 +598,7 @@ export function MvduCropPreviewGate({
   const pageRasterMissing = Boolean(pageError)
 
   const handleConfirmClick = () => {
-    if (blocked || emptyHint || pageRasterMissing) return
+    if (actionLocked || emptyHint || pageRasterMissing) return
     // Persist current page edits, mark CONFIRMED.
     const withCurrent = pageEntries.map(p =>
       p.page === activePage
@@ -613,7 +626,7 @@ export function MvduCropPreviewGate({
   }
 
   const handleSkipClick = () => {
-    if (blocked) return
+    if (actionLocked) return
     const pending = countPendingPages(
       pageEntries.map(p =>
         p.page === activePage
@@ -637,9 +650,11 @@ export function MvduCropPreviewGate({
               {filename ?? 'Upload'}
               {extracting
                 ? ' · extracting…'
-                : busy || actionPending
-                  ? ' · starting extract…'
-                  : ' · awaiting review'}
+                : queued
+                  ? ' · queued…'
+                  : busy || actionPending
+                    ? ' · starting extract…'
+                    : ' · awaiting review'}
             </div>
             <div className="mvdu-crop-gate__sub">
               Crop preview
@@ -656,7 +671,7 @@ export function MvduCropPreviewGate({
               <button
                 type="button"
                 className="erp-btn"
-                disabled={blocked}
+                disabled={actionLocked}
                 onClick={() => {
                   const next = addBox(boxes, activePage || 1)
                   persistActiveBoxes(next)
@@ -671,7 +686,7 @@ export function MvduCropPreviewGate({
                 <button
                   type="button"
                   className="erp-btn"
-                  disabled={blocked}
+                  disabled={actionLocked}
                   title="Rotate crop 90° clockwise"
                   onClick={() => persistActiveBoxes(rotateBox90(boxes, selected.id))}
                 >
@@ -680,7 +695,7 @@ export function MvduCropPreviewGate({
                 <button
                   type="button"
                   className="erp-btn"
-                  disabled={blocked || boxes.length < 2}
+                  disabled={actionLocked || boxes.length < 2}
                   onClick={() => {
                     const next = mergeWithNeighbor(boxes, selected.id)
                     persistActiveBoxes(next)
@@ -692,7 +707,7 @@ export function MvduCropPreviewGate({
                 <button
                   type="button"
                   className="erp-btn danger"
-                  disabled={blocked}
+                  disabled={actionLocked}
                   onClick={() => {
                     const next = deleteBox(boxes, selected.id)
                     persistActiveBoxes(next)
@@ -725,11 +740,13 @@ export function MvduCropPreviewGate({
                 {shownError}
               </div>
             )}
-            {(busy || actionPending || extracting) && (
+            {(busy || actionPending || extracting || queued) && (
               <div className="mvdu-crop-gate__progress" data-testid="mvdu-crop-gate-progress">
                 {extracting
                   ? 'Extracting receipts from confirmed crops…'
-                  : 'Confirm received — starting extract…'}
+                  : queued
+                    ? 'Queued — waiting for the previous file to finish extract…'
+                    : 'Confirm received — starting extract…'}
               </div>
             )}
             <div ref={stageRef} className="mvdu-crop-gate__stage">
@@ -822,7 +839,7 @@ export function MvduCropPreviewGate({
                   <button
                     type="button"
                     className="mvdu-crop-gate__file-step"
-                    disabled={blocked || activeFileIndex <= 0}
+                    disabled={activeFileIndex <= 0}
                     aria-label="Previous file"
                     data-testid="mvdu-crop-gate-file-prev"
                     onClick={() => {
@@ -838,7 +855,7 @@ export function MvduCropPreviewGate({
                   <button
                     type="button"
                     className="mvdu-crop-gate__file-step"
-                    disabled={blocked || activeFileIndex >= fileNavList.length - 1}
+                    disabled={activeFileIndex >= fileNavList.length - 1}
                     aria-label="Next file"
                     data-testid="mvdu-crop-gate-file-next"
                     onClick={() => {
@@ -852,18 +869,33 @@ export function MvduCropPreviewGate({
                 {fileNavList.map((file, idx) => {
                   const selected = file.taskFileId === taskFileId
                   const phase = file.preview.phase
+                  const isQueued = queuedIds.has(file.taskFileId)
+                  const statusKind = selected
+                    ? 'running'
+                    : phase === 'extracting'
+                      ? 'running'
+                      : isQueued
+                        ? 'queued'
+                        : 'pending'
+                  const statusLabel = selected
+                    ? 'ACTIVE'
+                    : phase === 'extracting'
+                      ? 'EXTRACT'
+                      : isQueued
+                        ? 'QUEUED'
+                        : 'WAITING'
                   return (
                     <button
                       key={file.taskFileId}
                       type="button"
                       className={`mvdu-crop-gate__file-thumb${selected ? ' is-selected' : ''}${
                         phase === 'extracting' ? ' is-extracting' : ''
-                      }`}
+                      }${isQueued && !selected ? ' is-queued' : ''}`}
                       aria-current={selected ? 'true' : undefined}
                       title={file.filename ?? `File ${idx + 1}`}
-                      disabled={blocked && !selected}
+                      data-testid={`mvdu-crop-gate-file-thumb-${file.taskFileId}`}
                       onClick={() => {
-                        if (selected || blocked) return
+                        if (selected) return
                         switchToFile(file.taskFileId)
                       }}
                     >
@@ -871,12 +903,8 @@ export function MvduCropPreviewGate({
                       <span className="mvdu-crop-gate__file-name">
                         {shortFilename(file.filename)}
                       </span>
-                      <span
-                        className={`mvdu-crop-gate__status mvdu-crop-gate__status--${
-                          selected ? 'running' : phase === 'extracting' ? 'running' : 'pending'
-                        }`}
-                      >
-                        {selected ? 'ACTIVE' : phase === 'extracting' ? 'EXTRACT' : 'WAITING'}
+                      <span className={`mvdu-crop-gate__status mvdu-crop-gate__status--${statusKind}`}>
+                        {statusLabel}
                       </span>
                     </button>
                   )
@@ -944,7 +972,12 @@ export function MvduCropPreviewGate({
           <button
             type="button"
             className="erp-btn"
-            disabled={blocked}
+            disabled={extracting || busy || actionPending}
+            title={
+              extracting
+                ? 'Extract is already running for this file'
+                : undefined
+            }
             onClick={() => void runAction(() => onCancel(), 'Could not cancel crop preview.')}
           >
             Cancel
@@ -952,7 +985,7 @@ export function MvduCropPreviewGate({
           <button
             type="button"
             className="erp-btn"
-            disabled={blocked || (emptyHint && pendingCount === 0)}
+            disabled={actionLocked || (emptyHint && pendingCount === 0)}
             title={
               pendingCount > 1
                 ? `Skip crop review for ${pendingCount} pages`
@@ -965,7 +998,7 @@ export function MvduCropPreviewGate({
           <button
             type="button"
             className="erp-btn primary mvdu-crop-gate__confirm"
-            disabled={blocked || emptyHint || pageRasterMissing}
+            disabled={actionLocked || emptyHint || pageRasterMissing}
             data-testid="mvdu-crop-gate-confirm"
             onClick={handleConfirmClick}
           >

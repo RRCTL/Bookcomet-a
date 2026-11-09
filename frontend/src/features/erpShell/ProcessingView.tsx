@@ -57,8 +57,14 @@ import { MvduCropPreviewGate } from '../mvduCropPreview/MvduCropPreviewGate'
 import { parseCropPreviewFromSummary } from '../mvduCropPreview/boxOps'
 import {
   applyCropConfirmOptimisticRun,
+  dequeueCropExtract,
+  enqueueCropExtract,
+  extractingCropFileIds,
   normalizeCropGateFile,
   normalizeRunCropGateFiles,
+  removeCropExtractQueueItem,
+  shouldQueueCropExtract,
+  type CropExtractQueueItem,
 } from '../mvduCropPreview/cropGateConfirm'
 import type { CropPreviewGateNavFile, CropPreviewPayload } from '../mvduCropPreview/types'
 import { BankStatementReview, type BankTransaction } from '../../components/BankStatementReview'
@@ -439,16 +445,27 @@ export function ProcessingView() {
   const [cropGateBusy, setCropGateBusy] = useState(false)
   const [cropGateError, setCropGateError] = useState<string | null>(null)
   const [activeCropFileId, setActiveCropFileId] = useState<string | null>(null)
+  /** Confirm/Skip jobs waiting while another file's extract is in flight. */
+  const [cropExtractQueue, setCropExtractQueue] = useState<CropExtractQueueItem[]>([])
+  /** File currently mid confirm/skip HTTP (scopes gate `busy` to that file only). */
+  const [cropConfirmingFileId, setCropConfirmingFileId] = useState<string | null>(null)
   const [headerChangeConfirm, setHeaderChangeConfirm] = useState<{
     onConfirm: () => void
     onCancel: () => void
   } | null>(null)
+  const cropExtractQueueRef = useRef<CropExtractQueueItem[]>([])
+  const cropGateBusyRef = useRef(false)
+  const cropPumpingRef = useRef(false)
+  const activeRunForCropRef = useRef(activeRun)
   const syncedTemplateRunRef = useRef<string | null>(null)
   const renameCancelRef = useRef(false)
   const stopGuardRunIdRef = useRef<string | null>(null)
   const activeRunIdRef = useRef<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const bodyRef = useRef<HTMLDivElement | null>(null)
+  cropExtractQueueRef.current = cropExtractQueue
+  cropGateBusyRef.current = cropGateBusy
+  activeRunForCropRef.current = activeRun
 
   const assignActiveRunId = useCallback((id: string | null) => {
     activeRunIdRef.current = id
@@ -1734,21 +1751,24 @@ export function ProcessingView() {
     return undefined
   }, [activeRun])
 
-  const handleCropGateConfirm = useCallback(
-    async (boxes: Array<Record<string, unknown>>) => {
-      if (!activeRun || !cropGateTarget || cropGateBusy) {
+  const startCropExtractJob = useCallback(
+    async (item: CropExtractQueueItem) => {
+      const run = activeRunForCropRef.current
+      if (!run) {
         throw new Error('Crop preview is not ready to confirm.')
       }
-      const runId = activeRun.id
-      const taskFileId = cropGateTarget.taskFileId
+      const runId = run.id
+      const taskFileId = item.taskFileId
+      cropGateBusyRef.current = true
       setCropGateBusy(true)
+      setCropConfirmingFileId(taskFileId)
       setBusyRunId(runId)
       setError(null)
       setCropGateError(null)
       // Optimistic executing so WS/polling start while confirm-crops HTTP awaits extract.
       applyRunFromServer(
-        applyCropConfirmOptimisticRun(activeRun, taskFileId, {
-          boxes,
+        applyCropConfirmOptimisticRun(run, taskFileId, {
+          boxes: item.boxes,
           phase: 'extracting',
         }),
         true,
@@ -1756,80 +1776,133 @@ export function ProcessingView() {
       )
       try {
         const updated = await workflowApi.confirmCrops(companyId, runId, taskFileId, {
-          action: 'confirm',
-          boxes,
+          action: item.action,
+          boxes: item.action === 'confirm' ? item.boxes : undefined,
         })
         // Force: stop-guard must not drop a completed confirm (incl. cross-VLM
         // timeout keep-primary → 200) or Needs-review / extracting never clears.
         applyRunFromServer(updated, true, { force: true })
         void reloadRuns()
       } catch (err) {
-        const message = err instanceof Error ? err.message : 'Could not confirm crops.'
+        const message =
+          err instanceof Error
+            ? err.message
+            : item.action === 'skip'
+              ? 'Could not skip crop preview.'
+              : 'Could not confirm crops.'
         setError(message)
         setCropGateError(message)
         void workflowApi
           .getRun(companyId, runId)
-          .then(run => applyRunFromServer(run, true, { force: true }))
+          .then(r => applyRunFromServer(r, true, { force: true }))
           .catch(() => {})
         throw err instanceof Error ? err : new Error(message)
       } finally {
+        cropGateBusyRef.current = false
         setCropGateBusy(false)
+        setCropConfirmingFileId(null)
         setBusyRunId(prev => (prev === runId ? null : prev))
       }
     },
-    [
-      activeRun,
-      cropGateTarget,
-      cropGateBusy,
-      companyId,
-      applyRunFromServer,
-      reloadRuns,
-    ],
+    [companyId, applyRunFromServer, reloadRuns],
+  )
+
+  /** Start the next queued extract when the single-flight slot is free. */
+  const pumpCropExtractQueue = useCallback(() => {
+    if (cropPumpingRef.current || cropGateBusyRef.current) return
+    const run = activeRunForCropRef.current
+    if (!run) return
+    if (extractingCropFileIds(run.files ?? []).length > 0) return
+    const { next, rest } = dequeueCropExtract(cropExtractQueueRef.current)
+    if (!next) return
+    cropPumpingRef.current = true
+    cropExtractQueueRef.current = rest
+    setCropExtractQueue(rest)
+    void startCropExtractJob(next)
+      .catch(() => {
+        // Errors already surface via cropGateError / setError inside the job.
+      })
+      .finally(() => {
+        cropPumpingRef.current = false
+        // Job HTTP ended; if extract already sealed (or failed reopen), try next.
+        queueMicrotask(() => {
+          pumpCropExtractQueue()
+        })
+      })
+  }, [startCropExtractJob])
+
+  const handleCropGateConfirm = useCallback(
+    async (boxes: Array<Record<string, unknown>>) => {
+      if (!activeRun || !cropGateTarget) {
+        throw new Error('Crop preview is not ready to confirm.')
+      }
+      const taskFileId = cropGateTarget.taskFileId
+      const extractingIds = extractingCropFileIds(activeRun.files ?? [])
+      if (
+        shouldQueueCropExtract({
+          cropGateBusy: cropGateBusyRef.current,
+          extractingFileIds: extractingIds,
+          targetFileId: taskFileId,
+        })
+      ) {
+        setCropExtractQueue(prev => {
+          const next = enqueueCropExtract(prev, { taskFileId, action: 'confirm', boxes })
+          cropExtractQueueRef.current = next
+          return next
+        })
+        return
+      }
+      await startCropExtractJob({ taskFileId, action: 'confirm', boxes })
+      queueMicrotask(() => {
+        pumpCropExtractQueue()
+      })
+    },
+    [activeRun, cropGateTarget, startCropExtractJob, pumpCropExtractQueue],
   )
 
   const handleCropGateSkip = useCallback(async () => {
-    if (!activeRun || !cropGateTarget || cropGateBusy) {
+    if (!activeRun || !cropGateTarget) {
       throw new Error('Crop preview is not ready to skip.')
     }
-    const runId = activeRun.id
     const taskFileId = cropGateTarget.taskFileId
-    setCropGateBusy(true)
-    setBusyRunId(runId)
-    setError(null)
-    setCropGateError(null)
-    applyRunFromServer(
-      applyCropConfirmOptimisticRun(activeRun, taskFileId, { phase: 'extracting' }),
-      true,
-      { force: true },
-    )
-    try {
-      const updated = await workflowApi.confirmCrops(companyId, runId, taskFileId, {
-        action: 'skip',
+    const extractingIds = extractingCropFileIds(activeRun.files ?? [])
+    if (
+      shouldQueueCropExtract({
+        cropGateBusy: cropGateBusyRef.current,
+        extractingFileIds: extractingIds,
+        targetFileId: taskFileId,
       })
-      applyRunFromServer(updated, true, { force: true })
-      void reloadRuns()
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Could not skip crop preview.'
-      setError(message)
-      setCropGateError(message)
-      void workflowApi
-        .getRun(companyId, runId)
-        .then(run => applyRunFromServer(run, true, { force: true }))
-        .catch(() => {})
-      throw err instanceof Error ? err : new Error(message)
-    } finally {
-      setCropGateBusy(false)
-      setBusyRunId(prev => (prev === runId ? null : prev))
+    ) {
+      setCropExtractQueue(prev => {
+        const next = enqueueCropExtract(prev, { taskFileId, action: 'skip' })
+        cropExtractQueueRef.current = next
+        return next
+      })
+      return
     }
-  }, [activeRun, cropGateTarget, cropGateBusy, companyId, applyRunFromServer, reloadRuns])
+    await startCropExtractJob({ taskFileId, action: 'skip' })
+    queueMicrotask(() => {
+      pumpCropExtractQueue()
+    })
+  }, [activeRun, cropGateTarget, startCropExtractJob, pumpCropExtractQueue])
 
   const handleCropGateCancel = useCallback(async () => {
-    if (!activeRun || !cropGateTarget || cropGateBusy) {
+    if (!activeRun || !cropGateTarget) {
       throw new Error('Crop preview is not ready to cancel.')
     }
     const runId = activeRun.id
     const taskFileId = cropGateTarget.taskFileId
-    setCropGateBusy(true)
+    // Drop a queued Confirm/Skip for this file — extract never started.
+    setCropExtractQueue(prev => {
+      const next = removeCropExtractQueueItem(prev, taskFileId)
+      cropExtractQueueRef.current = next
+      return next
+    })
+    // Do not invent mid-extract abort for the file whose confirm HTTP is in flight.
+    if (cropConfirmingFileId === taskFileId) {
+      throw new Error('Crop preview is not ready to cancel.')
+    }
+    // WAITING cancel must not wait on a sibling file's extract / confirm busy.
     setError(null)
     setCropGateError(null)
     try {
@@ -1843,10 +1916,32 @@ export function ProcessingView() {
       setError(message)
       setCropGateError(message)
       throw err instanceof Error ? err : new Error(message)
-    } finally {
-      setCropGateBusy(false)
     }
-  }, [activeRun, cropGateTarget, cropGateBusy, companyId, applyRunFromServer, reloadRuns])
+  }, [activeRun, cropGateTarget, cropConfirmingFileId, companyId, applyRunFromServer, reloadRuns])
+
+  const cropQueuedFileIds = useMemo(
+    () => cropExtractQueue.map(item => item.taskFileId),
+    [cropExtractQueue],
+  )
+
+  // Drop queue entries for files that left the gate (extracted / cancelled / sealed).
+  useEffect(() => {
+    const live = new Set(cropGateFiles.map(f => f.taskFileId))
+    setCropExtractQueue(prev => {
+      const next = prev.filter(q => live.has(q.taskFileId))
+      if (next.length === prev.length) return prev
+      cropExtractQueueRef.current = next
+      return next
+    })
+  }, [cropGateFiles])
+
+  // When live extract finishes (poll/WS), pump any queued Confirm/Skip.
+  useEffect(() => {
+    if (!activeRun || cropGateBusy) return
+    if (extractingCropFileIds(activeRun.files ?? []).length > 0) return
+    if (cropExtractQueueRef.current.length === 0) return
+    pumpCropExtractQueue()
+  }, [activeRun, cropGateBusy, cropExtractQueue, pumpCropExtractQueue])
 
   const renderNodeCard = (node: GraphNode) => {
     const state = nodeStateOf(activeRun, node.id)
@@ -2396,7 +2491,12 @@ export function ProcessingView() {
               filename={cropGateTarget.filename}
               preview={cropGateTarget.preview}
               gatedFiles={cropGateFiles}
-              busy={cropGateBusy}
+              busy={
+                cropGateBusy &&
+                (cropConfirmingFileId == null ||
+                  cropConfirmingFileId === cropGateTarget.taskFileId)
+              }
+              queuedFileIds={cropQueuedFileIds}
               actionError={cropGateError}
               onActiveFileChange={setActiveCropFileId}
               onConfirm={boxes => handleCropGateConfirm(boxes)}

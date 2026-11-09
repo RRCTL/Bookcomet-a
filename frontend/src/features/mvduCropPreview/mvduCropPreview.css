@@ -247,6 +247,11 @@
   border-color: #bae6fd;
 }
 
+.mvdu-crop-gate__file-thumb.is-queued:not(.is-selected) {
+  border-color: #fcd34d;
+}
+
+/* WAITING files stay clickable during sibling extract — do not opacity-block. */
 .mvdu-crop-gate__file-thumb:disabled {
   cursor: not-allowed;
   opacity: 0.55;
@@ -314,6 +319,7 @@
 
 .mvdu-crop-gate__status--running { color: #0284c7; }
 .mvdu-crop-gate__status--pending { color: #94a3b8; }
+.mvdu-crop-gate__status--queued { color: #b45309; font-weight: 700; }
 .mvdu-crop-gate__status--confirmed { color: #15803d; font-weight: 700; }
 .mvdu-crop-gate__status--empty { color: #b45309; }
 .mvdu-crop-gate__status--done { color: #15803d; }
