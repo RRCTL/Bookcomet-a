@@ -13,7 +13,7 @@ redis>=8.1.0
 
 # Authentication
 # PyJWT replaces python-jose (CVE-2026-85394) and drops transitive ecdsa (PYSEC-2026-1325).
-PyJWT>=2.15.0
+PyJWT>=2.15.1
 # fastapi-mail>=1.6.8 requires cryptography>=50,<51 (closes PYSEC-2026-3552).
 cryptography>=50.0.0,<51.0.0
 bcrypt>=5.0.0
