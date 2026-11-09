@@ -14,7 +14,7 @@ opencv-contrib-python
 opencv-python>=4.10.0
 Pillow>=13.0.0
 # Keep a low floor. PaddleOCR 2.8–2.9 require numpy<2.0; #97's >=2.5.2 floor blocked those.
-numpy>=1.21
+numpy>=2.5.4
 
 # Note: Tesseract also requires the Tesseract-OCR binary to be installed on the system
 # Windows: Download from https://github.com/UB-Mannheim/tesseract/wiki
