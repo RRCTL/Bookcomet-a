@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from app.services.mvdu_crop_preview import (
     build_crop_preview_payload,
+    build_user_skipped_page_payload,
     filter_boxes_for_page,
     merge_multipage_crop_gates,
     merge_neighbor_boxes,
+    normalize_skipped_pages,
     nudge_pixel_box,
     parse_user_crop_boxes,
     regions_to_preview_boxes,
@@ -180,6 +182,24 @@ def test_filter_boxes_for_page() -> None:
     assert len(p1) == 2
     assert len(p2) == 1
     assert int(p2[0]["page"]) == 2
+
+
+def test_normalize_skipped_pages_and_payload() -> None:
+    assert normalize_skipped_pages([2, "3", 0, "x", -1]) == {2, 3}
+    payload = build_user_skipped_page_payload(
+        trace_id="t",
+        filename="doc.pdf",
+        processing_mode="AP",
+        pdf_page=2,
+    )
+    assert payload["needs_crop_preview"] is False
+    assert payload["seg_source"] == "user_skip_page"
+    assert len(payload["pages"]) == 1
+    row = payload["pages"][0]
+    assert row["page"] == 2
+    assert row["status"] == "skipped"
+    assert row["skipped_page"] is True
+    assert row["error_code"] == "PAGE_SKIPPED_BY_USER"
 
 
 def test_merge_multipage_crop_gates() -> None:

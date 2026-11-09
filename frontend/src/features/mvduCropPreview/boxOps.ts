@@ -177,7 +177,13 @@ function parseConfirmStatus(raw: unknown): CropPageConfirmStatus {
   const s = String(raw || 'pending').toLowerCase()
   if (s === 'confirmed') return 'confirmed'
   if (s === 'empty') return 'empty'
+  if (s === 'skipped') return 'skipped'
   return 'pending'
+}
+
+/** Page still needs user Confirm / Skip before extract. */
+export function pageNeedsReview(entry: CropPreviewPageEntry): boolean {
+  return entry.status !== 'confirmed' && entry.status !== 'skipped'
 }
 
 export function normalizePageEntries(
@@ -234,6 +240,8 @@ export function pageThumbDisplayStatus(
   entry: CropPreviewPageEntry,
   activePage: number,
 ): CropPageThumbStatus {
+  // SKIPPED stays labeled even when selected so the thumb remains the Un-skip control.
+  if (entry.status === 'skipped') return 'SKIPPED'
   if (entry.page === activePage) return 'RUNNING'
   if (entry.status === 'confirmed') return 'CONFIRMED'
   if (entry.status === 'empty' && entry.boxes.length === 0) return 'EMPTY'
@@ -241,7 +249,7 @@ export function pageThumbDisplayStatus(
 }
 
 export function countPendingPages(pages: CropPreviewPageEntry[]): number {
-  return pages.filter(p => p.status !== 'confirmed').length
+  return pages.filter(pageNeedsReview).length
 }
 
 export function nextPendingPage(
@@ -249,9 +257,9 @@ export function nextPendingPage(
   afterPage: number,
 ): number | null {
   const ordered = [...pages].sort((a, b) => a.page - b.page)
-  const higher = ordered.find(p => p.page > afterPage && p.status !== 'confirmed')
+  const higher = ordered.find(p => p.page > afterPage && pageNeedsReview(p))
   if (higher) return higher.page
-  const first = ordered.find(p => p.status !== 'confirmed')
+  const first = ordered.find(pageNeedsReview)
   return first ? first.page : null
 }
 
@@ -271,12 +279,47 @@ export function confirmPageInSet(
   )
 }
 
+/** Mark a page skipped for extract (distinct from whole-gate "Skip preview"). */
+export function skipPageInSet(
+  pages: CropPreviewPageEntry[],
+  page: number,
+): CropPreviewPageEntry[] {
+  return pages.map(p => (p.page === page ? { ...p, status: 'skipped' as const } : p))
+}
+
+export function unskipPageInSet(
+  pages: CropPreviewPageEntry[],
+  page: number,
+): CropPreviewPageEntry[] {
+  return pages.map(p => {
+    if (p.page !== page || p.status !== 'skipped') return p
+    return {
+      ...p,
+      status: (p.boxes.length === 0 ? 'empty' : 'pending') as CropPageConfirmStatus,
+    }
+  })
+}
+
+export function skippedPagesFromSet(pages: CropPreviewPageEntry[]): number[] {
+  return pages.filter(p => p.status === 'skipped').map(p => p.page)
+}
+
+/** Boxes for VLM extract — CONFIRMED pages only (SKIPPED omitted). */
 export function allBoxesFromPages(pages: CropPreviewPageEntry[]): CropPreviewBox[] {
   const out: CropPreviewBox[] = []
   for (const p of [...pages].sort((a, b) => a.page - b.page)) {
+    if (p.status !== 'confirmed') continue
     out.push(...renumber(p.boxes.map(b => ({ ...b, page: p.page }))))
   }
   return out
+}
+
+export function confirmedPageCount(pages: CropPreviewPageEntry[]): number {
+  return pages.filter(p => p.status === 'confirmed').length
+}
+
+export function skippedPageCount(pages: CropPreviewPageEntry[]): number {
+  return pages.filter(p => p.status === 'skipped').length
 }
 
 export function parseCropPreviewFromSummary(

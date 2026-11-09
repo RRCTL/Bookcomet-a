@@ -2935,6 +2935,7 @@ async def _run_ap_multi_receipt_ocr_from_image(
     skip_crop_preview: bool = False,
     crop_preview_confirmed: bool = False,
     confirmed_crop_boxes: list | None = None,
+    skipped_pages: list[int] | None = None,
     workflow_run_id: str | None = None,
 ) -> dict | None:
     """
@@ -2946,6 +2947,7 @@ async def _run_ap_multi_receipt_ocr_from_image(
     After Detect (or when Detect is empty), pause with needs_crop_preview unless
     skip_crop_preview (power user) or crop_preview_confirmed with user boxes.
     Empty Detect never silently invents boxes — same gate with empty overlay.
+    Per-page Skip: when pdf_page_num is in skipped_pages, omit VLM extract.
     """
     from app.services import mvdu_crop_preview as _mvdu_crop
 
@@ -2958,6 +2960,19 @@ async def _run_ap_multi_receipt_ocr_from_image(
     layout_ok = False
     vlm_mode = True
     layout_failure_reason: str | None = None
+
+    skipped_set = _mvdu_crop.normalize_skipped_pages(skipped_pages)
+    if crop_preview_confirmed and int(pdf_page_num) in skipped_set:
+        logger.info(
+            "[ocr_metrics] seg_source=user_skip_page page=%s vlm_calls=0",
+            pdf_page_num,
+        )
+        return _mvdu_crop.build_user_skipped_page_payload(
+            trace_id=trace_id,
+            filename=filename,
+            processing_mode=processing_mode,
+            pdf_page=pdf_page_num,
+        )
 
     try:
         img_w, img_h = _mvdu_crop.page_image_size(image_path)
@@ -5663,6 +5678,7 @@ async def ocr_test_core(
     skip_crop_preview: bool = False,
     crop_preview_confirmed: bool = False,
     confirmed_crop_boxes: list | None = None,
+    skipped_pages: list[int] | None = None,
 ) -> dict:
     """Core OCR pipeline (shared by /ocr/test and background OCR jobs).
 
@@ -5671,6 +5687,7 @@ async def ocr_test_core(
     ap_vlm_model_override: when set and processing_mode is AP, use this model id instead of AP_VLM_MODEL for the primary pass.
     ap_force_cross_verify: when True, run AP cross-VLM merge even if AP_AUTO_CROSS_VERIFY_ENABLED is off (manual Double check).
     ap_vlm_receipt_signal / ap_vlm_table_preset: optional AP user hints from the workspace composer (guess/single_per_page/…).
+    skipped_pages: crop-preview per-page Skip indexes — omitted from VLM extract.
     """
 
     # Validate file
@@ -5816,6 +5833,7 @@ async def ocr_test_core(
             "skip_crop_preview": bool(skip_crop_preview),
             "crop_preview_confirmed": bool(crop_preview_confirmed),
             "confirmed_crop_boxes": confirmed_crop_boxes,
+            "skipped_pages": skipped_pages,
             "workflow_run_id": workflow_run_id,
         }
         if _expected_count is not None:

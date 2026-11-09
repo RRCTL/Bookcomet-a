@@ -275,6 +275,65 @@ def filter_boxes_for_page(
     return out
 
 
+def normalize_skipped_pages(raw: Sequence[Any] | None) -> set[int]:
+    """Parse crop-gate skipped_pages (1-based PDF page indexes)."""
+    if not raw:
+        return set()
+    out: set[int] = set()
+    for item in raw:
+        try:
+            page = int(item)
+        except (TypeError, ValueError):
+            continue
+        if page >= 1:
+            out.add(page)
+    return out
+
+
+def build_user_skipped_page_row(pdf_page: int) -> dict[str, Any]:
+    """OCR page row for a crop-preview per-page Skip (no VLM extract)."""
+    return {
+        "page": int(pdf_page),
+        "status": "skipped",
+        "skipped_page": True,
+        "error_code": "PAGE_SKIPPED_BY_USER",
+        "error_detail": "Page skipped in crop preview — omitted from VLM extract",
+        "text": "",
+        "lines_count": 0,
+        "extracted_fields": {},
+        "field_confidence": 0.0,
+        "ai_enhanced": None,
+    }
+
+
+def build_user_skipped_page_payload(
+    *,
+    trace_id: str,
+    filename: str,
+    processing_mode: str,
+    pdf_page: int,
+) -> dict[str, Any]:
+    """Multi-receipt result when the whole (or this) page was Skip page'd."""
+    row = build_user_skipped_page_row(pdf_page)
+    return {
+        "trace_id": trace_id,
+        "filename": filename,
+        "needs_crop_preview": False,
+        "needs_split_review": False,
+        "crop_status": "skipped_page",
+        "message": "Page skipped in crop preview",
+        "processing_mode": processing_mode,
+        "seg_source": "user_skip_page",
+        "opencv_calls": 0,
+        "pages": [row],
+        "processing_steps": {
+            "seg_source": "user_skip_page",
+            "opencv_calls": 0,
+            "multi_receipt_split": "skipped_page",
+        },
+    }
+
+
 def build_crop_preview_payload(
     *,
     trace_id: str,

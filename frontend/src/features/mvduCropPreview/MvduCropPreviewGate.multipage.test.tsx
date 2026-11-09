@@ -117,8 +117,114 @@ describe('MvduCropPreviewGate multipage page control', () => {
     await waitFor(() => {
       expect(onConfirm).toHaveBeenCalledTimes(1)
     })
-    const sent = onConfirm.mock.calls[0]![0] as Array<{ page: number }>
-    expect(sent.map(b => b.page).sort()).toEqual([1, 2])
+    const sent = onConfirm.mock.calls[0]![0] as {
+      boxes: Array<{ page: number }>
+      skippedPages: number[]
+    }
+    expect(sent.boxes.map(b => b.page).sort()).toEqual([1, 2])
+    expect(sent.skippedPages).toEqual([])
+  })
+
+  it('Skip page marks SKIPPED, advances without extract; Confirm omits skipped', async () => {
+    const onConfirm = vi.fn()
+    const onCancel = vi.fn()
+    render(
+      <MvduCropPreviewGate
+        open
+        taskId="task-1"
+        taskFileId="file-1"
+        filename="Scanned Document 2.pdf"
+        preview={multipagePreview()}
+        onConfirm={onConfirm}
+        onSkip={vi.fn()}
+        onCancel={onCancel}
+      />,
+    )
+
+    expect(screen.getByTestId('mvdu-crop-gate-skip-page')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('mvdu-crop-gate-skip-page'))
+
+    await waitFor(() => {
+      expect(screen.getByText(/page 2 of 2/i)).toBeInTheDocument()
+    })
+    expect(onConfirm).not.toHaveBeenCalled()
+    expect(screen.getByText('SKIPPED')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Confirm crops & extract/i })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Confirm crops & extract/i }))
+
+    await waitFor(() => {
+      expect(onConfirm).toHaveBeenCalledTimes(1)
+    })
+    const sent = onConfirm.mock.calls[0]![0] as {
+      boxes: Array<{ page: number; id: string }>
+      skippedPages: number[]
+    }
+    expect(sent.skippedPages).toEqual([1])
+    expect(sent.boxes.map(b => b.page)).toEqual([2])
+    expect(sent.boxes.map(b => b.id)).toEqual(['b'])
+  })
+
+  it('SKIPPED thumb un-skips back to PENDING/RUNNING with boxes restored', async () => {
+    const onConfirm = vi.fn()
+    render(
+      <MvduCropPreviewGate
+        open
+        taskId="task-1"
+        taskFileId="file-1"
+        filename="Scanned Document 2.pdf"
+        preview={multipagePreview()}
+        onConfirm={onConfirm}
+        onSkip={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByTestId('mvdu-crop-gate-skip-page'))
+    await waitFor(() => {
+      expect(screen.getByText('SKIPPED')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByTestId('mvdu-crop-gate-page-thumb-1'))
+    await waitFor(() => {
+      expect(screen.getByText(/page 1 of 2/i)).toBeInTheDocument()
+    })
+    expect(screen.queryByText('SKIPPED')).not.toBeInTheDocument()
+    expect(screen.getByTestId('mvdu-crop-gate-skip-page')).toBeInTheDocument()
+    expect(onConfirm).not.toHaveBeenCalled()
+  })
+
+  it('all pages SKIPPED → Finish — no extract closes gate without confirm', async () => {
+    const onConfirm = vi.fn()
+    const onCancel = vi.fn()
+    render(
+      <MvduCropPreviewGate
+        open
+        taskId="task-1"
+        taskFileId="file-1"
+        filename="Scanned Document 2.pdf"
+        preview={multipagePreview()}
+        onConfirm={onConfirm}
+        onSkip={vi.fn()}
+        onCancel={onCancel}
+      />,
+    )
+
+    fireEvent.click(screen.getByTestId('mvdu-crop-gate-skip-page'))
+    await waitFor(() => {
+      expect(screen.getByText(/page 2 of 2/i)).toBeInTheDocument()
+    })
+    fireEvent.click(screen.getByTestId('mvdu-crop-gate-skip-page'))
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Finish — no extract/i })).toBeInTheDocument()
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Finish — no extract/i }))
+
+    await waitFor(() => {
+      expect(onCancel).toHaveBeenCalledTimes(1)
+    })
+    expect(onConfirm).not.toHaveBeenCalled()
   })
 
   it('single-page hides page rail and always shows extract primary', () => {

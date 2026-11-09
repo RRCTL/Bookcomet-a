@@ -315,6 +315,7 @@
 .mvdu-crop-gate__status--running { color: #0284c7; }
 .mvdu-crop-gate__status--pending { color: #94a3b8; }
 .mvdu-crop-gate__status--confirmed { color: #15803d; font-weight: 700; }
+.mvdu-crop-gate__status--skipped { color: #a16207; font-weight: 700; }
 .mvdu-crop-gate__status--empty { color: #b45309; }
 .mvdu-crop-gate__status--done { color: #15803d; }
 .mvdu-crop-gate__status--error { color: #b91c1c; }
@@ -322,6 +323,17 @@
 .mvdu-crop-gate__thumb--page.is-confirmed {
   border-color: #86efac;
   background: #f0fdf4;
+}
+
+.mvdu-crop-gate__thumb--page.is-skipped {
+  border-color: #fcd34d;
+  background: #fffbeb;
+  opacity: 0.92;
+}
+
+.mvdu-crop-gate__thumb--page.is-skipped.is-selected {
+  border-color: #d97706;
+  background: #fef3c7;
 }
 
 .mvdu-crop-gate__err {
