@@ -247,4 +247,217 @@ describe('MvduCropPreviewGate file-level nav', () => {
     expect(sent.map(b => b.page).sort()).toEqual([1, 2])
     expect(sent.every(b => b.id.startsWith('a'))).toBe(true)
   })
+
+  it('keeps WAITING file thumbs clickable while active file extracts', async () => {
+    const { files, fileA, fileB } = twoFileNav()
+    const extractingA: CropPreviewGateNavFile = {
+      ...fileA,
+      preview: { ...fileA.preview, phase: 'extracting' },
+    }
+    const gated = [extractingA, fileB]
+    const onActiveFileChange = vi.fn()
+    const { rerender } = render(
+      <MvduCropPreviewGate
+        open
+        taskId="task-1"
+        taskFileId={extractingA.taskFileId}
+        filename={extractingA.filename}
+        preview={extractingA.preview}
+        gatedFiles={gated}
+        onActiveFileChange={onActiveFileChange}
+        onConfirm={vi.fn()}
+        onSkip={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByTestId('mvdu-crop-gate-progress')).toHaveTextContent(/Extracting/i)
+    expect(screen.getByTestId('mvdu-crop-gate-confirm')).toBeDisabled()
+    expect(screen.getByRole('button', { name: /Skip preview/i })).toBeDisabled()
+
+    const waitingThumb = screen.getByTestId('mvdu-crop-gate-file-thumb-file-b')
+    expect(waitingThumb).not.toBeDisabled()
+    expect(waitingThumb).toHaveTextContent(/WAITING/i)
+    expect(waitingThumb.className).not.toMatch(/disabled/)
+    fireEvent.click(waitingThumb)
+    expect(onActiveFileChange).toHaveBeenCalledWith('file-b')
+
+    fireEvent.click(screen.getByTestId('mvdu-crop-gate-file-next'))
+    expect(onActiveFileChange).toHaveBeenCalledWith('file-b')
+
+    rerender(
+      <MvduCropPreviewGate
+        open
+        taskId="task-1"
+        taskFileId={fileB.taskFileId}
+        filename={fileB.filename}
+        preview={fileB.preview}
+        gatedFiles={gated}
+        onActiveFileChange={onActiveFileChange}
+        onConfirm={vi.fn()}
+        onSkip={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mvdu-crop-gate-file-pos')).toHaveTextContent('2/2')
+    })
+    expect(screen.queryByTestId('mvdu-crop-gate-progress')).not.toBeInTheDocument()
+    expect(screen.getByTestId('mvdu-crop-gate-confirm')).not.toBeDisabled()
+    expect(screen.getByRole('button', { name: /Confirm page/i })).toBeInTheDocument()
+
+    // Sibling EXTRACT thumb stays visible; return shows extract progress again.
+    const extractThumb = screen.getByTestId('mvdu-crop-gate-file-thumb-file-a')
+    expect(extractThumb).toHaveTextContent(/EXTRACT/i)
+    expect(extractThumb).not.toBeDisabled()
+    fireEvent.click(extractThumb)
+    expect(onActiveFileChange).toHaveBeenCalledWith('file-a')
+
+    rerender(
+      <MvduCropPreviewGate
+        open
+        taskId="task-1"
+        taskFileId={extractingA.taskFileId}
+        filename={extractingA.filename}
+        preview={extractingA.preview}
+        gatedFiles={gated}
+        onActiveFileChange={onActiveFileChange}
+        onConfirm={vi.fn()}
+        onSkip={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+    await waitFor(() => {
+      expect(screen.getByTestId('mvdu-crop-gate-progress')).toHaveTextContent(/Extracting/i)
+    })
+    expect(screen.getByTestId('mvdu-crop-gate-confirm')).toBeDisabled()
+  })
+
+  it('shows QUEUED badge and locks Confirm while sibling extract owns the slot', async () => {
+    const { fileA, fileB } = twoFileNav()
+    const extractingA: CropPreviewGateNavFile = {
+      ...fileA,
+      preview: { ...fileA.preview, phase: 'extracting' },
+    }
+    const gated = [extractingA, fileB]
+    const { rerender } = render(
+      <MvduCropPreviewGate
+        open
+        taskId="task-1"
+        taskFileId={fileB.taskFileId}
+        filename={fileB.filename}
+        preview={fileB.preview}
+        gatedFiles={gated}
+        queuedFileIds={['file-b']}
+        onConfirm={vi.fn()}
+        onSkip={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    // Selected queued file stays ACTIVE in the strip; progress explains the queue.
+    expect(screen.getByTestId('mvdu-crop-gate-file-thumb-file-b')).toHaveTextContent(/ACTIVE/i)
+    expect(screen.getByTestId('mvdu-crop-gate-file-thumb-file-a')).toHaveTextContent(/EXTRACT/i)
+    expect(screen.getByTestId('mvdu-crop-gate-progress')).toHaveTextContent(/Queued/i)
+    expect(screen.getByTestId('mvdu-crop-gate-confirm')).toBeDisabled()
+    expect(screen.getByRole('button', { name: /Skip preview/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /^Cancel$/i })).not.toBeDisabled()
+
+    // Non-selected queued file shows the QUEUED badge at full opacity.
+    rerender(
+      <MvduCropPreviewGate
+        open
+        taskId="task-1"
+        taskFileId={extractingA.taskFileId}
+        filename={extractingA.filename}
+        preview={extractingA.preview}
+        gatedFiles={gated}
+        queuedFileIds={['file-b']}
+        onConfirm={vi.fn()}
+        onSkip={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+    const queuedThumb = screen.getByTestId('mvdu-crop-gate-file-thumb-file-b')
+    expect(queuedThumb).toHaveTextContent(/QUEUED/i)
+    expect(queuedThumb).not.toBeDisabled()
+  })
+
+  it('restores mid-gate CONFIRMED state after switching during sibling extract', async () => {
+    const { fileA, fileB } = twoFileNav()
+    const extractingA: CropPreviewGateNavFile = {
+      ...fileA,
+      preview: { ...fileA.preview, phase: 'extracting' },
+    }
+    // Start on B (preview) with A already extracting in the strip.
+    const onActiveFileChange = vi.fn()
+    const onConfirm = vi.fn()
+    const gatedStart = [extractingA, fileB]
+    const { rerender } = render(
+      <MvduCropPreviewGate
+        open
+        taskId="task-1"
+        taskFileId={fileB.taskFileId}
+        filename={fileB.filename}
+        preview={fileB.preview}
+        gatedFiles={gatedStart}
+        onActiveFileChange={onActiveFileChange}
+        onConfirm={onConfirm}
+        onSkip={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Confirm page/i }))
+    await waitFor(() => {
+      expect(screen.getByText(/page 2 of 2/i)).toBeInTheDocument()
+    })
+    expect(screen.getByText(/✓ CONFIRMED/i)).toBeInTheDocument()
+    expect(onConfirm).not.toHaveBeenCalled()
+
+    // Peek at extracting file A, then return — B mid-gate memory must restore.
+    fireEvent.click(screen.getByTestId('mvdu-crop-gate-file-thumb-file-a'))
+    expect(onActiveFileChange).toHaveBeenCalledWith('file-a')
+    rerender(
+      <MvduCropPreviewGate
+        open
+        taskId="task-1"
+        taskFileId={extractingA.taskFileId}
+        filename={extractingA.filename}
+        preview={extractingA.preview}
+        gatedFiles={gatedStart}
+        onActiveFileChange={onActiveFileChange}
+        onConfirm={onConfirm}
+        onSkip={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+    await waitFor(() => {
+      expect(screen.getByTestId('mvdu-crop-gate-progress')).toHaveTextContent(/Extracting/i)
+    })
+
+    fireEvent.click(screen.getByTestId('mvdu-crop-gate-file-thumb-file-b'))
+    expect(onActiveFileChange).toHaveBeenCalledWith('file-b')
+    rerender(
+      <MvduCropPreviewGate
+        open
+        taskId="task-1"
+        taskFileId={fileB.taskFileId}
+        filename={fileB.filename}
+        preview={fileB.preview}
+        gatedFiles={gatedStart}
+        onActiveFileChange={onActiveFileChange}
+        onConfirm={onConfirm}
+        onSkip={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+    await waitFor(() => {
+      expect(screen.getByText(/page 2 of 2/i)).toBeInTheDocument()
+    })
+    expect(screen.getByText(/✓ CONFIRMED/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Confirm crops & extract/i })).not.toBeDisabled()
+    expect(onConfirm).not.toHaveBeenCalled()
+  })
 })

@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
   applyCropConfirmOptimisticRun,
+  dequeueCropExtract,
+  enqueueCropExtract,
+  extractingCropFileIds,
   isStaleCropExtracting,
   normalizeCropGateFile,
   normalizeRunCropGateFiles,
+  removeCropExtractQueueItem,
   reopenCropGateAfterInterrupt,
   sealCompletedCropExtract,
+  shouldQueueCropExtract,
 } from './cropGateConfirm'
 
 function fileWithPhase(
@@ -108,5 +113,73 @@ describe('crop gate hang / desync helpers', () => {
     expect((next.files[0]!.result_summary_json!.crop_preview as { phase: string }).phase).toBe(
       'extracting',
     )
+  })
+})
+
+describe('crop extract queue helpers', () => {
+  it('lists only live extracting file ids', () => {
+    const files = [
+      { ...fileWithPhase('extracting', 'running'), task_file_id: 'a' },
+      { ...fileWithPhase('preview', 'warning'), task_file_id: 'b' },
+      { ...fileWithPhase('extracting', 'stopped'), task_file_id: 'c' },
+    ]
+    expect(extractingCropFileIds(files)).toEqual(['a'])
+  })
+
+  it('queues confirm when a sibling is extracting or confirm HTTP is busy', () => {
+    expect(
+      shouldQueueCropExtract({
+        cropGateBusy: false,
+        extractingFileIds: ['file-a'],
+        targetFileId: 'file-b',
+      }),
+    ).toBe(true)
+    expect(
+      shouldQueueCropExtract({
+        cropGateBusy: true,
+        extractingFileIds: [],
+        targetFileId: 'file-b',
+      }),
+    ).toBe(true)
+    expect(
+      shouldQueueCropExtract({
+        cropGateBusy: false,
+        extractingFileIds: [],
+        targetFileId: 'file-b',
+      }),
+    ).toBe(false)
+    expect(
+      shouldQueueCropExtract({
+        cropGateBusy: false,
+        extractingFileIds: ['file-b'],
+        targetFileId: 'file-b',
+      }),
+    ).toBe(false)
+  })
+
+  it('enqueues latest job per file and dequeues FIFO', () => {
+    let queue = enqueueCropExtract([], {
+      taskFileId: 'b',
+      action: 'confirm',
+      boxes: [{ id: '1' }],
+    })
+    queue = enqueueCropExtract(queue, { taskFileId: 'c', action: 'skip' })
+    queue = enqueueCropExtract(queue, {
+      taskFileId: 'b',
+      action: 'confirm',
+      boxes: [{ id: '2' }],
+    })
+    expect(queue).toEqual([
+      { taskFileId: 'c', action: 'skip' },
+      { taskFileId: 'b', action: 'confirm', boxes: [{ id: '2' }] },
+    ])
+    const first = dequeueCropExtract(queue)
+    expect(first.next).toEqual({ taskFileId: 'c', action: 'skip' })
+    expect(first.rest).toEqual([
+      { taskFileId: 'b', action: 'confirm', boxes: [{ id: '2' }] },
+    ])
+    expect(removeCropExtractQueueItem(queue, 'b')).toEqual([
+      { taskFileId: 'c', action: 'skip' },
+    ])
   })
 })
