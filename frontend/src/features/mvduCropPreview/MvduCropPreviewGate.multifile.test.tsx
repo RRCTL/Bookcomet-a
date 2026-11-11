@@ -218,6 +218,75 @@ describe('MvduCropPreviewGate file-level nav', () => {
     expect(onConfirm).not.toHaveBeenCalled()
   })
 
+  it('restores mid-gate SKIPPED state when returning to a file', async () => {
+    const { files, fileA, fileB } = twoFileNav()
+    const onActiveFileChange = vi.fn()
+    const onConfirm = vi.fn()
+    const { rerender } = render(
+      <MvduCropPreviewGate
+        open
+        taskId="task-1"
+        taskFileId={fileA.taskFileId}
+        filename={fileA.filename}
+        preview={fileA.preview}
+        gatedFiles={files}
+        onActiveFileChange={onActiveFileChange}
+        onConfirm={onConfirm}
+        onSkip={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByTestId('mvdu-crop-gate-skip-page'))
+    await waitFor(() => {
+      expect(screen.getByText(/page 2 of 2/i)).toBeInTheDocument()
+    })
+    expect(screen.getByText('SKIPPED')).toBeInTheDocument()
+    expect(onConfirm).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByTestId('mvdu-crop-gate-file-next'))
+    expect(onActiveFileChange).toHaveBeenCalledWith('file-b')
+    rerender(
+      <MvduCropPreviewGate
+        open
+        taskId="task-1"
+        taskFileId={fileB.taskFileId}
+        filename={fileB.filename}
+        preview={fileB.preview}
+        gatedFiles={files}
+        onActiveFileChange={onActiveFileChange}
+        onConfirm={onConfirm}
+        onSkip={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+    await waitFor(() => {
+      expect(screen.getByTestId('mvdu-crop-gate-file-pos')).toHaveTextContent('2/2')
+    })
+    expect(screen.queryByText('SKIPPED')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('mvdu-crop-gate-file-prev'))
+    rerender(
+      <MvduCropPreviewGate
+        open
+        taskId="task-1"
+        taskFileId={fileA.taskFileId}
+        filename={fileA.filename}
+        preview={fileA.preview}
+        gatedFiles={files}
+        onActiveFileChange={onActiveFileChange}
+        onConfirm={onConfirm}
+        onSkip={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+    await waitFor(() => {
+      expect(screen.getByText(/page 2 of 2/i)).toBeInTheDocument()
+    })
+    expect(screen.getByText('SKIPPED')).toBeInTheDocument()
+    expect(onConfirm).not.toHaveBeenCalled()
+  })
+
   it('extract sends only the active file CONFIRMED pages', async () => {
     const { files, fileA } = twoFileNav()
     const onConfirm = vi.fn()
@@ -243,8 +312,12 @@ describe('MvduCropPreviewGate file-level nav', () => {
     await waitFor(() => {
       expect(onConfirm).toHaveBeenCalledTimes(1)
     })
-    const sent = onConfirm.mock.calls[0]![0] as Array<{ page: number; id: string }>
-    expect(sent.map(b => b.page).sort()).toEqual([1, 2])
-    expect(sent.every(b => b.id.startsWith('a'))).toBe(true)
+    const sent = onConfirm.mock.calls[0]![0] as {
+      boxes: Array<{ page: number; id: string }>
+      skippedPages: number[]
+    }
+    expect(sent.boxes.map(b => b.page).sort()).toEqual([1, 2])
+    expect(sent.boxes.every(b => b.id.startsWith('a'))).toBe(true)
+    expect(sent.skippedPages).toEqual([])
   })
 })

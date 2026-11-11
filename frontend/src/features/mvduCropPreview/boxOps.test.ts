@@ -11,9 +11,13 @@ import {
   nextPendingPage,
   normalizeIncomingBoxes,
   normalizePageEntries,
+  pageNeedsReview,
   pageThumbDisplayStatus,
   parseCropPreviewFromSummary,
   rotateBox90,
+  skipPageInSet,
+  skippedPagesFromSet,
+  unskipPageInSet,
   updateBoxNorm,
 } from './boxOps'
 import { applyCropConfirmOptimisticRun } from './cropGateConfirm'
@@ -131,6 +135,42 @@ describe('mvdu crop preview boxOps', () => {
     const all = allBoxesFromPages(afterP2)
     expect(all).toHaveLength(3)
     expect(all.filter(b => b.page === 2)).toHaveLength(2)
+  })
+
+  it('skip page excludes boxes from extract and un-skip restores pending', () => {
+    const pages = normalizePageEntries([
+      {
+        page: 1,
+        status: 'pending',
+        image_width: 100,
+        image_height: 100,
+        boxes: [{ id: 'a', index: 1, page: 1, region_norm: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 } }],
+      },
+      {
+        page: 2,
+        status: 'pending',
+        image_width: 100,
+        image_height: 100,
+        boxes: [{ id: 'b', index: 1, page: 2, region_norm: { x: 0.2, y: 0.2, w: 0.3, h: 0.3 } }],
+      },
+    ])
+    const skipped = skipPageInSet(pages, 1)
+    expect(skipped[0]!.status).toBe('skipped')
+    expect(pageThumbDisplayStatus(skipped[0]!, 2)).toBe('SKIPPED')
+    expect(pageNeedsReview(skipped[0]!)).toBe(false)
+    expect(countPendingPages(skipped)).toBe(1)
+    expect(nextPendingPage(skipped, 1)).toBe(2)
+    expect(skippedPagesFromSet(skipped)).toEqual([1])
+
+    const confirmedP2 = confirmPageInSet(skipped, 2, skipped[1]!.boxes)
+    const extractBoxes = allBoxesFromPages(confirmedP2)
+    expect(extractBoxes.map(b => b.page)).toEqual([2])
+    expect(extractBoxes.map(b => b.id)).toEqual(['b'])
+
+    const restored = unskipPageInSet(confirmedP2, 1)
+    expect(restored[0]!.status).toBe('pending')
+    expect(restored[0]!.boxes[0]!.id).toBe('a')
+    expect(pageNeedsReview(restored[0]!)).toBe(true)
   })
 
   it('dismissed crop preview does not reopen the gate', () => {

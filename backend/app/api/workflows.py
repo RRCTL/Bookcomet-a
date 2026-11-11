@@ -106,6 +106,8 @@ class ConfirmCropPreviewRequest(BaseModel):
     action: str = Field(..., description="confirm | skip | cancel")
     boxes: Optional[list[dict[str, Any]]] = None
     page: Optional[int] = None
+    # Per-page Skip (distinct from action=skip whole-gate). Omitted from VLM extract.
+    skipped_pages: Optional[list[int]] = None
 
 
 class RebuildReviewRequest(BaseModel):
@@ -1141,13 +1143,14 @@ async def confirm_crop_preview(
             skip_crop_preview=True,
         )
         return _run_out(run, db)
-    # confirm
+    # confirm — CONFIRMED boxes only; skipped_pages omitted from VLM extract
     run = await WorkflowService.re_vlm_files(
         db,
         run,
         [task_file_id],
         crop_preview_confirmed=True,
         confirmed_crop_boxes=body.boxes or [],
+        skipped_pages=body.skipped_pages or [],
     )
     return _run_out(run, db)
 

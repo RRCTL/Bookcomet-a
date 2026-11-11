@@ -6,6 +6,7 @@ import {
   boxesForApi,
   boxesGeometrySignature,
   confirmPageInSet,
+  confirmedPageCount,
   countPendingPages,
   deleteBox,
   mergeServerBoxStatus,
@@ -13,12 +14,18 @@ import {
   nextPendingPage,
   normalizeIncomingBoxes,
   normalizePageEntries,
+  pageNeedsReview,
   pageThumbDisplayStatus,
   rotateBox90,
+  skipPageInSet,
+  skippedPageCount,
+  skippedPagesFromSet,
+  unskipPageInSet,
   updateBoxNorm,
 } from './boxOps'
 import { clientPointToRegionNorm, regionNormToStageStyle } from './overlayCoords'
 import type {
+  CropGateConfirmPayload,
   CropPreviewBox,
   CropPreviewFileGateMemory,
   CropPreviewGateNavFile,
@@ -44,7 +51,7 @@ type Props = {
   busy?: boolean
   /** Optional parent-surfaced action error (confirm/skip/cancel). */
   actionError?: string | null
-  onConfirm: (boxes: ReturnType<typeof boxesForApi>) => void | Promise<void>
+  onConfirm: (payload: CropGateConfirmPayload) => void | Promise<void>
   onSkip: () => void | Promise<void>
   onCancel: () => void | Promise<void>
   /** Fired when the user picks another gated file (parent updates taskFileId/preview). */
@@ -160,15 +167,28 @@ export function MvduCropPreviewGate({
     fileNavList.findIndex(f => f.taskFileId === taskFileId),
   )
   const pendingCount = countPendingPages(pageEntries)
+  const confirmedCount = confirmedPageCount(pageEntries)
+  const skippedCount = skippedPageCount(pageEntries)
   const otherPending = pageEntries.filter(
-    p => p.page !== activePage && p.status !== 'confirmed',
+    p => p.page !== activePage && pageNeedsReview(p),
   ).length
-  // Primary becomes extract only when this is the last unconfirmed page (or single-page).
-  const isLastUnconfirmed =
-    !multipage || (activeEntry?.status !== 'confirmed' && otherPending === 0)
-  const confirmLabel = isLastUnconfirmed
-    ? 'Confirm crops & extract →'
-    : 'Confirm page →'
+  const activeNeedsReview = activeEntry ? pageNeedsReview(activeEntry) : false
+  // All gated pages skipped → close without extract (no empty confirm-crops hang).
+  const allPagesSkipped =
+    multipage &&
+    pendingCount === 0 &&
+    confirmedCount === 0 &&
+    skippedCount > 0 &&
+    skippedCount === pageEntries.length
+  const confirmLabel = allPagesSkipped
+    ? 'Finish — no extract'
+    : !multipage ||
+        (activeNeedsReview && otherPending === 0) ||
+        (pendingCount === 0 && confirmedCount > 0)
+      ? 'Confirm crops & extract →'
+      : 'Confirm page →'
+  const showSkipPage =
+    multipage && editable && activeNeedsReview && !extracting
   const blocked = busy || actionPending || extracting
 
   const { stageSize, fit, onImageLoad } = useContainFitStage({
@@ -317,6 +337,18 @@ export function MvduCropPreviewGate({
     [activePage],
   )
 
+  const applyPageEntriesAndSelect = useCallback(
+    (nextPages: CropPreviewPageEntry[], page: number) => {
+      const target = nextPages.find(p => p.page === page)
+      const nextBoxes = normalizeIncomingBoxes(target?.boxes ?? [], page)
+      setPageEntries(nextPages)
+      setActivePage(page)
+      setBoxes(nextBoxes)
+      setSelectedId(nextBoxes[0]?.id ?? null)
+    },
+    [],
+  )
+
   const switchToPage = useCallback(
     (page: number) => {
       if (page === activePage) return
@@ -336,6 +368,28 @@ export function MvduCropPreviewGate({
       })
     },
     [activePage, boxes],
+  )
+
+  /** SKIPPED thumb → PENDING + RUNNING (boxes restored); allowed until extract fires. */
+  const unskipAndSelectPage = useCallback(
+    (page: number) => {
+      if (blocked || extracting) return
+      setPageEntries(prev => {
+        const saved = prev.map(p =>
+          p.page === activePage
+            ? { ...p, boxes: boxes.map(b => ({ ...b, page: activePage })) }
+            : p,
+        )
+        const restored = unskipPageInSet(saved, page)
+        const target = restored.find(p => p.page === page)
+        const nextBoxes = normalizeIncomingBoxes(target?.boxes ?? [], page)
+        setBoxes(nextBoxes)
+        setSelectedId(nextBoxes[0]?.id ?? null)
+        setActivePage(page)
+        return restored
+      })
+    },
+    [activePage, boxes, blocked, extracting],
   )
 
   useEffect(() => {
@@ -584,43 +638,87 @@ export function MvduCropPreviewGate({
   const emptyHint = boxes.length === 0
   const pageRasterMissing = Boolean(pageError)
 
-  const handleConfirmClick = () => {
-    if (blocked || emptyHint || pageRasterMissing) return
-    // Persist current page edits, mark CONFIRMED.
-    const withCurrent = pageEntries.map(p =>
+  const persistCurrentIntoPages = () =>
+    pageEntries.map(p =>
       p.page === activePage
         ? { ...p, boxes: boxes.map(b => ({ ...b, page: activePage })) }
         : p,
     )
+
+  const fireExtractConfirm = (pages: CropPreviewPageEntry[]) => {
+    const payload: CropGateConfirmPayload = {
+      boxes: boxesForApi(allBoxesFromPages(pages)),
+      skippedPages: skippedPagesFromSet(pages),
+    }
+    void runAction(() => onConfirm(payload), 'Could not confirm crops.')
+  }
+
+  const handleConfirmClick = () => {
+    if (blocked || pageRasterMissing) return
+    const withCurrent = persistCurrentIntoPages()
+
+    // Every page SKIPPED → close gate without extract (no empty confirm hang).
+    if (
+      multipage &&
+      countPendingPages(withCurrent) === 0 &&
+      confirmedPageCount(withCurrent) === 0 &&
+      skippedPageCount(withCurrent) === withCurrent.length
+    ) {
+      void runAction(() => onCancel(), 'Could not finish crop preview.')
+      return
+    }
+
+    // Already settled page (CONFIRMED/SKIPPED) with no PENDING left → extract.
+    const activeSettled = withCurrent.find(p => p.page === activePage)
+    if (multipage && activeSettled && !pageNeedsReview(activeSettled)) {
+      if (countPendingPages(withCurrent) === 0) {
+        fireExtractConfirm(withCurrent)
+        return
+      }
+      const stillPending = nextPendingPage(withCurrent, activePage)
+      if (stillPending != null) {
+        applyPageEntriesAndSelect(withCurrent, stillPending)
+      }
+      return
+    }
+
+    if (emptyHint) return
+
+    // Persist current page edits, mark CONFIRMED.
     const confirmed = confirmPageInSet(withCurrent, activePage, boxes)
     setPageEntries(confirmed)
 
     const stillPending = nextPendingPage(confirmed, activePage)
-    if (stillPending != null && !isLastUnconfirmed) {
+    const remainingPending = countPendingPages(confirmed)
+    if (stillPending != null && remainingPending > 0) {
       // Auto-advance to next PENDING — do not extract yet.
-      const target = confirmed.find(p => p.page === stillPending)
-      setActivePage(stillPending)
-      const nextBoxes = normalizeIncomingBoxes(target?.boxes ?? [], stillPending)
-      setBoxes(nextBoxes)
-      setSelectedId(nextBoxes[0]?.id ?? null)
+      applyPageEntriesAndSelect(confirmed, stillPending)
       return
     }
-    // Last page (or single-page): extract all CONFIRMED pages' boxes.
-    void runAction(
-      () => onConfirm(boxesForApi(allBoxesFromPages(confirmed))),
-      'Could not confirm crops.',
-    )
+    // No PENDING left: extract CONFIRMED pages only (SKIPPED omitted).
+    fireExtractConfirm(confirmed)
+  }
+
+  /** Per-page Skip (footer) — distinct from whole-gate Skip preview. */
+  const handleSkipPageClick = () => {
+    if (blocked || !showSkipPage) return
+    const withCurrent = persistCurrentIntoPages()
+    const skipped = skipPageInSet(withCurrent, activePage)
+    setPageEntries(skipped)
+    const stillPending = nextPendingPage(skipped, activePage)
+    if (stillPending != null) {
+      // Auto-advance to next PENDING — never start extract from Skip page.
+      applyPageEntriesAndSelect(skipped, stillPending)
+      return
+    }
+    // No PENDING left — stay on this (now SKIPPED) page; primary becomes
+    // Confirm crops & extract or Finish — no extract.
+    applyPageEntriesAndSelect(skipped, activePage)
   }
 
   const handleSkipClick = () => {
     if (blocked) return
-    const pending = countPendingPages(
-      pageEntries.map(p =>
-        p.page === activePage
-          ? { ...p, boxes: boxes.map(b => ({ ...b, page: activePage })) }
-          : p,
-      ),
-    )
+    const pending = countPendingPages(persistCurrentIntoPages())
     if (pending > 1) {
       const ok = window.confirm(`Skip crop review for ${pending} pages?`)
       if (!ok) return
@@ -887,16 +985,25 @@ export function MvduCropPreviewGate({
             {multipage ? (
               pageEntries.map(entry => {
                 const display = pageThumbDisplayStatus(entry, activePage)
-                const clickable = display !== 'RUNNING'
+                const isActiveViewer = entry.page === activePage
+                const isSkipped = entry.status === 'skipped'
+                const clickable = display !== 'RUNNING' || isSkipped
                 return (
                   <button
                     key={`${taskFileId}:page:${entry.page}`}
                     type="button"
                     className={`mvdu-crop-gate__thumb mvdu-crop-gate__thumb--page${
-                      display === 'RUNNING' ? ' is-selected' : ''
-                    }${display === 'CONFIRMED' ? ' is-confirmed' : ''}`}
-                    aria-current={display === 'RUNNING' ? 'page' : undefined}
+                      isActiveViewer ? ' is-selected' : ''
+                    }${display === 'CONFIRMED' ? ' is-confirmed' : ''}${
+                      isSkipped ? ' is-skipped' : ''
+                    }`}
+                    aria-current={isActiveViewer ? 'page' : undefined}
+                    data-testid={`mvdu-crop-gate-page-thumb-${entry.page}`}
                     onClick={() => {
+                      if (isSkipped) {
+                        unskipAndSelectPage(entry.page)
+                        return
+                      }
                       if (!clickable) return
                       switchToPage(entry.page)
                     }}
@@ -952,7 +1059,7 @@ export function MvduCropPreviewGate({
           <button
             type="button"
             className="erp-btn"
-            disabled={blocked || (emptyHint && pendingCount === 0)}
+            disabled={blocked || (emptyHint && pendingCount === 0 && confirmedCount === 0)}
             title={
               pendingCount > 1
                 ? `Skip crop review for ${pendingCount} pages`
@@ -962,10 +1069,26 @@ export function MvduCropPreviewGate({
           >
             Skip preview
           </button>
+          {showSkipPage && (
+            <button
+              type="button"
+              className="erp-btn"
+              disabled={blocked || pageRasterMissing}
+              data-testid="mvdu-crop-gate-skip-page"
+              title="Skip this page — omit from VLM extract"
+              onClick={handleSkipPageClick}
+            >
+              Skip page
+            </button>
+          )}
           <button
             type="button"
             className="erp-btn primary mvdu-crop-gate__confirm"
-            disabled={blocked || emptyHint || pageRasterMissing}
+            disabled={
+              blocked ||
+              pageRasterMissing ||
+              (activeNeedsReview && emptyHint && !allPagesSkipped)
+            }
             data-testid="mvdu-crop-gate-confirm"
             onClick={handleConfirmClick}
           >

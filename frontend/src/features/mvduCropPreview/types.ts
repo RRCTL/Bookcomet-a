@@ -6,10 +6,22 @@ export type RegionBbox = { x: number; y: number; w: number; h: number }
 export type CropExtractStatus = 'pending' | 'running' | 'done' | 'error'
 
 /** Confirm-state stored in crop_preview.pages[].status (RUNNING is viewer-only). */
-export type CropPageConfirmStatus = 'pending' | 'confirmed' | 'empty'
+export type CropPageConfirmStatus = 'pending' | 'confirmed' | 'empty' | 'skipped'
 
 /** Display status for the far-right page thumb rail. */
-export type CropPageThumbStatus = 'RUNNING' | 'PENDING' | 'CONFIRMED' | 'EMPTY'
+export type CropPageThumbStatus = 'RUNNING' | 'PENDING' | 'CONFIRMED' | 'EMPTY' | 'SKIPPED'
+
+/** Payload sent when Confirm crops & extract runs (boxes exclude skipped pages). */
+export type CropGateConfirmPayload = {
+  boxes: Array<{
+    id: string
+    index: number
+    page: number
+    region_norm: RegionNorm
+    rotation_deg: number
+  }>
+  skippedPages: number[]
+}
 
 export type CropPreviewBox = {
   id: string

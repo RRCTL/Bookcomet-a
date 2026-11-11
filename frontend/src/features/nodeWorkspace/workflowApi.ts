@@ -370,6 +370,8 @@ export const workflowApi = {
       action: 'confirm' | 'skip' | 'cancel'
       boxes?: Array<Record<string, unknown>>
       page?: number
+      /** PDF pages marked Skip page — omitted from VLM extract. */
+      skipped_pages?: number[]
     },
   ) =>
     wfJson<WorkflowRun>(

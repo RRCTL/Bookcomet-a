@@ -1735,12 +1735,17 @@ export function ProcessingView() {
   }, [activeRun])
 
   const handleCropGateConfirm = useCallback(
-    async (boxes: Array<Record<string, unknown>>) => {
+    async (payload: {
+      boxes: Array<Record<string, unknown>>
+      skippedPages: number[]
+    }) => {
       if (!activeRun || !cropGateTarget || cropGateBusy) {
         throw new Error('Crop preview is not ready to confirm.')
       }
       const runId = activeRun.id
       const taskFileId = cropGateTarget.taskFileId
+      const boxes = payload.boxes
+      const skippedPages = payload.skippedPages ?? []
       setCropGateBusy(true)
       setBusyRunId(runId)
       setError(null)
@@ -1758,6 +1763,7 @@ export function ProcessingView() {
         const updated = await workflowApi.confirmCrops(companyId, runId, taskFileId, {
           action: 'confirm',
           boxes,
+          skipped_pages: skippedPages,
         })
         // Force: stop-guard must not drop a completed confirm (incl. cross-VLM
         // timeout keep-primary → 200) or Needs-review / extracting never clears.
@@ -2399,7 +2405,7 @@ export function ProcessingView() {
               busy={cropGateBusy}
               actionError={cropGateError}
               onActiveFileChange={setActiveCropFileId}
-              onConfirm={boxes => handleCropGateConfirm(boxes)}
+              onConfirm={payload => handleCropGateConfirm(payload)}
               onSkip={() => handleCropGateSkip()}
               onCancel={() => handleCropGateCancel()}
             />

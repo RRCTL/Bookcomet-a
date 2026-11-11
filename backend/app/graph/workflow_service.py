@@ -1452,6 +1452,7 @@ class WorkflowService:
         skip_crop_preview: bool = False,
         crop_preview_confirmed: bool = False,
         confirmed_crop_boxes: list | None = None,
+        skipped_pages: list[int] | None = None,
     ) -> dict[str, Any]:
         from app.services.abuse_guard import company_ocr_concurrency
 
@@ -1509,6 +1510,7 @@ class WorkflowService:
                         skip_crop_preview=skip_crop_preview,
                         crop_preview_confirmed=crop_preview_confirmed,
                         confirmed_crop_boxes=confirmed_crop_boxes,
+                        skipped_pages=skipped_pages,
                     )
         except WorkflowRunCancelled:
             run_file.file_status = "stopped"
@@ -2102,6 +2104,7 @@ class WorkflowService:
         skip_crop_preview: bool = False,
         crop_preview_confirmed: bool = False,
         confirmed_crop_boxes: list | None = None,
+        skipped_pages: list[int] | None = None,
     ) -> WorkflowRun:
         if _run_has_locked_approved_table(run):
             raise HTTPException(status_code=409, detail=RE_VLM_LOCKED_DETAIL)
@@ -2193,6 +2196,7 @@ class WorkflowService:
                         skip_crop_preview=skip_crop_preview,
                         crop_preview_confirmed=crop_preview_confirmed,
                         confirmed_crop_boxes=confirmed_crop_boxes,
+                        skipped_pages=skipped_pages,
                         **vlm_kwargs,
                     )
                 )

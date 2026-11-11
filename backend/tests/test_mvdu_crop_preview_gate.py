@@ -144,3 +144,92 @@ async def test_confirmed_empty_boxes_reopens_gate(tmp_path, monkeypatch: pytest.
     assert result is not None
     assert result["needs_crop_preview"] is True
     assert result["needs_split_review"] is True
+
+
+@pytest.mark.asyncio
+async def test_skipped_page_omits_vlm_extract(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Per-page Skip: no Detect / no crop extract for that PDF page."""
+    img = tmp_path / "collage.png"
+    Image.new("RGB", (400, 300), color=(40, 40, 40)).save(img)
+
+    detect_calls = {"n": 0}
+
+    async def fake_detect(_path, **_kwargs):  # type: ignore[no-untyped-def]
+        detect_calls["n"] += 1
+        return [{"x": 10, "y": 10, "w": 80, "h": 60}]
+
+    crop_calls = {"n": 0}
+
+    def fake_crop(_path, regions):  # type: ignore[no-untyped-def]
+        crop_calls["n"] += 1
+        return []
+
+    monkeypatch.setattr(ocr, "_ap_vlm_layout_try_receipt_regions", fake_detect)
+    monkeypatch.setattr(ocr, "_crop_receipt_regions", fake_crop)
+
+    result = await ocr._run_ap_multi_receipt_ocr_from_image(
+        str(img),
+        trace_id="t",
+        filename="doc.pdf",
+        ocr_provider_name="vlm",
+        ocr_model_override="m",
+        ocr_prompt_override=None,
+        processing_mode="AP",
+        pdf_page_num=2,
+        crop_preview_confirmed=True,
+        confirmed_crop_boxes=[
+            # Page 1 confirmed — must not be used for page 2 when page 2 is skipped.
+            {"page": 1, "region_norm": {"x": 0.05, "y": 0.05, "w": 0.2, "h": 0.2}},
+        ],
+        skipped_pages=[2],
+    )
+    assert result is not None
+    assert result.get("needs_crop_preview") is not True
+    assert detect_calls["n"] == 0
+    assert crop_calls["n"] == 0
+    assert result["seg_source"] == "user_skip_page"
+    pages = result["pages"]
+    assert len(pages) == 1
+    assert pages[0]["page"] == 2
+    assert pages[0]["status"] == "skipped"
+    assert pages[0]["skipped_page"] is True
+
+
+@pytest.mark.asyncio
+async def test_confirmed_page_still_extracts_when_sibling_skipped(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Skipped sibling pages must not block extract for a CONFIRMED page."""
+    img = tmp_path / "collage.png"
+    Image.new("RGB", (400, 300), color=(40, 40, 40)).save(img)
+
+    detect_calls = {"n": 0}
+
+    async def fake_detect(_path, **_kwargs):  # type: ignore[no-untyped-def]
+        detect_calls["n"] += 1
+        return [{"x": 10, "y": 10, "w": 80, "h": 60}]
+
+    monkeypatch.setattr(ocr, "_ap_vlm_layout_try_receipt_regions", fake_detect)
+    monkeypatch.setattr(ocr, "_crop_receipt_regions", lambda _p, regions: [])
+
+    result = await ocr._run_ap_multi_receipt_ocr_from_image(
+        str(img),
+        trace_id="t",
+        filename="doc.pdf",
+        ocr_provider_name="vlm",
+        ocr_model_override="m",
+        ocr_prompt_override=None,
+        processing_mode="AP",
+        pdf_page_num=1,
+        crop_preview_confirmed=True,
+        confirmed_crop_boxes=[
+            {"page": 1, "region_norm": {"x": 0.05, "y": 0.05, "w": 0.2, "h": 0.2}},
+        ],
+        skipped_pages=[2, 3],
+    )
+    assert detect_calls["n"] == 0
+    assert result is not None
+    assert result.get("needs_crop_preview") is not True
+    assert result.get("seg_source") != "user_skip_page"
