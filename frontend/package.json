@@ -41,7 +41,7 @@
     "tailwindcss": "^4.3.3",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.68.0",
-    "vite": "^8.2.4",
+    "vite": "^8.2.6",
     "vitest": "^5.0.5"
   },
   "overrides": {
@@ -51,6 +51,7 @@
     "zod": "^4.6.7",
     "undici": "^8.12.4",
     "postcss-selector-parser": "^6.1.5",
-    "minimatch": "^11.0.1"
+    "minimatch": "^11.0.1",
+    "vite": "^8.2.6"
   }
 }
